@@ -9,16 +9,16 @@ owns every detail of talking to an LLM and exposes a single, stable entry point:
 
     get_decision(prompt: str) -> dict   # {"action": ..., "reason": ...}
 
-Swap providers by changing PROVIDER below. Only "gemini" is implemented today;
-"ollama" / "openai" are stubs that future days can fill in without touching the
-simulation (main.py / world.py).
+Swap providers by changing PROVIDER below. "ollama" (local, default) and
+"gemini" (cloud) are both implemented; "openai" is a stub that future days can
+fill in without touching the simulation (main.py / world.py).
 
 Design
 ------
-    get_decision()            <- public, provider-agnostic
-        -> _gemini_decision() <- private, provider-specific
-        -> _ollama_decision() <- (future)
-        -> _openai_decision() <- (future)
+    get_decision()                <- public, provider-agnostic
+        -> _get_ollama_decision() <- private, provider-specific (local default)
+        -> _gemini_decision()     <- private, provider-specific (cloud)
+        -> _openai_decision()     <- (future)
 
 Robustness contract: get_decision ALWAYS returns a usable decision dict. Any
 provider failure (network error, quota, bad/missing JSON, invalid action)
@@ -37,8 +37,12 @@ from dotenv import load_dotenv
 from world import VALID_ACTIONS
 
 # Active provider. Change this one line to switch backends.
-# Supported today: "gemini". Future: "ollama", "openai".
-PROVIDER = "gemini"
+# Supported today: "ollama" (default, local), "gemini" (cloud). Future: "openai".
+PROVIDER = "ollama"
+
+# Ollama-specific config (only consulted when PROVIDER == "ollama").
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_MODEL = "qwen3:8b"
 
 # Gemini-specific config (only consulted when PROVIDER == "gemini").
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -60,12 +64,13 @@ def get_decision(prompt: str) -> dict[str, Any]:
     of the form {"action": <valid action>, "reason": <str>}. Always succeeds:
     failures fall back to a safe `rest`.
     """
+    if PROVIDER == "ollama":
+        return _get_ollama_decision(prompt)
+
     if PROVIDER == "gemini":
         return _gemini_decision(prompt)
 
     # Future providers plug in here without any change to the simulation:
-    #   if PROVIDER == "ollama":
-    #       return _ollama_decision(prompt)
     #   if PROVIDER == "openai":
     #       return _openai_decision(prompt)
 
@@ -97,6 +102,44 @@ def _extract_json(text: str) -> str | None:
     if start == -1 or end == -1 or end < start:
         return None
     return text[start : end + 1]
+
+
+# --- Ollama provider (local, default) --------------------------------------
+def _get_ollama_decision(prompt: str) -> dict[str, Any]:
+    """Ask a local Ollama model for a decision and return a validated dict.
+
+    Talks to the Ollama HTTP API (OLLAMA_URL) with streaming disabled so the
+    full completion arrives in one JSON payload. Reasoning models like qwen3
+    often prepend chatter ("Thinking...") before the JSON object, so we lean on
+    the shared _extract_json slicer to recover the embedded object. ANY failure
+    (network error, non-200, bad JSON, invalid action) degrades to `rest`.
+    """
+    try:
+        import requests  # imported lazily so non-ollama setups don't need it
+
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+
+        # /api/generate returns {"response": "<model text>", ...}.
+        text = (response.json().get("response") or "").strip()
+
+        raw = _extract_json(text)
+        if raw is None:
+            return dict(FALLBACK_DECISION)
+
+        return _validate_decision(json.loads(raw))
+
+    except Exception:
+        # Network/HTTP/JSON errors all degrade gracefully to rest.
+        return dict(FALLBACK_DECISION)
 
 
 # --- Gemini provider -------------------------------------------------------

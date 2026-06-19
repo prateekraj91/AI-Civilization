@@ -88,7 +88,7 @@ def print_turn(turn: int, position: tuple[int, int], hunger: int,
     print()
     print(observation)
     print()
-    print("Gemini Decision:")
+    print("Decision:")
     print(json.dumps(decision, indent=2))
     print()
     print("Result:")
