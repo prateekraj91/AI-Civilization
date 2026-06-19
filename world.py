@@ -69,6 +69,11 @@ _MOVES = {
     "move_west": (-1, 0),
 }
 
+# --- Hunger constants (Day 4) --------------------------------------------
+HUNGER_MAX = 10        # at this level the agent starves and dies
+HUNGER_PER_TURN = 1    # hunger gained each turn
+EAT_RELIEF = 5         # hunger removed by eating one food (clamped at 0)
+
 # The authoritative world state. Keep this as the ONLY mutable global.
 world_state: dict[str, Any] = {
     "turn": 0,           # current simulation tick
@@ -151,13 +156,19 @@ def spawn_food(count: int = 5) -> list[tuple[int, int]]:
 def observe(agent: Any, world_state: dict[str, Any]) -> str:
     """Inspect the four cells adjacent to `agent` and return a readable string.
 
-    Looks North/South/East/West of the agent's position. Cells beyond the edge
-    of the map report as "wall". This is a pure READ of world_state — it never
-    mutates anything (agents only observe).
+    Reports the agent's CURRENT tile first, then North/South/East/West. Cells
+    beyond the edge of the map report as "wall". The current tile reads from
+    world_state["food"] (not the grid, which shows AGENT where the agent stands)
+    so the agent knows whether it is actually standing on food — the signal it
+    needs to legitimately choose "eat". This is a pure READ of world_state.
     """
     x, y = agent.position
     size = world_state["size"]
     grid = world_state["grid"]
+
+    # The agent occupies its own cell, so the grid shows AGENT there. The truth
+    # of whether food is underfoot lives in the food list.
+    current_tile = FOOD if (x, y) in world_state["food"] else EMPTY
 
     # Ordered so output is always N, S, E, W.
     directions: dict[str, tuple[int, int]] = {
@@ -167,7 +178,7 @@ def observe(agent: Any, world_state: dict[str, Any]) -> str:
         "West": (x - 1, y),
     }
 
-    lines: list[str] = []
+    lines: list[str] = [f"Current Tile: {current_tile}", ""]
     for name, (nx, ny) in directions.items():
         if 0 <= nx < size and 0 <= ny < size:
             lines.append(f"{name}: {grid[ny][nx]}")
@@ -218,11 +229,12 @@ def execute_action(agent: Any, action: str) -> str:
         return f"{agent.name} tried to move {direction} but hit the map edge and stayed put."
 
     if action == "eat":
+        # The agent may only eat what is on its CURRENT tile. The grid cell
+        # stays AGENT (agent on top); only the food record + hunger change.
         if agent.position in world_state["food"]:
             world_state["food"].remove(agent.position)
-            # The agent is standing on the tile, so the grid cell stays AGENT;
-            # only the food record is removed.
-            return f"{agent.name} ate food at {agent.position}."
+            agent.hunger = max(0, agent.hunger - EAT_RELIEF)
+            return f"{agent.name} ate food."
         return f"{agent.name} tried to eat but there was no food here."
 
     if action == "rest":
@@ -230,3 +242,18 @@ def execute_action(agent: Any, action: str) -> str:
 
     # decide() should never pass anything else, but stay safe.
     return f"{agent.name} did nothing (unknown action: {action})."
+
+
+def update_hunger(agent: Any) -> int:
+    """Advance hunger by one turn, clamped at HUNGER_MAX. Returns the new hunger.
+
+    Called once per turn by the simulation loop. Hunger never exceeds
+    HUNGER_MAX (10); reaching it means starvation (see is_dead).
+    """
+    agent.hunger = min(HUNGER_MAX, agent.hunger + HUNGER_PER_TURN)
+    return agent.hunger
+
+
+def is_dead(agent: Any) -> bool:
+    """True if the agent has starved (hunger has reached HUNGER_MAX)."""
+    return agent.hunger >= HUNGER_MAX

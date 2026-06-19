@@ -38,17 +38,19 @@ from world import (
     VALID_ACTIONS,
     create_world,
     execute_action,
+    is_dead,
     observe,
     place_agent,
     spawn_food,
+    update_hunger,
     world_state,
 )
 
 # The Gemini model to use. 2.5-flash is fast/cheap and ideal for this loop.
 GEMINI_MODEL = "gemini-2.5-flash"
 
-# Number of turns to simulate (Day 3 spec: exactly 5).
-NUM_TURNS = 5
+# Maximum turns to simulate (Day 4: 20 turns, or until the agent starves).
+NUM_TURNS = 20
 
 # Module-level Gemini client, initialised in main(). decide() reads it so its
 # signature can stay decide(agent, observation) as specified.
@@ -82,15 +84,20 @@ def make_gemini_client() -> genai.Client:
 def build_prompt(agent: Agent, observation: str) -> str:
     """Construct the instruction sent to Gemini for a single decision.
 
-    Pins the model to the closed action set and demands a strict JSON object so
+    Gives the model the agent's position, hunger, current tile, and nearby
+    observations, pins it to the closed action set, and demands strict JSON so
     the output is machine-parseable rather than free-form text.
     """
+    x, y = agent.position
     return (
-        f"You are {agent.name}, a {agent.personality} agent living on a 10x10 grid.\n"
-        f"You can see the four cells adjacent to you:\n"
-        f"{observation}\n\n"
-        f"Choose EXACTLY ONE action from this list:\n"
-        f"  {', '.join(VALID_ACTIONS)}\n\n"
+        f"You are {agent.name}, a {agent.personality} agent living on a 10x10 grid.\n\n"
+        f"Position: ({x},{y})\n"
+        f"Hunger: {agent.hunger} (0 = full, 10 = you starve to death)\n\n"
+        f"Observation:\n{observation}\n\n"
+        f"Rules:\n"
+        f"- You may ONLY choose 'eat' if Current Tile = food.\n"
+        f"- If your hunger is high, prioritize survival: move toward food and eat it.\n"
+        f"- Choose EXACTLY ONE action from: {', '.join(VALID_ACTIONS)}\n\n"
         f"Respond with ONLY a JSON object, no markdown or extra text, shaped exactly:\n"
         f'{{"action": "<one valid action>", "reason": "<short reason>"}}'
     )
@@ -147,16 +154,20 @@ def decide(agent: Agent, observation: str) -> dict[str, Any]:
         return dict(FALLBACK_DECISION)
 
 
-def print_turn(turn: int, position: tuple[int, int], observation: str,
-               decision: dict[str, Any], result: str) -> None:
-    """Print a single turn's report in the Day 3 format."""
+def print_turn(turn: int, position: tuple[int, int], hunger: int,
+               observation: str, decision: dict[str, Any], result: str,
+               new_hunger: int) -> None:
+    """Print a single turn's report in the Day 4 format."""
     x, y = position
     print("-" * 40)
     print(f"TURN {turn}")
     print()
     print(f"Position: ({x},{y})")
     print()
+    print(f"Hunger: {hunger}")
+    print()
     print("Observation:")
+    print()
     print(observation)
     print()
     print("Gemini Decision:")
@@ -164,6 +175,22 @@ def print_turn(turn: int, position: tuple[int, int], observation: str,
     print()
     print("Result:")
     print(result)
+    print()
+    print(f"New Hunger: {new_hunger}")
+    print()
+
+
+def print_death(turn: int, agent: Agent) -> None:
+    """Print the final turn header and the starvation message."""
+    x, y = agent.position
+    print("-" * 40)
+    print(f"TURN {turn}")
+    print()
+    print(f"Position: ({x},{y})")
+    print()
+    print(f"Hunger: {agent.hunger}")
+    print()
+    print(f"{agent.name} has died of starvation.")
     print()
 
 
@@ -182,18 +209,27 @@ def main() -> None:
     place_agent(alex, 5, 5)
     spawn_food(5)
 
-    # --- The simulation loop (Day 3) ------------------------------------
+    # --- The survival loop (Day 4) --------------------------------------
     for turn in range(NUM_TURNS):
         world_state["turn"] = turn + 1
 
-        # Capture position BEFORE acting so the report shows where the agent
-        # observed from.
+        # Time passes first: hunger grows. If it reaches the limit the agent
+        # starves before it can act — end the simulation immediately.
+        update_hunger(alex)
+        if is_dead(alex):
+            print_death(world_state["turn"], alex)
+            break
+
+        # Capture position/hunger BEFORE acting so the report reflects the state
+        # the agent observed and decided from.
         position = alex.position
+        hunger_before = alex.hunger
         observation = observe(alex, world_state)
         decision = decide(alex, observation)
-        result = execute_action(alex, decision["action"])
+        result = execute_action(alex, decision["action"])  # eating lowers hunger
 
-        print_turn(world_state["turn"], position, observation, decision, result)
+        print_turn(world_state["turn"], position, hunger_before, observation,
+                   decision, result, alex.hunger)
 
 
 if __name__ == "__main__":
