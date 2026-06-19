@@ -2,26 +2,24 @@
 main.py
 =======
 
-Day 1 entry point for AI Civilization.
+Day 2 entry point for AI Civilization.
 
-Responsibilities (Day 1 only):
-  1. Build the world (already provided by world.py).
-  2. Create a single agent, "Alex", and register it via the world layer.
-  3. Verify the Gemini integration works end-to-end.
+Responsibilities (Day 2 only):
+  1. Build a 10x10 world grid (the spatial single source of truth).
+  2. Place the single agent, "Alex", at (5, 5) through the world layer.
+  3. Randomly spawn 5 food items (no overlaps with food or the agent).
+  4. Let Alex OBSERVE its four adjacent cells and print the result.
 
-OUT OF SCOPE for Day 1 (intentionally not implemented):
-  world grid, movement, memory summarization, multiple agents, rendering,
-  God Mode.
+OUT OF SCOPE for Day 2 (intentionally not implemented):
+  movement, Gemini decisions, memory logic, hunger logic, multiple agents,
+  trust/relationships, conversations, rendering, God Mode.
 
 GEMINI SDK NOTE
 ---------------
-This uses the *new* unified Google Gen AI SDK (`google-genai`, imported as
-`from google import genai`). The old `google-generativeai` package with
-`genai.configure()` + `genai.GenerativeModel(...)` is deprecated. The new
-design is client-based:
-
-    client = genai.Client(api_key=...)
-    client.models.generate_content(model=..., contents=...)
+The Day 1 Gemini handshake helpers (`make_gemini_client`, `gemini_test`) are
+preserved below but are NOT invoked in the Day 2 turn: Day 2 is purely the grid
++ observation. They use the *new* unified Google Gen AI SDK (`google-genai`,
+imported as `from google import genai`).
 """
 
 import os
@@ -31,7 +29,13 @@ from dotenv import load_dotenv
 from google import genai
 
 from agents import Agent
-from world import world_state, add_agent
+from world import (
+    create_world,
+    observe,
+    place_agent,
+    spawn_food,
+    world_state,
+)
 
 # The Gemini model to use. 2.5-flash is fast/cheap and ideal for a hello-world.
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -42,6 +46,8 @@ def make_gemini_client() -> genai.Client:
 
     The key is read from the environment (never hard-coded) so secrets stay out
     of source control. Fails loudly with a clear message if the key is missing.
+
+    NOTE: Preserved from Day 1. Not called during the Day 2 turn.
     """
     load_dotenv()  # reads ai_civilization/.env into the environment
     api_key = os.getenv("GEMINI_API_KEY")
@@ -60,9 +66,8 @@ def make_gemini_client() -> genai.Client:
 def gemini_test(client: genai.Client, agent: Agent) -> str:
     """Ask Gemini to role-play as the given agent and return its reply.
 
-    NOTE: This reads the agent's data (single source of truth lives in
-    world_state, and `agent` is one of those objects) to build the prompt.
-    It does not mutate anything — it's a pure read + external call.
+    NOTE: Preserved from Day 1. Not called during the Day 2 turn (no Gemini
+    decisions in Day 2).
     """
     prompt = (
         f"You are {agent.name}, a {agent.personality} character. "
@@ -77,10 +82,10 @@ def gemini_test(client: genai.Client, agent: Agent) -> str:
 
 
 def main() -> None:
-    # --- 1. Configure the external Gemini integration -------------------
-    client = make_gemini_client()
+    # --- 1. Build the 10x10 world grid ----------------------------------
+    create_world()
 
-    # --- 2. Create the first agent --------------------------------------
+    # --- 2. Create the single agent -------------------------------------
     alex = Agent(
         name="Alex",
         personality="curious and friendly",
@@ -91,19 +96,26 @@ def main() -> None:
         },
     )
 
-    # --- 3. Register the agent THROUGH the world layer ------------------
-    # We never append to world_state directly here; we go through add_agent so
-    # the world stays the single source of truth.
-    add_agent(alex)
+    # --- 3. Place Alex at (5, 5) THROUGH the world layer -----------------
+    # We never write to the grid directly here; place_agent keeps world_state
+    # the single source of truth.
+    place_agent(alex, 5, 5)
 
-    print(f"Turn {world_state['turn']}: {len(world_state['agents'])} agent(s) in the world.")
-    print(f"Created agent: {alex.name} ({alex.personality})")
-    print(f"Goals: {alex.goals}\n")
+    # --- 4. Spawn 5 food items (no overlap with food or the agent) -------
+    spawn_food(5)
 
-    # --- 4. Verify Gemini works -----------------------------------------
-    print("Asking Gemini to introduce Alex...\n")
-    reply = gemini_test(client, alex)
-    print(f"Gemini says:\n{reply}")
+    # --- 5. Report the turn + let Alex observe its surroundings ----------
+    x, y = alex.position
+    print(f"Turn {world_state['turn']}")
+    print()
+    print(f"Agent: {alex.name}")
+    print(f"Position: ({x},{y})")
+    print()
+    print("Food:")
+    print(world_state["food"])
+    print()
+    print("Observation:")
+    print(observe(alex, world_state))
 
 
 if __name__ == "__main__":
