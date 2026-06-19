@@ -74,6 +74,9 @@ HUNGER_MAX = 10        # at this level the agent starves and dies
 HUNGER_PER_TURN = 1    # hunger gained each turn
 EAT_RELIEF = 5         # hunger removed by eating one food (clamped at 0)
 
+# --- Memory constants (Day 5) --------------------------------------------
+MEMORY_LIMIT = 10      # an agent retains only its most recent N memories
+
 # The authoritative world state. Keep this as the ONLY mutable global.
 world_state: dict[str, Any] = {
     "turn": 0,           # current simulation tick
@@ -225,7 +228,9 @@ def execute_action(agent: Any, action: str) -> str:
         dx, dy = _MOVES[action]
         direction = action.split("_")[1]  # "north" / "south" / ...
         if move_agent(agent, dx, dy):
+            record_memory(agent, f"Moved {direction}")
             return f"{agent.name} moved {direction}."
+        record_memory(agent, f"Blocked moving {direction}")
         return f"{agent.name} tried to move {direction} but hit the map edge and stayed put."
 
     if action == "eat":
@@ -234,14 +239,31 @@ def execute_action(agent: Any, action: str) -> str:
         if agent.position in world_state["food"]:
             world_state["food"].remove(agent.position)
             agent.hunger = max(0, agent.hunger - EAT_RELIEF)
+            record_memory(agent, "Ate food")
             return f"{agent.name} ate food."
+        record_memory(agent, "Tried to eat but found no food")
         return f"{agent.name} tried to eat but there was no food here."
 
     if action == "rest":
+        record_memory(agent, "Rested")
         return f"{agent.name} rested."
 
-    # decide() should never pass anything else, but stay safe.
+    # get_decision() should never pass anything else, but stay safe.
+    record_memory(agent, f"Did nothing ({action})")
     return f"{agent.name} did nothing (unknown action: {action})."
+
+
+def record_memory(agent: Any, text: str) -> list[str]:
+    """Append a short event to the agent's memory, keeping only the last N.
+
+    Memory is part of the agent's state (the single source of truth for what it
+    has experienced). We trim in place to the most recent MEMORY_LIMIT entries
+    so the list can never grow unbounded.
+    """
+    agent.memory.append(text)
+    if len(agent.memory) > MEMORY_LIMIT:
+        agent.memory[:] = agent.memory[-MEMORY_LIMIT:]
+    return agent.memory
 
 
 def update_hunger(agent: Any) -> int:
