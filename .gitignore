@@ -1,0 +1,15 @@
+# Secrets / environment
+.env
+
+# Virtual environment
+Jarvis/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Claude Code local config
+.claude/
