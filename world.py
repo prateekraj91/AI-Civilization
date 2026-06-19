@@ -49,6 +49,26 @@ EMPTY = "empty"
 FOOD = "food"
 AGENT = "agent"
 
+# The complete, closed set of actions an agent may take (Day 3). Gemini is only
+# ever allowed to choose one of these; anything else is rejected by decide().
+VALID_ACTIONS = (
+    "move_north",
+    "move_south",
+    "move_east",
+    "move_west",
+    "eat",
+    "rest",
+)
+
+# Movement deltas in (dx, dy). Screen coordinates: y increases downward, so
+# North decreases y. Matches the compass convention documented above.
+_MOVES = {
+    "move_north": (0, -1),
+    "move_south": (0, 1),
+    "move_east": (1, 0),
+    "move_west": (-1, 0),
+}
+
 # The authoritative world state. Keep this as the ONLY mutable global.
 world_state: dict[str, Any] = {
     "turn": 0,           # current simulation tick
@@ -155,3 +175,58 @@ def observe(agent: Any, world_state: dict[str, Any]) -> str:
             lines.append(f"{name}: wall")
 
     return "\n".join(lines)
+
+
+def move_agent(agent: Any, dx: int, dy: int) -> bool:
+    """Move `agent` by (dx, dy), keeping the grid in sync. Returns True if moved.
+
+    Boundary rule: a move that would leave the map is refused and the agent
+    stays put (returns False). When the agent vacates a cell we restore it to
+    FOOD if uneaten food still sits there, otherwise EMPTY — so the grid always
+    reflects world_state. The destination cell becomes AGENT.
+    """
+    x, y = agent.position
+    nx, ny = x + dx, y + dy
+    size = world_state["size"]
+
+    if not (0 <= nx < size and 0 <= ny < size):
+        return False  # would leave the map — stay in place
+
+    # Vacate the old cell. Food is tracked in world_state["food"]; if uneaten
+    # food remains here, the cell reverts to FOOD, else EMPTY.
+    world_state["grid"][y][x] = FOOD if (x, y) in world_state["food"] else EMPTY
+
+    # Occupy the new cell.
+    agent.position = (nx, ny)
+    world_state["grid"][ny][nx] = AGENT
+    return True
+
+
+def execute_action(agent: Any, action: str) -> str:
+    """Apply a validated `action` to the world and return a human-readable result.
+
+    Movement is delegated to move_agent (boundary-safe). `eat` consumes food on
+    the agent's current tile if present. `rest` and unknown actions are no-ops.
+    All world mutation flows through this layer so world_state stays the single
+    source of truth.
+    """
+    if action in _MOVES:
+        dx, dy = _MOVES[action]
+        direction = action.split("_")[1]  # "north" / "south" / ...
+        if move_agent(agent, dx, dy):
+            return f"{agent.name} moved {direction}."
+        return f"{agent.name} tried to move {direction} but hit the map edge and stayed put."
+
+    if action == "eat":
+        if agent.position in world_state["food"]:
+            world_state["food"].remove(agent.position)
+            # The agent is standing on the tile, so the grid cell stays AGENT;
+            # only the food record is removed.
+            return f"{agent.name} ate food at {agent.position}."
+        return f"{agent.name} tried to eat but there was no food here."
+
+    if action == "rest":
+        return f"{agent.name} rested."
+
+    # decide() should never pass anything else, but stay safe.
+    return f"{agent.name} did nothing (unknown action: {action})."
