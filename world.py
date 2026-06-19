@@ -135,15 +135,33 @@ def agent_at(x: int, y: int, state: dict[str, Any] | None = None) -> Any | None:
 
 
 def create_world(size: int = GRID_SIZE) -> list[list[str]]:
-    """Build an empty `size` x `size` grid and store it in world_state.
+    """Build a fresh, empty `size` x `size` world and store it in world_state.
 
-    Resets the grid and food list so the world starts from a clean slate. The
-    grid is the single spatial source of truth; everything else (food, agent
-    placement) is written onto it through the helpers below.
+    This is the simulation's reset point and MUST be fully idempotent: calling it
+    again has to leave world_state exactly as if the process had just started.
+    `world_state` is a module-level singleton, so anything that survives a reset
+    leaks into the next run — most insidiously the agent list, which would
+    otherwise accumulate dead agents from previous simulations and silently
+    inflate counts (turn iteration, food-collision checks, benchmark harnesses).
+
+    Because callers run multiple simulations in one process (test suites, the
+    benchmarking harness, future tournaments), every piece of per-simulation
+    state is cleared here:
+      - agents:  emptied (no carry-over between runs)
+      - grid:    regenerated as an all-EMPTY size x size grid
+      - food:    emptied (re-seeded afterwards via spawn_food)
+      - events:  emptied
+      - turn:    reset to 0
+
+    Lists are cleared in place rather than rebound so any reference already held
+    elsewhere keeps pointing at the live (now-empty) collection.
     """
     world_state["size"] = size
+    world_state["turn"] = 0
     world_state["grid"] = [[EMPTY for _ in range(size)] for _ in range(size)]
-    world_state["food"] = []
+    world_state["agents"].clear()
+    world_state["food"].clear()
+    world_state["events"].clear()
     return world_state["grid"]
 
 
@@ -202,44 +220,80 @@ _NEIGHBOURS: dict[str, tuple[int, int]] = {
 }
 
 
-def observe(agent: Any, state: dict[str, Any]) -> str:
-    """Inspect the four cells adjacent to `agent` and return a readable string.
+def scan(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """Structured perception: what `agent` can sense right now (pure READ).
 
-    Reports the agent's CURRENT tile first, then North/South/East/West. Cells
-    beyond the edge of the map report as "wall".
+    Returns a machine-friendly view the Python strategy executor can act on
+    without parsing strings::
 
-    Two precedence rules make the report trustworthy with multiple agents:
-      1. A neighbour that holds a LIVING agent reports that agent's NAME
-         (Day 7 detection), e.g. "North: Bob".
-      2. Otherwise the cell reads from world_state["food"] — food or empty.
+        {
+          "pos": (x, y),
+          "on_food": bool,                  # food underfoot
+          "cells": {                        # keys: north/south/east/west
+            "north": {
+              "pos": (x, y) | None,         # None when off-map
+              "wall": bool,                 # off the edge of the map
+              "food": bool,                 # uneaten food on this cell
+              "agent": Agent | None,        # living agent standing here
+              "blocked": bool,              # wall OR occupied -> cannot move in
+            }, ...
+          }
+        }
 
-    Cell contents are derived from the food list and the live agent positions,
-    NOT from the grid array, so a stale AGENT mark left on the grid can never
-    leak into perception. This is a pure READ of world_state.
+    Cell contents come from the food list and live agent positions, NOT the grid
+    array, so a stale AGENT mark can never leak into perception. observe() is a
+    thin human-readable wrapper over this.
     """
     x, y = agent.position
     size = state["size"]
     food = set(state["food"])
     occupants = living_agents_by_position(state)
 
-    # The agent stands on its own cell; whether food is underfoot is the signal
-    # it needs to legitimately choose "eat".
-    current_tile = FOOD if (x, y) in food else EMPTY
-
-    lines: list[str] = [f"Current Tile: {current_tile}", ""]
+    cells: dict[str, dict[str, Any]] = {}
     for name, (dx, dy) in _NEIGHBOURS.items():
         nx, ny = x + dx, y + dy
+        key = name.lower()
         if not (0 <= nx < size and 0 <= ny < size):
-            lines.append(f"{name}: wall")
+            cells[key] = {"pos": None, "wall": True, "food": False,
+                          "agent": None, "blocked": True}
             continue
         other = occupants.get((nx, ny))
-        if other is not None and other is not agent:
-            lines.append(f"{name}: {other.name}")
-        elif (nx, ny) in food:
-            lines.append(f"{name}: {FOOD}")
-        else:
-            lines.append(f"{name}: {EMPTY}")
+        if other is agent:
+            other = None
+        cells[key] = {
+            "pos": (nx, ny),
+            "wall": False,
+            "food": (nx, ny) in food,
+            "agent": other,
+            "blocked": other is not None,
+        }
 
+    return {"pos": (x, y), "on_food": (x, y) in food, "cells": cells}
+
+
+def observe(agent: Any, state: dict[str, Any]) -> str:
+    """Human-readable perception string, built on scan() (Day 7 detection).
+
+    Reports the agent's CURRENT tile first, then North/South/East/West. A
+    neighbour holding a living agent reports that agent's NAME (e.g. "North:
+    Bob"); off-map cells report "wall"; otherwise food/empty.
+    """
+    s = scan(agent, state)
+    lines: list[str] = [
+        f"Current Tile: {FOOD if s['on_food'] else EMPTY}",
+        "",
+    ]
+    for name in ("North", "South", "East", "West"):
+        cell = s["cells"][name.lower()]
+        if cell["wall"]:
+            label = "wall"
+        elif cell["agent"] is not None:
+            label = cell["agent"].name
+        elif cell["food"]:
+            label = FOOD
+        else:
+            label = EMPTY
+        lines.append(f"{name}: {label}")
     return "\n".join(lines)
 
 

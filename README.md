@@ -16,9 +16,10 @@ gives them their voice and reasoning.
 The long-term vision is a living world you can observe and intervene in — watching
 agents form relationships, pursue goals, and react to events over many simulation turns.
 
-## Current Status — Day 8 ✅
+## Current Status — Personality & Goal-Driven Behaviour ✅
 
-The simulation now runs a **multi-agent world** end to end:
+The simulation now runs a **multi-agent world** end to end, and the agents
+**behave differently** according to who they are:
 
 - ✅ World layer (`world_state`) as the single source of truth
 - ✅ `Agent` data model (personality, goals, hunger, position, memory, **alive**)
@@ -32,9 +33,30 @@ The simulation now runs a **multi-agent world** end to end:
   (e.g. `North: Bob`)
 - ✅ **Day 8 — Social memory:** sightings become memories like
   `Observed Bob north of me` / `Observed Kira near food`
+- ✅ **Personality impact:** a typed-trait layer (`personality.py`) turns each
+  agent's description into instincts — curious agents explore and rarely rest,
+  cautious agents hug food and conserve, friendly agents close on others,
+  independent agents drift away.
+- ✅ **Goal weights in context:** each agent's weighted goals are sent to the
+  model so it knows what the agent values.
+- ✅ **Memory influence:** the most recent memories are included in the decision
+  context (compact) and shape future plans.
+- ✅ **Strategy caching (cost control):** the LLM is asked for a high-level
+  *strategy* only every N turns; in between, the strategy is executed in pure
+  Python. Typical run: **~80% fewer LLM calls** than deciding every turn.
 
-**Intentionally out of scope so far:** conversations, trust / relationships,
-reputation, beliefs, "God Mode," economy, and professions.
+**Intentionally out of scope:** economies, villages, governments, factions,
+religion, crafting, combat, trading, conversations, trust / reputation, "God
+Mode," and professions.
+
+### How behaviour works (the decision loop)
+
+```
+every N turns   →  llm.get_strategy(prompt)   # personality + goals + memory + senses
+                   → "seek_food" / "explore north" / "approach Bob" / ...
+every turn      →  strategy.choose_action(...) # pure Python, no inference
+                   → personality + hunger + surroundings → one concrete action
+```
 
 ## Architecture Principles
 
@@ -70,10 +92,12 @@ reputation, beliefs, "God Mode," economy, and professions.
 - **Day 6 — Multiple agents (done):** Alex, Bob, Kira share a world and compete for food.
 - **Day 7 — Agent detection (done):** agents perceive neighbours by name.
 - **Day 8 — Social memory (done):** sightings recorded as bounded memories.
-- **Day 9 — Relationships & reputation (next):** turn sightings into per-agent
-  opinions (familiarity, trust, rivalry over contested food).
-- **Day 10 — Conversation (next):** let adjacent agents exchange short messages
-  that influence memory and relationships.
+- **Personality & goal-driven behaviour (done):** typed traits, goals in context,
+  memory influence, and a strategy-caching layer that cuts inference cost ~80%.
+- **Relationships & reputation (next):** turn sightings into per-agent opinions
+  (familiarity, trust, rivalry over contested food) that bias strategy choice.
+- **Conversation (later):** let adjacent agents exchange short messages that
+  influence memory and relationships.
 - **Later:** memory summarization, events & economy, God Mode, rendering.
 
 ## How to Run Locally
@@ -144,10 +168,13 @@ deactivate
 .
 ├── main.py              # Entry point: builds the world, runs the multi-agent loop
 ├── world.py             # world_state (single source of truth): grid, food, hunger,
-│                        #   movement, observation, detection, social + bounded memory
+│                        #   movement, perception (scan/observe), detection, memory
 ├── agents.py            # Agent dataclass (personality, goals, hunger, memory, alive)
-├── llm.py               # Provider-agnostic decision layer (ollama / gemini / random)
-├── test_simulation.py   # Deterministic mechanics tests (no LLM required)
+├── personality.py       # Free-text personality -> typed traits (curiosity, caution, …)
+├── strategy.py          # Strategy model + pure-Python action executor + strategy prompt
+├── llm.py               # Provider-agnostic layer: get_strategy/get_decision
+│                        #   (ollama / gemini / random) + call counters
+├── test_simulation.py   # Deterministic tests (mechanics, personality, strategy)
 ├── requirements.txt     # Python dependencies
 ├── .env                 # API key (gitignored — not committed)
 └── .gitignore

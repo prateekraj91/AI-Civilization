@@ -1,0 +1,354 @@
+"""
+strategy.py
+===========
+
+The lightweight STRATEGY layer (Phase 4) and the PERSONALITY-driven action
+executor (Phase 1). This is where "what the agent wants" becomes "what the agent
+does this turn" — almost always WITHOUT calling the LLM.
+
+The cost problem
+----------------
+Asking the LLM for an action every single turn is expensive and slow. Instead:
+
+    every N turns:   ask the LLM for a high-level STRATEGY (cheap, occasional)
+    every turn:      EXECUTE that strategy in pure Python (free, instant)
+
+A `Strategy` is a tiny cached intent ("seek_food", "explore north", "approach
+Bob"). Between refreshes, `choose_action()` turns the cached strategy — coloured
+by the agent's personality, hunger, and surroundings — into one concrete action
+from world.VALID_ACTIONS. The result is the same closed action vocabulary every
+other layer already speaks, so nothing downstream changes.
+
+How personality shows up (Phase 1)
+----------------------------------
+Personality affects execution at three points:
+  - eat/rest cadence: cautious agents eat early and rest near food; others push on.
+  - the strategy default (when the strategy is vague): friendly → toward agents,
+    independent → away from agents, curious → keep exploring, cautious → toward food.
+  - exploration wander pattern.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import world
+from personality import Personality
+
+# The closed set of high-level strategies the LLM may pick (mirrors the
+# milestone's examples: "Search for food", "Explore north", "Stay near Bob").
+VALID_STRATEGIES: tuple[str, ...] = (
+    "seek_food",   # head toward the nearest food
+    "explore",     # roam, optionally in a named direction (target = direction)
+    "approach",    # move toward a named agent (target = agent name)
+    "avoid",       # keep away from other agents
+    "rest",        # conserve / hold position
+    "wander",      # no strong plan — defer to personality (safe default)
+)
+
+# Compass directions usable as an `explore` target, and their (dx, dy) deltas.
+DIRECTIONS: tuple[str, ...] = ("north", "south", "east", "west")
+_DELTA: dict[str, tuple[int, int]] = {
+    "north": (0, -1),
+    "south": (0, 1),
+    "east": (1, 0),
+    "west": (-1, 0),
+}
+_OPPOSITE: dict[str, str] = {
+    "north": "south", "south": "north", "east": "west", "west": "east",
+}
+
+# Hunger at/above which survival overrides the current strategy and the agent
+# makes a beeline for food regardless of personality.
+SURVIVAL_HUNGER: int = 7
+
+# How near (Manhattan distance) counts as "near food" for cautious resting.
+NEAR_FOOD_RADIUS: int = 2
+
+
+@dataclass
+class Strategy:
+    """A cached high-level intent plus when it was issued.
+
+    `kind` is one of VALID_STRATEGIES. `target` is a direction for "explore" or an
+    agent name for "approach" (empty otherwise). `issued_turn` lets the caller
+    decide when the strategy is stale and a refresh is due.
+    """
+
+    kind: str = "wander"
+    target: str = ""
+    issued_turn: int = -10_000
+
+    def label(self) -> str:
+        """Compact human label, e.g. 'explore north' or 'seek_food'."""
+        return f"{self.kind} {self.target}".strip()
+
+
+# --- Personality caching ---------------------------------------------------
+def get_personality(agent: Any) -> Personality:
+    """Return the agent's parsed Personality, caching it on the agent.
+
+    Parsing is cheap, but caching keeps trait lookups trivial and avoids
+    re-parsing the same string every turn. The cache invalidates itself if the
+    personality text ever changes.
+    """
+    cached = getattr(agent, "_personality_cache", None)
+    if cached is None or cached[0] != agent.personality:
+        cached = (agent.personality, Personality.from_text(agent.personality))
+        agent._personality_cache = cached
+    return cached[1]
+
+
+# --- Geometry / navigation helpers ----------------------------------------
+def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _nearest(pos: tuple[int, int],
+             targets: list[tuple[int, int]]) -> tuple[int, int] | None:
+    """Closest target position to `pos` by Manhattan distance, or None."""
+    return min(targets, key=lambda t: _manhattan(pos, t)) if targets else None
+
+
+def _other_agent_positions(agent: Any, state: dict[str, Any]) -> list[tuple[int, int]]:
+    return [a.position for a in state["agents"] if a.alive and a is not agent]
+
+
+def _agent_position(state: dict[str, Any], name: str) -> tuple[int, int] | None:
+    for a in state["agents"]:
+        if a.alive and a.name == name:
+            return a.position
+    return None
+
+
+def _dirs_toward(src: tuple[int, int], dst: tuple[int, int]) -> list[str]:
+    """Directions that reduce distance to `dst`, strongest axis first."""
+    sx, sy = src
+    dx, dy = dst
+    candidates: list[tuple[str, int]] = []
+    if dx > sx:
+        candidates.append(("east", dx - sx))
+    elif dx < sx:
+        candidates.append(("west", sx - dx))
+    if dy > sy:
+        candidates.append(("south", dy - sy))
+    elif dy < sy:
+        candidates.append(("north", sy - dy))
+    candidates.sort(key=lambda c: -c[1])
+    return [d for d, _ in candidates]
+
+
+def _dirs_away(src: tuple[int, int], frm: tuple[int, int]) -> list[str]:
+    """Directions that increase distance from `frm`."""
+    return [_OPPOSITE[d] for d in _dirs_toward(src, frm)]
+
+
+def _open_dirs(scan: dict[str, Any]) -> list[str]:
+    """Directions the agent could actually move into (no wall, no other agent)."""
+    return [d for d, cell in scan["cells"].items()
+            if not cell["wall"] and not cell["blocked"]]
+
+
+def _adjacent_food_dir(scan: dict[str, Any]) -> str | None:
+    """A direction holding reachable food, if any."""
+    for d, cell in scan["cells"].items():
+        if cell["food"] and not cell["blocked"]:
+            return d
+    return None
+
+
+def _navigate(scan: dict[str, Any], preferred: list[str]) -> str:
+    """Pick the best open move from `preferred`, falling back to any open dir.
+
+    Returns a `move_<dir>` action, or "rest" if completely boxed in.
+    """
+    open_dirs = _open_dirs(scan)
+    for d in preferred:
+        if d in open_dirs:
+            return f"move_{d}"
+    if open_dirs:
+        return f"move_{open_dirs[0]}"
+    return "rest"
+
+
+def _explore(agent: Any, scan: dict[str, Any]) -> str:
+    """Wander to an open cell, rotating direction so the agent actually roams.
+
+    Never rests while a move exists — this is what makes curious/exploratory
+    agents move noticeably more than cautious ones. The rotation seed shifts with
+    hunger so paths meander instead of running dead straight into a wall.
+    """
+    open_dirs = _open_dirs(scan)
+    if not open_dirs:
+        return "rest"
+    order = ("north", "east", "south", "west")
+    start = (agent.hunger + len(agent.name)) % 4
+    for i in range(4):
+        d = order[(start + i) % 4]
+        if d in open_dirs:
+            return f"move_{d}"
+    return f"move_{open_dirs[0]}"
+
+
+def _near_food(pos: tuple[int, int], state: dict[str, Any]) -> bool:
+    return any(_manhattan(pos, f) <= NEAR_FOOD_RADIUS for f in state["food"])
+
+
+# --- The executor ----------------------------------------------------------
+def choose_action(agent: Any, strat: Strategy | None,
+                  state: dict[str, Any]) -> tuple[str, str]:
+    """Decide this turn's concrete action from strategy + personality + senses.
+
+    Returns (action, note) where `action` is a member of world.VALID_ACTIONS and
+    `note` is a short human explanation for logging. Pure Python — no LLM call.
+
+    Priority cascade:
+      1. Eat if standing on worthwhile food.
+      2. Survival: if starving, beeline to the nearest food.
+      3. Cautious rest: a cautious, well-fed agent near food holds position.
+      4. Execute the cached strategy if it yields a concrete move.
+      5. Otherwise fall back to the personality default.
+    """
+    pers = get_personality(agent)
+    s = world.scan(agent, state)
+    pos = s["pos"]
+
+    # 1. Eat what's underfoot when it's worth a turn.
+    if s["on_food"] and agent.hunger >= pers.eat_threshold:
+        return "eat", "standing on food"
+
+    # 2. Survival override — ignore strategy when close to starving.
+    if agent.hunger >= SURVIVAL_HUNGER:
+        d = _adjacent_food_dir(s)
+        if d:
+            return f"move_{d}", "survival: grab adjacent food"
+        nearest = _nearest(pos, state["food"])
+        if nearest:
+            return _navigate(s, _dirs_toward(pos, nearest)), "survival: head to food"
+
+    # 3. Cautious agents conserve near a food cache when not yet hungry.
+    if pers.dominant == "caution" and agent.hunger < pers.comfort and _near_food(pos, state):
+        return "rest", "cautious: resting near food"
+
+    # 4. Execute the cached strategy.
+    acted = _strategy_action(agent, strat, s, state)
+    if acted is not None:
+        return acted
+
+    # 5. Personality-driven default.
+    return _personality_default(agent, s, state, pers)
+
+
+def _strategy_action(agent: Any, strat: Strategy | None, scan: dict[str, Any],
+                     state: dict[str, Any]) -> tuple[str, str] | None:
+    """Translate a concrete strategy into an action, or None to defer.
+
+    Returns None for vague strategies ("wander", or "explore" with no usable
+    direction) so the personality default takes over — this is deliberately how
+    personality keeps shining through even while a strategy is cached.
+    """
+    if strat is None:
+        return None
+    pos = scan["pos"]
+
+    if strat.kind == "seek_food":
+        d = _adjacent_food_dir(scan)
+        if d:
+            return f"move_{d}", "seek_food: step onto food"
+        nearest = _nearest(pos, state["food"])
+        if nearest:
+            return _navigate(scan, _dirs_toward(pos, nearest)), "seek_food: toward nearest food"
+        return None
+
+    if strat.kind == "explore":
+        if strat.target in _DELTA and strat.target in _open_dirs(scan):
+            return f"move_{strat.target}", f"explore {strat.target}"
+        return None  # no/blocked direction -> personality default
+
+    if strat.kind == "approach":
+        target_pos = _agent_position(state, strat.target)
+        if target_pos:
+            return _navigate(scan, _dirs_toward(pos, target_pos)), f"approach {strat.target}"
+        return None
+
+    if strat.kind == "avoid":
+        nearest = _nearest(pos, _other_agent_positions(agent, state))
+        if nearest:
+            return _navigate(scan, _dirs_away(pos, nearest)), "avoid: move away from others"
+        return None
+
+    if strat.kind == "rest":
+        return "rest", "strategy: rest"
+
+    # "wander" (and anything else) defers to personality.
+    return None
+
+
+def _personality_default(agent: Any, scan: dict[str, Any], state: dict[str, Any],
+                         pers: Personality) -> tuple[str, str]:
+    """Default behaviour when the strategy gives no concrete move (Phase 1)."""
+    pos = scan["pos"]
+    dom = pers.dominant
+
+    if dom == "friendliness":
+        nearest = _nearest(pos, _other_agent_positions(agent, state))
+        if nearest:
+            return _navigate(scan, _dirs_toward(pos, nearest)), "friendly: toward nearest agent"
+        return _explore(agent, scan), "friendly: explore (no one around)"
+
+    if dom == "independence":
+        nearest = _nearest(pos, _other_agent_positions(agent, state))
+        if nearest:
+            return _navigate(scan, _dirs_away(pos, nearest)), "independent: away from others"
+        return _explore(agent, scan), "independent: explore alone"
+
+    if dom == "caution":
+        nearest = _nearest(pos, state["food"])
+        if nearest:
+            return _navigate(scan, _dirs_toward(pos, nearest)), "cautious: toward known food"
+        return "rest", "cautious: hold position"
+
+    # curiosity (and the balanced default)
+    return _explore(agent, scan), "curious: explore"
+
+
+# --- Strategy prompt (Phases 2 & 3) ---------------------------------------
+def format_goals(goals: dict[str, int]) -> str:
+    """Goals rendered strongest-first, e.g. 'survive=8, friendship=5, wealth=3'."""
+    if not goals:
+        return "(none)"
+    return ", ".join(f"{k}={v}" for k, v in sorted(goals.items(), key=lambda kv: -kv[1]))
+
+
+def recent_memories(memory: list[str], limit: int) -> list[str]:
+    """The most recent `limit` memories (keeps prompts compact, Phase 3)."""
+    return memory[-limit:]
+
+
+def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6) -> str:
+    """Build the (occasional) strategy prompt: identity + goals + memory + senses.
+
+    Compact by design — it is sent only every N turns. It tells the model who the
+    agent is (personality), WHAT IT WANTS (goals, Phase 2), what it has recently
+    seen (memories, Phase 3), and its surroundings, then asks for ONE strategy.
+    """
+    pers = get_personality(agent)
+    mems = recent_memories(agent.memory, memory_limit)
+    mem_block = "\n".join(f"- {m}" for m in mems) if mems else "- (none yet)"
+    return (
+        f"You are {agent.name}, a {agent.personality} agent on a shared 10x10 grid.\n"
+        f"Dominant trait: {pers.dominant}.\n"
+        f"Hunger: {agent.hunger} (0 full, 10 = death).\n"
+        f"Your goals (higher = more important): {format_goals(agent.goals)}\n\n"
+        f"Recent memories:\n{mem_block}\n\n"
+        f"Surroundings:\n{observation}\n\n"
+        f"Pick ONE high-level strategy to pursue for the next few turns, consistent "
+        f"with your personality and goals, and informed by your memories.\n"
+        f"Valid strategies: {', '.join(VALID_STRATEGIES)}.\n"
+        f"- 'explore' may set target to one of: {', '.join(DIRECTIONS)}.\n"
+        f"- 'approach' must set target to a nearby agent's name.\n\n"
+        f"Respond with ONLY a JSON object, no extra text, shaped exactly:\n"
+        f'{{"strategy": "<one valid strategy>", "target": "<direction/name or empty>", '
+        f'"reason": "<short reason>"}}'
+    )
