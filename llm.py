@@ -9,15 +9,21 @@ owns every detail of talking to an LLM and exposes a single, stable entry point:
 
     get_decision(prompt: str) -> dict   # {"action": ..., "reason": ...}
 
-Swap providers by changing PROVIDER below. "ollama" (local, default) and
-"gemini" (cloud) are both implemented; "openai" is a stub that future days can
-fill in without touching the simulation (main.py / world.py).
+Swap providers by setting the AICIV_PROVIDER environment variable (or editing
+PROVIDER below). Implemented today:
+  - "ollama" (local, default)
+  - "gemini" (cloud)
+  - "random" (offline, no model server) — picks a plausible valid action; used
+    for fast, deterministic-friendly testing and demos when no LLM is available.
+"openai" remains a stub that future days can fill in without touching the
+simulation (main.py / world.py).
 
 Design
 ------
     get_decision()                <- public, provider-agnostic
         -> _get_ollama_decision() <- private, provider-specific (local default)
         -> _gemini_decision()     <- private, provider-specific (cloud)
+        -> _random_decision()     <- private, offline test/demo backend
         -> _openai_decision()     <- (future)
 
 Robustness contract: get_decision ALWAYS returns a usable decision dict. Any
@@ -29,6 +35,7 @@ is a single source of truth for the action vocabulary.
 
 import json
 import os
+import random
 import sys
 from typing import Any
 
@@ -36,9 +43,10 @@ from dotenv import load_dotenv
 
 from world import VALID_ACTIONS
 
-# Active provider. Change this one line to switch backends.
-# Supported today: "ollama" (default, local), "gemini" (cloud). Future: "openai".
-PROVIDER = "ollama"
+# Active provider. Defaults to local Ollama; override without editing code via
+# the AICIV_PROVIDER env var (e.g. AICIV_PROVIDER=random for offline testing).
+# Supported today: "ollama" (local), "gemini" (cloud), "random" (offline).
+PROVIDER = os.getenv("AICIV_PROVIDER", "ollama")
 
 # Ollama-specific config (only consulted when PROVIDER == "ollama").
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -69,6 +77,9 @@ def get_decision(prompt: str) -> dict[str, Any]:
 
     if PROVIDER == "gemini":
         return _gemini_decision(prompt)
+
+    if PROVIDER == "random":
+        return _random_decision(prompt)
 
     # Future providers plug in here without any change to the simulation:
     #   if PROVIDER == "openai":
@@ -102,6 +113,40 @@ def _extract_json(text: str) -> str | None:
     if start == -1 or end == -1 or end < start:
         return None
     return text[start : end + 1]
+
+
+# --- Random provider (offline test/demo) -----------------------------------
+def _random_decision(prompt: str) -> dict[str, Any]:
+    """Pick a plausible valid action without contacting any model.
+
+    Lets the full multi-agent simulation run (and be tested) with no LLM server.
+    It reads two cheap signals out of the prompt to behave sensibly rather than
+    purely at random:
+      - If standing on food ("Current Tile: food"), eat.
+      - If a neighbour line names food, step toward it.
+    Otherwise it wanders in a random direction. The result still flows through
+    _validate_decision, so it honours the same VALID_ACTIONS contract as every
+    other provider.
+    """
+    if "Current Tile: food" in prompt:
+        return _validate_decision({"action": "eat", "reason": "Standing on food."})
+
+    # If an adjacent cell shows food, head that way (greedy survival).
+    direction_to_food = {
+        "North: food": "move_north",
+        "South: food": "move_south",
+        "East: food": "move_east",
+        "West: food": "move_west",
+    }
+    for marker, action in direction_to_food.items():
+        if marker in prompt:
+            return _validate_decision(
+                {"action": action, "reason": "Food spotted in this direction."}
+            )
+
+    move_actions = [a for a in VALID_ACTIONS if a.startswith("move_")]
+    action = random.choice(move_actions + ["rest"])
+    return _validate_decision({"action": action, "reason": "Wandering."})
 
 
 # --- Ollama provider (local, default) --------------------------------------

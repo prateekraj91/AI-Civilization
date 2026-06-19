@@ -15,6 +15,14 @@ Keeping Agent as a dataclass (pure data) makes future features trivial to add:
   - serialization / save-load
   - sending agent state to Gemini as context
   - God Mode mutating agents via world_state
+
+DAY 6 ADDITION
+--------------
+The world now hosts MULTIPLE agents (Alex, Bob, Kira) that share one grid and
+compete for the same food. Each agent carries an explicit `alive` flag so the
+simulation loop can skip the dead without removing them from the world (their
+final state stays inspectable, which matters for logging and future features
+like reputation or post-mortems).
 """
 
 from dataclasses import dataclass, field
@@ -38,6 +46,10 @@ class Agent:
 
     # hunger: 0 = full, higher = hungrier. Simple survival stat for now.
     hunger: int = 0
+
+    # alive: False once the agent has starved (Day 6). The simulation keeps dead
+    # agents in the world for inspection but skips their turns.
+    alive: bool = True
 
     # position: (x, y). No world grid yet (Day 1), but the field exists so the
     # data model is ready for movement without a future schema migration.

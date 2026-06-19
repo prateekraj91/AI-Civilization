@@ -28,6 +28,16 @@ The world now has a 2D grid plus food. The grid is the spatial view; the agent
 position and food coordinates are stored in world_state so they remain the
 single source of truth. No movement, no decisions — agents can only *observe*.
 
+DAY 6-8 ADDITIONS
+-----------------
+- Day 6: the world hosts MULTIPLE agents that share one grid and compete for the
+  same food. Because food lives in the single `world_state["food"]` list, food
+  eaten by one agent vanishes for everyone — competition is automatic.
+- Day 7: observe() now reports adjacent agents BY NAME (e.g. "North: Bob"), so
+  agents are aware of their neighbours.
+- Day 8: record_social_memories() turns that awareness into bounded memory
+  entries ("Observed Bob north of me", "Observed Kira near food").
+
 Coordinate convention
 ---------------------
 Positions are (x, y) where x is the column and y is the row, both 0-indexed.
@@ -74,8 +84,9 @@ HUNGER_MAX = 10        # at this level the agent starves and dies
 HUNGER_PER_TURN = 1    # hunger gained each turn
 EAT_RELIEF = 5         # hunger removed by eating one food (clamped at 0)
 
-# --- Memory constants (Day 5) --------------------------------------------
-MEMORY_LIMIT = 10      # an agent retains only its most recent N memories
+# --- Memory constants (Day 5, raised Day 8) ------------------------------
+MEMORY_LIMIT = 20      # an agent retains only its most recent N memories;
+                       # older memories are discarded oldest-first.
 
 # The authoritative world state. Keep this as the ONLY mutable global.
 world_state: dict[str, Any] = {
@@ -96,6 +107,31 @@ def add_agent(agent: Any) -> None:
     validation, indexing, or God Mode hooks — without changing call sites.
     """
     world_state["agents"].append(agent)
+
+
+def living_agents_by_position(
+    state: dict[str, Any] | None = None,
+) -> dict[tuple[int, int], Any]:
+    """Map each LIVING agent's position to the agent itself.
+
+    The single helper behind both agent detection (Day 7) and movement collision
+    (Day 6): callers ask "who, if anyone, is standing on this cell?" without
+    re-scanning the agent list themselves. Dead agents are excluded — they no
+    longer occupy space. If two living agents ever shared a cell (they should not,
+    because movement forbids it) the later one in the list wins; this is only a
+    lookup convenience, not the source of truth for collisions.
+    """
+    state = world_state if state is None else state
+    return {
+        agent.position: agent
+        for agent in state["agents"]
+        if getattr(agent, "alive", True)
+    }
+
+
+def agent_at(x: int, y: int, state: dict[str, Any] | None = None) -> Any | None:
+    """Return the living agent standing at (x, y), or None if the cell is free."""
+    return living_agents_by_position(state).get((x, y))
 
 
 def create_world(size: int = GRID_SIZE) -> list[list[str]]:
@@ -156,48 +192,104 @@ def spawn_food(count: int = 5) -> list[tuple[int, int]]:
     return world_state["food"]
 
 
-def observe(agent: Any, world_state: dict[str, Any]) -> str:
+# Adjacent-cell offsets shared by observation and social memory, kept in one
+# place so the compass order (N, S, E, W) is defined exactly once.
+_NEIGHBOURS: dict[str, tuple[int, int]] = {
+    "North": (0, -1),
+    "South": (0, 1),
+    "East": (1, 0),
+    "West": (-1, 0),
+}
+
+
+def observe(agent: Any, state: dict[str, Any]) -> str:
     """Inspect the four cells adjacent to `agent` and return a readable string.
 
     Reports the agent's CURRENT tile first, then North/South/East/West. Cells
-    beyond the edge of the map report as "wall". The current tile reads from
-    world_state["food"] (not the grid, which shows AGENT where the agent stands)
-    so the agent knows whether it is actually standing on food — the signal it
-    needs to legitimately choose "eat". This is a pure READ of world_state.
+    beyond the edge of the map report as "wall".
+
+    Two precedence rules make the report trustworthy with multiple agents:
+      1. A neighbour that holds a LIVING agent reports that agent's NAME
+         (Day 7 detection), e.g. "North: Bob".
+      2. Otherwise the cell reads from world_state["food"] — food or empty.
+
+    Cell contents are derived from the food list and the live agent positions,
+    NOT from the grid array, so a stale AGENT mark left on the grid can never
+    leak into perception. This is a pure READ of world_state.
     """
     x, y = agent.position
-    size = world_state["size"]
-    grid = world_state["grid"]
+    size = state["size"]
+    food = set(state["food"])
+    occupants = living_agents_by_position(state)
 
-    # The agent occupies its own cell, so the grid shows AGENT there. The truth
-    # of whether food is underfoot lives in the food list.
-    current_tile = FOOD if (x, y) in world_state["food"] else EMPTY
-
-    # Ordered so output is always N, S, E, W.
-    directions: dict[str, tuple[int, int]] = {
-        "North": (x, y - 1),
-        "South": (x, y + 1),
-        "East": (x + 1, y),
-        "West": (x - 1, y),
-    }
+    # The agent stands on its own cell; whether food is underfoot is the signal
+    # it needs to legitimately choose "eat".
+    current_tile = FOOD if (x, y) in food else EMPTY
 
     lines: list[str] = [f"Current Tile: {current_tile}", ""]
-    for name, (nx, ny) in directions.items():
-        if 0 <= nx < size and 0 <= ny < size:
-            lines.append(f"{name}: {grid[ny][nx]}")
-        else:
+    for name, (dx, dy) in _NEIGHBOURS.items():
+        nx, ny = x + dx, y + dy
+        if not (0 <= nx < size and 0 <= ny < size):
             lines.append(f"{name}: wall")
+            continue
+        other = occupants.get((nx, ny))
+        if other is not None and other is not agent:
+            lines.append(f"{name}: {other.name}")
+        elif (nx, ny) in food:
+            lines.append(f"{name}: {FOOD}")
+        else:
+            lines.append(f"{name}: {EMPTY}")
 
     return "\n".join(lines)
+
+
+def _is_near_food(pos: tuple[int, int], state: dict[str, Any]) -> bool:
+    """True if `pos` is on a food cell or directly adjacent (N/S/E/W) to one."""
+    x, y = pos
+    food = set(state["food"])
+    if (x, y) in food:
+        return True
+    return any((x + dx, y + dy) in food for dx, dy in _NEIGHBOURS.values())
+
+
+def record_social_memories(agent: Any, state: dict[str, Any]) -> list[str]:
+    """Record bounded memories about agents adjacent to `agent` (Day 8).
+
+    For every living agent in an adjacent N/S/E/W cell, store "Observed <name>
+    <direction> of me", and additionally "Observed <name> near food" when that
+    neighbour is on or beside food. Each entry goes through record_memory, so the
+    per-agent cap (MEMORY_LIMIT) and oldest-first eviction apply automatically.
+
+    Returns the names observed this turn (for logging).
+    """
+    x, y = agent.position
+    occupants = living_agents_by_position(state)
+    observed: list[str] = []
+
+    for name, (dx, dy) in _NEIGHBOURS.items():
+        other = occupants.get((x + dx, y + dy))
+        if other is None or other is agent:
+            continue
+        record_memory(agent, f"Observed {other.name} {name.lower()} of me")
+        if _is_near_food(other.position, state):
+            record_memory(agent, f"Observed {other.name} near food")
+        observed.append(other.name)
+
+    return observed
 
 
 def move_agent(agent: Any, dx: int, dy: int) -> bool:
     """Move `agent` by (dx, dy), keeping the grid in sync. Returns True if moved.
 
-    Boundary rule: a move that would leave the map is refused and the agent
-    stays put (returns False). When the agent vacates a cell we restore it to
-    FOOD if uneaten food still sits there, otherwise EMPTY — so the grid always
-    reflects world_state. The destination cell becomes AGENT.
+    Two refusal rules (agent stays put, returns False):
+      - Boundary: a move that would leave the map.
+      - Occupancy (Day 6): another LIVING agent already stands on the target
+        cell. Agents cannot stack, which is what forces them to RACE for a
+        contested food tile instead of piling onto it.
+
+    When the agent vacates a cell we restore it to FOOD if uneaten food still
+    sits there, otherwise EMPTY — so the grid always reflects world_state. The
+    destination cell becomes AGENT.
     """
     x, y = agent.position
     nx, ny = x + dx, y + dy
@@ -205,6 +297,10 @@ def move_agent(agent: Any, dx: int, dy: int) -> bool:
 
     if not (0 <= nx < size and 0 <= ny < size):
         return False  # would leave the map — stay in place
+
+    blocker = agent_at(nx, ny)
+    if blocker is not None and blocker is not agent:
+        return False  # cell taken by another living agent — stay in place
 
     # Vacate the old cell. Food is tracked in world_state["food"]; if uneaten
     # food remains here, the cell reverts to FOOD, else EMPTY.
@@ -231,7 +327,10 @@ def execute_action(agent: Any, action: str) -> str:
             record_memory(agent, f"Moved {direction}")
             return f"{agent.name} moved {direction}."
         record_memory(agent, f"Blocked moving {direction}")
-        return f"{agent.name} tried to move {direction} but hit the map edge and stayed put."
+        return (
+            f"{agent.name} tried to move {direction} but was blocked "
+            f"(map edge or another agent) and stayed put."
+        )
 
     if action == "eat":
         # The agent may only eat what is on its CURRENT tile. The grid cell
@@ -279,3 +378,36 @@ def update_hunger(agent: Any) -> int:
 def is_dead(agent: Any) -> bool:
     """True if the agent has starved (hunger has reached HUNGER_MAX)."""
     return agent.hunger >= HUNGER_MAX
+
+
+def mark_dead(agent: Any) -> None:
+    """Flag `agent` as dead and free the cell it occupied (Day 6).
+
+    The agent stays in world_state["agents"] so its final state remains
+    inspectable, but its grid cell reverts to FOOD (if uneaten food sits there)
+    or EMPTY so living agents can move through it and detection no longer sees it.
+    """
+    agent.alive = False
+    x, y = agent.position
+    world_state["grid"][y][x] = FOOD if (x, y) in world_state["food"] else EMPTY
+
+
+def render(state: dict[str, Any] | None = None) -> str:
+    """Return an ASCII snapshot of the world for logging (Day 6).
+
+    Legend: '.' empty, '*' food, and each living agent's first initial on its
+    cell. Built from the food list and live agent positions (not the grid array)
+    so the picture always matches the authoritative state.
+    """
+    state = world_state if state is None else state
+    size = state["size"]
+    cells = [["." for _ in range(size)] for _ in range(size)]
+
+    for fx, fy in state["food"]:
+        cells[fy][fx] = "*"
+    for agent in state["agents"]:
+        if getattr(agent, "alive", True):
+            ax, ay = agent.position
+            cells[ay][ax] = agent.name[0]
+
+    return "\n".join(" ".join(row) for row in cells)

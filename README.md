@@ -1,8 +1,9 @@
 # AI Civilization
 
 A sandbox simulation where AI-driven agents inhabit a shared world, perceive their
-surroundings, and act according to their personalities and goals — powered by Google's
-Gemini models.
+surroundings, and act according to their personalities and goals — powered by a local
+LLM via Ollama (default), with Google Gemini and an offline backend also supported
+behind one provider-agnostic interface.
 
 ## What is AI Civilization?
 
@@ -15,17 +16,25 @@ gives them their voice and reasoning.
 The long-term vision is a living world you can observe and intervene in — watching
 agents form relationships, pursue goals, and react to events over many simulation turns.
 
-## Current Status — Day 1 ✅
+## Current Status — Day 8 ✅
 
-Day 1 establishes the foundation and proves the end-to-end pipeline works:
+The simulation now runs a **multi-agent world** end to end:
 
 - ✅ World layer (`world_state`) as the single source of truth
-- ✅ `Agent` data model (personality, goals, hunger, position, inventory, memory)
-- ✅ First agent, **Alex**, registered through the world layer
-- ✅ Verified Gemini integration: the agent introduces itself via a live API call
+- ✅ `Agent` data model (personality, goals, hunger, position, memory, **alive**)
+- ✅ 10×10 grid, movement, food, and a per-turn **hunger / starvation** system
+- ✅ Provider-agnostic LLM layer: **Ollama** (default, local), **Gemini** (cloud),
+  **random** (offline), with a graceful `rest` fallback that never crashes
+- ✅ Bounded per-agent **memory** (last 20 events, oldest discarded)
+- ✅ **Day 6 — Multiple agents:** Alex, Bob, Kira share one world, take turns
+  sequentially, and compete for the same food (eaten food vanishes for everyone)
+- ✅ **Day 7 — Agent detection:** observation reports adjacent agents by name
+  (e.g. `North: Bob`)
+- ✅ **Day 8 — Social memory:** sightings become memories like
+  `Observed Bob north of me` / `Observed Kira near food`
 
-**Intentionally out of scope for Day 1:** world grid, movement, memory summarization,
-multiple interacting agents, rendering, and "God Mode."
+**Intentionally out of scope so far:** conversations, trust / relationships,
+reputation, beliefs, "God Mode," economy, and professions.
 
 ## Architecture Principles
 
@@ -54,14 +63,18 @@ multiple interacting agents, rendering, and "God Mode."
 
 ## Roadmap (V1 Milestones)
 
-- **Day 1 — Foundation (done):** world state, agent model, Gemini handshake.
-- **World grid & movement:** give the world a 2D space and let agents move through it.
-- **Perception & decision loop:** agents observe nearby state and choose actions each turn.
-- **Multiple agents & interaction:** several agents coexisting and influencing each other.
-- **Memory summarization:** compress agent memory so context stays manageable over time.
-- **Events & economy:** a chronological event log driving emergent dynamics.
-- **God Mode:** controlled mutation of `world_state` to intervene in the simulation.
-- **Rendering:** a read-only view to visualize the world as it evolves.
+- **Day 1 — Foundation (done):** world state, agent model, LLM handshake.
+- **Day 2-3 — Grid, perception & decisions (done):** 2D world, observation, action loop.
+- **Day 4-5 — Survival & memory (done):** hunger/starvation, bounded per-agent memory.
+- **Day 5.5 — Provider abstraction (done):** Ollama/Gemini behind one interface.
+- **Day 6 — Multiple agents (done):** Alex, Bob, Kira share a world and compete for food.
+- **Day 7 — Agent detection (done):** agents perceive neighbours by name.
+- **Day 8 — Social memory (done):** sightings recorded as bounded memories.
+- **Day 9 — Relationships & reputation (next):** turn sightings into per-agent
+  opinions (familiarity, trust, rivalry over contested food).
+- **Day 10 — Conversation (next):** let adjacent agents exchange short messages
+  that influence memory and relationships.
+- **Later:** memory summarization, events & economy, God Mode, rendering.
 
 ## How to Run Locally
 
@@ -93,12 +106,32 @@ echo "GEMINI_API_KEY=your_key_here" > .env
 ```
 
 ### 5. Run the simulation
+
+Default (local Ollama — requires `ollama serve` running with the configured model):
 ```bash
 python main.py
 ```
 
-You should see Alex registered in the world and a short self-introduction generated live
-by Gemini.
+No model server handy? Run fully offline with the built-in `random` provider:
+```bash
+AICIV_PROVIDER=random python main.py
+```
+
+Use the cloud Gemini provider instead:
+```bash
+AICIV_PROVIDER=gemini python main.py
+```
+
+You should see Alex, Bob, and Kira take turns on the shared grid: a per-turn map,
+each agent's observation (including neighbours by name), its decision, and the
+result. A final summary lists survivors, casualties, and every agent's memory.
+
+### Run the tests
+```bash
+python test_simulation.py
+```
+Deterministic checks (no LLM needed) for detection, social memory, the memory
+bound, food competition, movement collision, and starvation.
 
 ### Deactivating the environment
 ```bash
@@ -109,10 +142,13 @@ deactivate
 
 ```
 .
-├── main.py            # Day 1 entry point: builds the world, creates Alex, tests Gemini
-├── world.py           # world_state (single source of truth) + add_agent()
-├── agents.py          # Agent dataclass (personality, goals, memory, ...)
-├── requirements.txt   # Python dependencies
-├── .env               # API key (gitignored — not committed)
+├── main.py              # Entry point: builds the world, runs the multi-agent loop
+├── world.py             # world_state (single source of truth): grid, food, hunger,
+│                        #   movement, observation, detection, social + bounded memory
+├── agents.py            # Agent dataclass (personality, goals, hunger, memory, alive)
+├── llm.py               # Provider-agnostic decision layer (ollama / gemini / random)
+├── test_simulation.py   # Deterministic mechanics tests (no LLM required)
+├── requirements.txt     # Python dependencies
+├── .env                 # API key (gitignored — not committed)
 └── .gitignore
 ```
