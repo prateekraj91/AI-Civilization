@@ -65,8 +65,14 @@ FALLBACK_DECISION = {
 FALLBACK_STRATEGY = {
     "strategy": "wander",
     "target": "",
+    "message": "",
+    "reaction": "",
     "reason": "Invalid or unavailable LLM response; defaulting to wander.",
 }
+
+# Reactions an agent may have to a received message (Day 8). Kept here so the
+# vocabulary has one home, mirroring VALID_ACTIONS / VALID_STRATEGIES.
+VALID_REACTIONS = ("reply", "ignore", "hostile")
 
 # Cached Gemini client so we don't rebuild it on every call.
 _gemini_client: Any = None
@@ -138,7 +144,17 @@ def _validate_strategy(data: Any) -> dict[str, Any]:
     if kind not in VALID_STRATEGIES:
         return dict(FALLBACK_STRATEGY)
     target = str(data.get("target", "")).strip()
-    return {"strategy": kind, "target": target, "reason": str(data.get("reason", ""))}
+    message = str(data.get("message", "")).strip()
+    reaction = str(data.get("reaction", "")).strip().lower()
+    if reaction not in VALID_REACTIONS:
+        reaction = ""  # unknown/blank -> recipient falls back to a personality rule
+    return {
+        "strategy": kind,
+        "target": target,
+        "message": message,
+        "reaction": reaction,
+        "reason": str(data.get("reason", "")),
+    }
 
 
 def _extract_json(text: str) -> str | None:
@@ -210,8 +226,13 @@ def _random_strategy(prompt: str) -> dict[str, Any]:
         ["wander", "wander", "seek_food", "seek_food", "explore", "rest"]
     )
     target = random.choice(DIRECTIONS) if kind == "explore" else ""
+    # A random reaction is included so a recipient on a refresh turn exercises the
+    # LLM-driven reaction path; it is only consulted when the agent actually has
+    # an incoming message that turn.
+    reaction = random.choice(["", "reply", "ignore", "hostile"])
     return _validate_strategy(
-        {"strategy": kind, "target": target, "reason": "Random strategy."}
+        {"strategy": kind, "target": target, "message": "",
+         "reaction": reaction, "reason": "Random strategy."}
     )
 
 

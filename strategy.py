@@ -43,6 +43,7 @@ VALID_STRATEGIES: tuple[str, ...] = (
     "explore",     # roam, optionally in a named direction (target = direction)
     "approach",    # move toward a named agent (target = agent name)
     "avoid",       # keep away from other agents
+    "talk",        # talk to a named agent (target = agent name); message optional
     "rest",        # conserve / hold position
     "wander",      # no strong plan — defer to personality (safe default)
 )
@@ -72,16 +73,25 @@ class Strategy:
     """A cached high-level intent plus when it was issued.
 
     `kind` is one of VALID_STRATEGIES. `target` is a direction for "explore" or an
-    agent name for "approach" (empty otherwise). `issued_turn` lets the caller
-    decide when the strategy is stale and a refresh is due.
+    agent name for "approach"/"talk" (empty otherwise). `issued_turn` lets the
+    caller decide when the strategy is stale and a refresh is due.
+
+    Two optional fields ride along from the SAME strategy LLM call so that talking
+    never needs an extra inference (Day 8):
+      - `message`:  what to say if this strategy is "talk" (used only on the
+                    refresh turn that produced it; non-refresh turns template it).
+      - `reaction`: how to react to an incoming message this turn — one of
+                    reply/ignore/hostile, or "" to fall back to a personality rule.
     """
 
     kind: str = "wander"
     target: str = ""
+    message: str = ""
+    reaction: str = ""
     issued_turn: int = -10_000
 
     def label(self) -> str:
-        """Compact human label, e.g. 'explore north' or 'seek_food'."""
+        """Compact human label, e.g. 'explore north' or 'talk Bob'."""
         return f"{self.kind} {self.target}".strip()
 
 
@@ -156,6 +166,14 @@ def _adjacent_food_dir(scan: dict[str, Any]) -> str | None:
         if cell["food"] and not cell["blocked"]:
             return d
     return None
+
+
+def _adjacent_agent_names(scan: dict[str, Any]) -> list[str]:
+    """Names of living agents in adjacent cells (sorted for determinism)."""
+    return sorted(
+        cell["agent"].name for cell in scan["cells"].values()
+        if cell["agent"] is not None
+    )
 
 
 def _navigate(scan: dict[str, Any], preferred: list[str]) -> str:
@@ -278,6 +296,18 @@ def _strategy_action(agent: Any, strat: Strategy | None, scan: dict[str, Any],
             return _navigate(scan, _dirs_away(pos, nearest)), "avoid: move away from others"
         return None
 
+    if strat.kind == "talk":
+        target = strat.target
+        if target and target in _adjacent_agent_names(scan):
+            return f"talk_to_{target}", f"talk to {target}"
+        target_pos = _agent_position(state, target)
+        if target_pos:  # alive but out of range — close the distance first
+            return _navigate(scan, _dirs_toward(pos, target_pos)), f"approach {target} to talk"
+        # target missing/dead — still emit talk so it logs the documented no-op
+        if target:
+            return f"talk_to_{target}", f"talk to {target} (no one there)"
+        return None
+
     if strat.kind == "rest":
         return "rest", "strategy: rest"
 
@@ -292,6 +322,9 @@ def _personality_default(agent: Any, scan: dict[str, Any], state: dict[str, Any]
     dom = pers.dominant
 
     if dom == "friendliness":
+        adjacent = _adjacent_agent_names(scan)
+        if adjacent:  # someone in reach — say hello (templated, no LLM call)
+            return f"talk_to_{adjacent[0]}", f"friendly: greet {adjacent[0]}"
         nearest = _nearest(pos, _other_agent_positions(agent, state))
         if nearest:
             return _navigate(scan, _dirs_toward(pos, nearest)), "friendly: toward nearest agent"
@@ -326,29 +359,48 @@ def recent_memories(memory: list[str], limit: int) -> list[str]:
     return memory[-limit:]
 
 
-def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6) -> str:
+def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6,
+                          incoming: list[str] | None = None) -> str:
     """Build the (occasional) strategy prompt: identity + goals + memory + senses.
 
     Compact by design — it is sent only every N turns. It tells the model who the
     agent is (personality), WHAT IT WANTS (goals, Phase 2), what it has recently
-    seen (memories, Phase 3), and its surroundings, then asks for ONE strategy.
+    seen (memories, Phase 3), any messages just received (Day 8), and its
+    surroundings, then asks for ONE strategy.
+
+    The schema carries `message` (what to say if talking) and `reaction` (how to
+    answer a received message) so a "talk" or a reply costs NO extra inference —
+    they ride along with this single strategy call.
     """
     pers = get_personality(agent)
     mems = recent_memories(agent.memory, memory_limit)
     mem_block = "\n".join(f"- {m}" for m in mems) if mems else "- (none yet)"
+
+    inbox_block = ""
+    if incoming:
+        lines = "\n".join(f"- You received from {m}" for m in incoming)
+        inbox_block = (
+            f"\nMessages you just received (decide a reaction):\n{lines}\n"
+        )
+
     return (
         f"You are {agent.name}, a {agent.personality} agent on a shared 10x10 grid.\n"
         f"Dominant trait: {pers.dominant}.\n"
         f"Hunger: {agent.hunger} (0 full, 10 = death).\n"
         f"Your goals (higher = more important): {format_goals(agent.goals)}\n\n"
-        f"Recent memories:\n{mem_block}\n\n"
+        f"Recent memories:\n{mem_block}\n"
+        f"{inbox_block}\n"
         f"Surroundings:\n{observation}\n\n"
         f"Pick ONE high-level strategy to pursue for the next few turns, consistent "
         f"with your personality and goals, and informed by your memories.\n"
         f"Valid strategies: {', '.join(VALID_STRATEGIES)}.\n"
         f"- 'explore' may set target to one of: {', '.join(DIRECTIONS)}.\n"
-        f"- 'approach' must set target to a nearby agent's name.\n\n"
+        f"- 'approach'/'talk' must set target to a nearby agent's name.\n"
+        f"- If 'talk', also set message to what you say.\n"
+        f"- If you received a message, set reaction to one of: reply, ignore, hostile.\n\n"
         f"Respond with ONLY a JSON object, no extra text, shaped exactly:\n"
         f'{{"strategy": "<one valid strategy>", "target": "<direction/name or empty>", '
+        f'"message": "<what to say if talking, else empty>", '
+        f'"reaction": "<reply|ignore|hostile if you got a message, else empty>", '
         f'"reason": "<short reason>"}}'
     )

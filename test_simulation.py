@@ -13,6 +13,7 @@ Run:  ./Jarvis/bin/python test_simulation.py
 import contextlib
 import io
 
+import conversation
 import llm
 import main
 from agents import Agent
@@ -328,6 +329,163 @@ def test_full_simulation_runs_clean() -> None:
     print("PASS test_full_simulation_runs_clean")
 
 
+# --- Conversation / talk (Day 8) ------------------------------------------
+def test_talk_delivers_next_turn_and_reaction() -> None:
+    """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "cautious and territorial", (5, 4))  # north of Alex, adjacent
+    strat = Strategy(kind="talk", target="Bob", issued_turn=1)
+
+    # Turn 1: Alex talks. Message lands in Bob's inbox, stamped turn 1.
+    res = conversation.handle_talk(alex, "talk_to_Bob", strat, False, 1, world_state)
+    assert "talked to Bob" in res
+    assert len(bob.inbox) == 1 and bob.inbox[0]["from"] == "Alex" and bob.inbox[0]["turn"] == 1
+    assert any("I told Bob" in m for m in alex.memory)
+
+    # Same tick (turn 1): not yet deliverable — stays in the inbox.
+    assert conversation.process_inbox(bob, False, "", 1, world_state) == []
+    assert len(bob.inbox) == 1
+
+    # Next turn (turn 2): Bob consumes it. Cautious → ignore.
+    outcomes = conversation.process_inbox(bob, False, "", 2, world_state)
+    assert outcomes == [("ignore", "Alex")], outcomes
+    assert bob.inbox == []
+    assert any("Alex said to me" in m and "ignored" in m for m in bob.memory)
+    print("PASS test_talk_delivers_next_turn_and_reaction")
+
+
+def test_talk_out_of_range_is_noop() -> None:
+    """Talking to a non-adjacent agent logs the documented no-op and delivers nothing."""
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "cautious", (0, 0))  # far away
+    res = conversation.handle_talk(alex, "talk_to_Bob", Strategy(kind="talk", target="Bob"),
+                                   False, 1, world_state)
+    assert "no one was there" in res
+    assert bob.inbox == []
+    assert any("no one was there" in m for m in alex.memory)
+    print("PASS test_talk_out_of_range_is_noop")
+
+
+def test_reaction_is_personality_driven() -> None:
+    """Off a refresh turn, the reaction is a deterministic personality rule."""
+    assert conversation.deterministic_reaction(Agent("a", "friendly and outgoing")) == "reply"
+    assert conversation.deterministic_reaction(Agent("b", "cautious and careful")) == "ignore"
+    assert conversation.deterministic_reaction(Agent("c", "independent and competitive")) == "hostile"
+    print("PASS test_reaction_is_personality_driven")
+
+
+def test_reply_does_not_chain() -> None:
+    """A reply is acknowledged but never triggers another reply (bounded exchange)."""
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "friendly and outgoing", (5, 4))
+
+    conversation.handle_talk(alex, "talk_to_Bob", Strategy(kind="talk", target="Bob"),
+                             False, 1, world_state)
+    # Bob (friendly) replies on turn 2 → a reply lands in Alex's inbox.
+    conversation.process_inbox(bob, False, "", 2, world_state)
+    assert len(alex.inbox) == 1 and alex.inbox[0]["reply"] is True
+
+    # Alex consumes the reply on turn 3 → just hears it; no reply back to Bob.
+    conversation.process_inbox(alex, False, "", 3, world_state)
+    assert bob.inbox == []
+    assert any("replied:" in m for m in alex.memory)
+    print("PASS test_reply_does_not_chain")
+
+
+def test_talk_message_source_refresh_vs_template() -> None:
+    """The LLM message is used only on its refresh turn; otherwise it's templated."""
+    _fresh_world()
+    alex = _agent("Alex", "friendly", (5, 5))
+    bob = _agent("Bob", "cautious", (5, 4))
+    strat = Strategy(kind="talk", target="Bob", message="LLM-CRAFTED HELLO", issued_turn=7)
+
+    # Refresh turn that produced the message → use it verbatim (no extra call).
+    conversation.handle_talk(alex, "talk_to_Bob", strat, True, 7, world_state)
+    assert bob.inbox[-1]["text"] == "LLM-CRAFTED HELLO"
+
+    # A later, Python-driven turn → templated, never a new LLM call.
+    bob.inbox.clear()
+    conversation.handle_talk(alex, "talk_to_Bob", strat, False, 8, world_state)
+    assert bob.inbox[-1]["text"] != "LLM-CRAFTED HELLO"
+    print("PASS test_talk_message_source_refresh_vs_template")
+
+
+def test_llm_message_path_end_to_end() -> None:
+    """A stubbed provider's talk message flows through the real LLM path.
+
+    Routes a fake response through get_strategy -> _raw_query -> _validate_strategy
+    (PROVIDER != 'random'), then drives real refresh turns so the Strategy is
+    BUILT from the provider, not pre-set. Proves the sentinel message is delivered
+    verbatim, remembered by the sender, and that a recipient whose refresh-turn
+    reaction is 'reply' returns a message to the sender.
+    """
+    def fake_raw_query(prompt):
+        if "You are Alex" in prompt:
+            return {"strategy": "talk", "target": "Bob", "message": "SENTINEL_HELLO",
+                    "reaction": "", "reason": "test"}
+        if "You are Bob" in prompt:
+            return {"strategy": "wander", "target": "", "message": "",
+                    "reaction": "reply", "reason": "test"}
+        return {"strategy": "wander", "target": "", "message": "", "reaction": "", "reason": "x"}
+
+    saved_provider, saved_raw = llm.PROVIDER, llm._raw_query
+    saved_interval = main.STRATEGY_INTERVAL
+    try:
+        llm.PROVIDER = "stub"           # anything != 'random' uses _raw_query
+        llm._raw_query = fake_raw_query
+        main.STRATEGY_INTERVAL = 1       # make every turn a refresh turn
+
+        _fresh_world()
+        alex = _agent("Alex", "friendly and outgoing", (5, 5))
+        bob = _agent("Bob", "cautious and territorial", (5, 4))
+        strategies, survived, counters = {}, {"Alex": 0, "Bob": 0}, {"agent_turns": 0}
+
+        bob_inbox_t1 = None
+        for turn in (1, 2, 3):
+            world_state["turn"] = turn
+            for ag in (alex, bob):
+                main.run_agent_turn(ag, turn, strategies, survived, counters)
+            if turn == 1:
+                bob_inbox_t1 = [dict(e) for e in bob.inbox]
+    finally:
+        llm.PROVIDER, llm._raw_query = saved_provider, saved_raw
+        main.STRATEGY_INTERVAL = saved_interval
+
+    # (1) the LLM message was delivered verbatim, not a template
+    assert strategies["Alex"].message == "SENTINEL_HELLO"
+    assert bob_inbox_t1 and bob_inbox_t1[0]["text"] == "SENTINEL_HELLO"
+    # (2) the sender's memory records the LLM message
+    assert any("I told Bob: SENTINEL_HELLO" in m for m in alex.memory)
+    # (3) a refresh-turn reaction='reply' returned a message to the sender
+    assert any('received from Alex: "SENTINEL_HELLO" -> reply' in e
+               for e in world_state["events"])
+    assert any("replied:" in m for m in alex.memory)
+    print("PASS test_llm_message_path_end_to_end")
+
+
+def test_talk_adds_no_llm_calls() -> None:
+    """A full run with conversation still makes zero per-turn LLM calls beyond refresh."""
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.main()
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+
+    n_agents = len(main.AGENT_SPECS)
+    max_refreshes = -(-main.NUM_TURNS // main.STRATEGY_INTERVAL)  # ceil
+    assert stats["decision"] == 0, stats            # no legacy per-turn calls
+    assert stats["strategy"] <= max_refreshes * n_agents, stats  # talk added none
+    print(f"PASS test_talk_adds_no_llm_calls "
+          f"(strategy={stats['strategy']}, decision={stats['decision']})")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -346,6 +504,13 @@ def main_runner() -> None:
         test_strategy_validation_fallback,
         test_strategy_caching_reduces_llm_calls,
         test_full_simulation_runs_clean,
+        test_talk_delivers_next_turn_and_reaction,
+        test_talk_out_of_range_is_noop,
+        test_reaction_is_personality_driven,
+        test_reply_does_not_chain,
+        test_talk_message_source_refresh_vs_template,
+        test_llm_message_path_end_to_end,
+        test_talk_adds_no_llm_calls,
     ]
     for t in tests:
         t()

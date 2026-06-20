@@ -61,3 +61,9 @@ class Agent:
     # memory: append-only log of what the agent has experienced/observed.
     # No summarization yet (explicitly out of scope for Day 1).
     memory: list[Any] = field(default_factory=list)
+
+    # inbox: pending messages from other agents (Day 8 "talk"). Each entry is a
+    # dict {"from", "text", "turn", "reply"}. A message sent on turn T is only
+    # consumed on a LATER turn, so it lands in the recipient's NEXT decision
+    # context (never the same tick). Cleared once consumed.
+    inbox: list[Any] = field(default_factory=list)

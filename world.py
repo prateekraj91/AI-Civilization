@@ -271,6 +271,21 @@ def scan(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     return {"pos": (x, y), "on_food": (x, y) in food, "cells": cells}
 
 
+def adjacent_agents(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
+    """Map name -> Agent for every LIVING agent in an adjacent N/S/E/W cell.
+
+    The shared "who can I reach right now?" helper behind both detection and the
+    talk action's perception-range rule. Built from scan() so there is no string
+    parsing and no second notion of adjacency.
+    """
+    s = scan(agent, state)
+    return {
+        cell["agent"].name: cell["agent"]
+        for cell in s["cells"].values()
+        if cell["agent"] is not None
+    }
+
+
 def observe(agent: Any, state: dict[str, Any]) -> str:
     """Human-readable perception string, built on scan() (Day 7 detection).
 

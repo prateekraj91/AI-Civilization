@@ -26,6 +26,7 @@ religion, crafting, combat, trading, conversations, God Mode.
 
 import os
 
+import conversation
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
 from strategy import (
@@ -144,26 +145,38 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     survived[agent.name] = turn
     counters["agent_turns"] += 1
 
-    # Strategy caching (Phase 4): only hit the LLM when due for a refresh.
+    # Strategy caching (Phase 4): only hit the LLM when due for a refresh. Any
+    # message just received rides into this single call so a reply/reaction needs
+    # NO extra inference (Day 8).
     strat = strategies.get(agent.name)
     refresh_due = strat is None or (turn - strat.issued_turn) >= STRATEGY_INTERVAL
+    incoming = conversation.pending_incoming(agent, turn)
     observation = observe(agent, world_state) if (refresh_due or VERBOSE_MODE) else ""
 
     refreshed = False
     if refresh_due:
-        data = get_strategy(build_strategy_prompt(agent, observation))
+        data = get_strategy(build_strategy_prompt(agent, observation, incoming=incoming))
         strat = Strategy(kind=data["strategy"], target=data.get("target", ""),
+                         message=data.get("message", ""), reaction=data.get("reaction", ""),
                          issued_turn=turn)
         strategies[agent.name] = strat
         record_memory(agent, f"New strategy: {strat.label()}")
         refreshed = True
 
+    # Consume any delivered messages and react (deterministic off-refresh, the
+    # strategy call's reaction on a refresh turn). No new LLM call either way.
+    conversation.process_inbox(agent, refreshed, strat.reaction, turn, world_state)
+
     # Detection + social memory still happen every turn (Days 7-8 preserved).
     observed = record_social_memories(agent, world_state)
 
-    # Execute the cached strategy in Python (no inference).
+    # Execute the cached strategy in Python (no inference). A talk action is
+    # delivered via the conversation layer; everything else mutates the world.
     action, note = choose_action(agent, strat, world_state)
-    result = execute_action(agent, action)
+    if action.startswith("talk_to_"):
+        result = conversation.handle_talk(agent, action, strat, refreshed, turn, world_state)
+    else:
+        result = execute_action(agent, action)
 
     if VERBOSE_MODE:
         log_agent_turn(agent, strat, refreshed, observation, observed, action, note, result)
