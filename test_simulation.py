@@ -18,7 +18,7 @@ import llm
 import main
 from agents import Agent
 from personality import Personality
-from strategy import Strategy, choose_action, get_personality
+from strategy import Strategy, build_strategy_prompt, choose_action, get_personality
 from world import (
     MEMORY_LIMIT,
     create_world,
@@ -466,6 +466,50 @@ def test_llm_message_path_end_to_end() -> None:
     print("PASS test_llm_message_path_end_to_end")
 
 
+def test_trust_hostile_drops_3_friendly_raises_1() -> None:
+    """Day 9: a hostile message drops trust by exactly 3; a friendly one raises by 1."""
+    # --- Friendly exchange: +1 each direction ---
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "friendly and outgoing", (5, 4))
+    conversation.handle_talk(alex, "talk_to_Bob", Strategy(kind="talk", target="Bob"),
+                             False, 1, world_state)
+    # Bob (friendly) receives the talk next turn -> reply -> +1 toward Alex.
+    conversation.process_inbox(bob, False, "", 2, world_state)
+    assert bob.relationships["Alex"]["trust"] == 1, bob.relationships
+    # Alex receives Bob's reply -> +1 toward Bob.
+    conversation.process_inbox(alex, False, "", 3, world_state)
+    assert alex.relationships["Bob"]["trust"] == 1, alex.relationships
+
+    # --- Hostile reaction: sender loses exactly 3 ---
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    kira = _agent("Kira", "independent and competitive", (5, 4))
+    conversation.handle_talk(alex, "talk_to_Kira", Strategy(kind="talk", target="Kira"),
+                             False, 1, world_state)
+    # Kira (independent) reacts hostile next turn -> Alex's trust in Kira -= 3.
+    conversation.process_inbox(kira, False, "", 2, world_state)
+    assert alex.relationships["Kira"]["trust"] == -3, alex.relationships
+    # Being hostile earns Kira no trust gain in Alex.
+    assert kira.relationships.get("Alex", {}).get("trust", 0) == 0, kira.relationships
+    print("PASS test_trust_hostile_drops_3_friendly_raises_1")
+
+
+def test_trust_summary_buckets_and_prompt() -> None:
+    """trust_summary buckets values and the digest reaches the strategy prompt."""
+    import trust
+    _fresh_world()
+    alex = _agent("Alex", "friendly", (5, 5))
+    alex.relationships["Bob"] = {"trust": 2, "interactions": 3}
+    alex.relationships["Kira"] = {"trust": -3, "interactions": 2}
+    summary = trust.trust_summary(alex)
+    assert "Bob: +2 (high)" in summary, summary
+    assert "Kira: -3 (low)" in summary, summary
+    prompt = build_strategy_prompt(alex, "Current Tile: empty")
+    assert "Your trust —" in prompt and "Kira: -3 (low)" in prompt
+    print("PASS test_trust_summary_buckets_and_prompt")
+
+
 def test_talk_adds_no_llm_calls() -> None:
     """A full run with conversation still makes zero per-turn LLM calls beyond refresh."""
     saved = llm.PROVIDER
@@ -510,6 +554,8 @@ def main_runner() -> None:
         test_reply_does_not_chain,
         test_talk_message_source_refresh_vs_template,
         test_llm_message_path_end_to_end,
+        test_trust_hostile_drops_3_friendly_raises_1,
+        test_trust_summary_buckets_and_prompt,
         test_talk_adds_no_llm_calls,
     ]
     for t in tests:

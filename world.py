@@ -82,7 +82,10 @@ _MOVES = {
 # --- Hunger constants (Day 4) --------------------------------------------
 HUNGER_MAX = 10        # at this level the agent starves and dies
 HUNGER_PER_TURN = 1    # hunger gained each turn
-EAT_RELIEF = 5         # hunger removed by eating one food (clamped at 0)
+EAT_RELIEF = 7         # hunger removed by eating one food (clamped at 0)
+                       # Day 9 rebalance: a meal lasts longer so agents spend
+                       # fewer turns scrambling and more turns interacting.
+                       # (Real scarcity is deferred to Day 11.)
 
 # --- Memory constants (Day 5, raised Day 8) ------------------------------
 MEMORY_LIMIT = 20      # an agent retains only its most recent N memories;

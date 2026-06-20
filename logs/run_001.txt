@@ -1,0 +1,77 @@
+# AI Civilization — best Day 9 run (Qwen3:8b, 40 turns)
+# Rebalanced for survivability: INITIAL_FOOD=14, EAT_RELIEF=7, SURVIVAL_HUNGER=5, brink-eat.
+# Result: 8 talks; trust rose (Bob->Alex +5) and fell (Alex->Kira -6).
+
+=== TURN LOG (first ~10 turns) ===
+TURN 1
+Alex -> move_east
+Bob -> rest
+Kira -> move_north
+Food remaining: 14
+TURN 2
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> move_north
+Food remaining: 14
+TURN 3
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> move_north
+Food remaining: 14
+TURN 4
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> eat
+Food remaining: 13
+TURN 5
+Alex -> move_north
+Bob -> move_east
+Kira -> move_north
+Food remaining: 13
+TURN 6
+Alex -> move_north
+Bob -> move_south
+Kira -> move_north
+Food remaining: 13
+TURN 7
+Alex -> eat
+Bob -> eat
+Kira -> move_east
+Food remaining: 11
+TURN 8
+Alex -> talk_to_Kira
+Bob -> rest
+Kira -> eat
+Food remaining: 15
+TURN 9
+Alex -> talk_to_Kira
+Bob -> rest
+Kira -> move_north
+Food remaining: 15
+TURN 10
+Alex -> move_north
+Bob -> rest
+Kira -> move_east
+Food remaining: 15
+
+=== SURVIVAL (40 turns) ===
+  Alex: ALIVE
+  Bob: ALIVE
+  Kira: DEAD
+  talk_to actions: 8
+
+=== TRUST-CHANGE LINES (events) ===
+  turn 3: Bob trust in Alex: 0 -> 1 (friendly message)
+  turn 4: Bob trust in Alex: 1 -> 2 (friendly message)
+  turn 5: Bob trust in Alex: 2 -> 3 (friendly message)
+  turn 9: Alex trust in Kira: 0 -> -3 (hostile message)
+  turn 10: Alex trust in Kira: -3 -> -6 (hostile message)
+  turn 18: Bob trust in Alex: 3 -> 4 (friendly message)
+  turn 19: Bob trust in Alex: 4 -> 5 (friendly message)
+
+=== FINAL RELATIONSHIPS ===
+  Alex: {'Kira': {'trust': -6, 'interactions': 2}}
+  Bob: {'Alex': {'trust': 5, 'interactions': 5}}
+  Kira: {'Alex': {'trust': 0, 'interactions': 2}}
+
+LLM stats: {'decision': 0, 'strategy': 21}

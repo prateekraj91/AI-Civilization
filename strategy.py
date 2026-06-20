@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import trust
 import world
 from personality import Personality
 
@@ -61,8 +62,16 @@ _OPPOSITE: dict[str, str] = {
 }
 
 # Hunger at/above which survival overrides the current strategy and the agent
-# makes a beeline for food regardless of personality.
-SURVIVAL_HUNGER: int = 7
+# makes a beeline for food regardless of personality. Day 9 rebalance: lowered
+# from 7 to 5 so an agent starts seeking with enough buffer to reach food AND
+# spend the extra turn it costs to actually eat it before starving.
+SURVIVAL_HUNGER: int = 5
+
+# A friendly agent only goes out of its way to socialise when WELL-fed (below
+# this hunger). Above it, food comes first — otherwise a friendly agent can chat
+# (or chase a fleeing loner) until it starves. Leaves a comfortable buffer before
+# SURVIVAL_HUNGER takes over.
+SOCIAL_MAX_HUNGER: int = 3
 
 # How near (Manhattan distance) counts as "near food" for cautious resting.
 NEAR_FOOD_RADIUS: int = 2
@@ -249,6 +258,18 @@ def choose_action(agent: Any, strat: Strategy | None,
     if pers.dominant == "caution" and agent.hunger < pers.comfort and _near_food(pos, state):
         return "rest", "cautious: resting near food"
 
+    # 3b. A well-fed FRIENDLY agent actively seeks company so social dynamics
+    # (talk + trust) actually happen — otherwise a food/explore strategy keeps it
+    # near the abundant food and it never meets anyone. Only when well-fed, so it
+    # never socialises itself into starvation.
+    if pers.dominant == "friendliness" and agent.hunger < SOCIAL_MAX_HUNGER:
+        adjacent = _adjacent_agent_names(s)
+        if adjacent:
+            return f"talk_to_{adjacent[0]}", f"friendly: greet {adjacent[0]}"
+        nearest_agent = _nearest(pos, _other_agent_positions(agent, state))
+        if nearest_agent:
+            return _navigate(s, _dirs_toward(pos, nearest_agent)), "friendly: seek company"
+
     # 4. Execute the cached strategy.
     acted = _strategy_action(agent, strat, s, state)
     if acted is not None:
@@ -359,6 +380,20 @@ def recent_memories(memory: list[str], limit: int) -> list[str]:
     return memory[-limit:]
 
 
+def hunger_line(hunger: int) -> str:
+    """An escalating, unambiguous hunger status line for the prompt (Day 9).
+
+    Vague hunger lets the model wander while starving; spelling out the urgency
+    reliably pushes seek_food over explore when it matters.
+    """
+    if hunger >= 7:
+        return (f"Hunger: {hunger}/10 — CRITICAL: you will DIE within a few turns. "
+                f"Finding and eating food is the ONLY priority.")
+    if hunger >= 4:
+        return f"Hunger: {hunger}/10 — getting hungry; head toward food soon."
+    return f"Hunger: {hunger}/10 — well fed."
+
+
 def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6,
                           incoming: list[str] | None = None) -> str:
     """Build the (occasional) strategy prompt: identity + goals + memory + senses.
@@ -376,6 +411,9 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
     mems = recent_memories(agent.memory, memory_limit)
     mem_block = "\n".join(f"- {m}" for m in mems) if mems else "- (none yet)"
 
+    trust_line = trust.trust_summary(agent)
+    trust_block = f"{trust_line}\n" if trust_line else ""
+
     inbox_block = ""
     if incoming:
         lines = "\n".join(f"- You received from {m}" for m in incoming)
@@ -386,14 +424,16 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
     return (
         f"You are {agent.name}, a {agent.personality} agent on a shared 10x10 grid.\n"
         f"Dominant trait: {pers.dominant}.\n"
-        f"Hunger: {agent.hunger} (0 full, 10 = death).\n"
-        f"Your goals (higher = more important): {format_goals(agent.goals)}\n\n"
+        f"{hunger_line(agent.hunger)}\n"
+        f"Your goals (higher = more important): {format_goals(agent.goals)}\n"
+        f"{trust_block}\n"
         f"Recent memories:\n{mem_block}\n"
         f"{inbox_block}\n"
         f"Surroundings:\n{observation}\n\n"
         f"Pick ONE high-level strategy to pursue for the next few turns, consistent "
         f"with your personality and goals, and informed by your memories.\n"
         f"Valid strategies: {', '.join(VALID_STRATEGIES)}.\n"
+        f"- If hunger is 6 or more, choose 'seek_food' (survival comes first).\n"
         f"- 'explore' may set target to one of: {', '.join(DIRECTIONS)}.\n"
         f"- 'approach'/'talk' must set target to a nearby agent's name.\n"
         f"- If 'talk', also set message to what you say.\n"

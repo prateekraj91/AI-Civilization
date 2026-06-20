@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import trust
 import world
 from strategy import get_personality
 
@@ -164,6 +165,9 @@ def process_inbox(agent: Any, refreshed: bool, llm_reaction: str,
             # A reply to something we said. Acknowledge only — no further chain.
             world.record_memory(agent, f"{sender} replied: {text}")
             state["events"].append(f'turn {turn}: {agent.name} heard {sender} reply: "{text}"')
+            # Trust (Day 9): we received a non-hostile reply -> +1.
+            trust.bump_interaction(agent, sender)
+            trust.adjust_trust(agent, sender, +1, "friendly reply", turn, state)
             outcomes.append(("heard_reply", sender))
             continue
 
@@ -179,18 +183,27 @@ def process_inbox(agent: Any, refreshed: bool, llm_reaction: str,
             f'turn {turn}: {agent.name} received from {sender}: "{text}" -> {reaction}'
         )
 
-        if reaction == "reply":
-            sender_agent = _find_agent(state, sender)
-            if sender_agent is not None and sender_agent.alive:
+        # Trust (Day 9): this is one talk exchange, so count an interaction.
+        trust.bump_interaction(agent, sender)
+        sender_agent = _find_agent(state, sender)
+
+        if reaction == "hostile":
+            # We are hostile toward the sender; the SENDER is the one who
+            # "receives" hostility -> their trust in us drops by 3.
+            world.record_memory(agent, f"Felt hostile toward {sender}")
+            state["events"].append(f"turn {turn}: {agent.name} flagged hostility toward {sender}")
+            if sender_agent is not None:
+                trust.bump_interaction(sender_agent, agent.name)
+                trust.adjust_trust(sender_agent, agent.name, -3, "hostile message", turn, state)
+        else:
+            # reply/ignore: we received a non-hostile message -> +1 toward sender.
+            trust.adjust_trust(agent, sender, +1, "friendly message", turn, state)
+            if reaction == "reply" and sender_agent is not None and sender_agent.alive:
                 reply_text = template_reply(agent)
                 _deliver(agent.name, sender_agent, reply_text, turn, is_reply=True)
                 state["events"].append(
                     f'turn {turn}: {agent.name} replied to {sender}: "{reply_text}"'
                 )
-        elif reaction == "hostile":
-            # Day 9 will turn this into a trust penalty; for now just flag it.
-            world.record_memory(agent, f"Felt hostile toward {sender}")
-            state["events"].append(f"turn {turn}: {agent.name} flagged hostility toward {sender}")
 
         outcomes.append((reaction, sender))
 

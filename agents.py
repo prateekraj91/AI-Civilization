@@ -67,3 +67,8 @@ class Agent:
     # consumed on a LATER turn, so it lands in the recipient's NEXT decision
     # context (never the same tick). Cleared once consumed.
     inbox: list[Any] = field(default_factory=list)
+
+    # relationships: per-other-agent opinion (Day 9 trust). Lazily created on
+    # first contact as {other_name: {"trust": int, "interactions": int}}. Pure
+    # Python bookkeeping over conversation events — never an LLM call.
+    relationships: dict[str, Any] = field(default_factory=dict)

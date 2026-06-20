@@ -100,9 +100,11 @@ class Personality:
 
         Cautious agents eat early (low threshold) to stay safe; bolder agents let
         hunger build before spending a turn eating. Always >= 1 so an agent never
-        wastes an eat at hunger 0.
+        wastes an eat at hunger 0. Day 9 rebalance lowered the base (3 -> 2) so
+        agents opportunistically top up when already on food, staying fuller and
+        freeing turns for social interaction.
         """
-        return max(1, round(3 - 2 * self.caution))
+        return max(1, round(2 - 2 * self.caution))
 
     @property
     def comfort(self) -> int:

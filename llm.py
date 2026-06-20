@@ -241,17 +241,23 @@ def _query_ollama(prompt: str) -> dict[str, Any] | None:
     """Ask a local Ollama model and return the parsed JSON object, or None.
 
     Talks to the Ollama HTTP API (OLLAMA_URL) with streaming disabled so the full
-    completion arrives in one payload. Reasoning models like qwen3 often prepend
-    chatter before the JSON, so we lean on _extract_json to recover the embedded
-    object. ANY failure (network, non-200, bad JSON) returns None; the caller
-    decides which fallback to use.
+    completion arrives in one payload. We also disable the model's reasoning pass
+    with "think": False — qwen3 would otherwise emit a long <think> block we
+    discard anyway, so generating it is pure wasted latency. _extract_json still
+    recovers the JSON object from any remaining prose. ANY failure (network,
+    non-200, bad JSON) returns None; the caller decides which fallback to use.
     """
     try:
         import requests  # imported lazily so non-ollama setups don't need it
 
         response = requests.post(
             OLLAMA_URL,
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "think": False,  # skip qwen3's <think> reasoning pass
+            },
             timeout=120,
         )
         response.raise_for_status()

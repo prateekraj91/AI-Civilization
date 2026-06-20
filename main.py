@@ -59,24 +59,28 @@ _OUTPUT = os.getenv("AICIV_OUTPUT", "debug").lower()
 VERBOSE_MODE = _OUTPUT == "verbose"
 DEBUG_MODE = not VERBOSE_MODE  # default
 
-# Maximum turns to simulate (or until every agent has starved).
-NUM_TURNS = 20
+# Maximum turns to simulate (or until every agent has starved). Day 9 runs are
+# longer so social dynamics (talk + trust) have time to emerge.
+NUM_TURNS = 40
 
 # Phase 4: how often (in turns) to refresh an agent's strategy via the LLM.
 # Between refreshes the cached strategy is executed in Python — no inference.
 STRATEGY_INTERVAL = 5
 
-# Food economy. Start healthy and top up when low, so a run stays interesting.
-INITIAL_FOOD = 8
-FOOD_RESPAWN_TO = 6       # keep at least this many food cells on the map
-FOOD_RESPAWN_BATCH = 3    # how many to add when topping up
+# Food economy. Day 9 rebalance: the world is deliberately ABUNDANT so a
+# reasonably-playing agent survives ~40 turns and lives long enough to socialise.
+# On a 10x10 grid this keeps the nearest food usually within a step or two.
+# (Scarcity / competition for limited food is Day 11 — not here.)
+INITIAL_FOOD = 14
+FOOD_RESPAWN_TO = 12      # keep at least this many food cells on the map
+FOOD_RESPAWN_BATCH = 5    # how many to add when topping up
 
 # The starting cast. Each agent has a distinct dominant trait so behaviour and
 # logs are easy to tell apart: Alex = friendly, Bob = cautious, Kira = independent.
 AGENT_SPECS = [
-    ("Alex", "friendly and outgoing", {"survive": 7, "friendship": 8, "wealth": 2}, (2, 2)),
-    ("Bob", "cautious and territorial", {"survive": 9, "wealth": 5, "friendship": 2}, (7, 7)),
-    ("Kira", "independent and competitive", {"survive": 7, "wealth": 8, "friendship": 1}, (2, 7)),
+    ("Alex", "friendly and outgoing", {"survive": 7, "friendship": 8, "wealth": 2}, (4, 4)),
+    ("Bob", "cautious and territorial", {"survive": 9, "wealth": 5, "friendship": 2}, (6, 4)),
+    ("Kira", "independent and competitive", {"survive": 7, "wealth": 8, "friendship": 1}, (4, 6)),
 ]
 
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
@@ -134,6 +138,18 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     # Time passes first: hunger grows. Reaching the limit means starvation.
     update_hunger(agent)
     if is_dead(agent):
+        # A meal underfoot saves you at the brink: reaching food costs a turn to
+        # step on and another to eat, so an agent that arrived at high hunger
+        # would otherwise starve one tick before eating. If it is standing on
+        # food, it eats now instead of dying.
+        if agent.position in world_state["food"]:
+            survived[agent.name] = turn
+            counters["agent_turns"] += 1
+            result = execute_action(agent, "eat")
+            if VERBOSE_MODE:
+                print(f"  --- {agent.name} ate at the brink (hunger now {agent.hunger}) ---")
+                print(f"    {result}\n")
+            return "eat"
         record_memory(agent, "Starved")
         mark_dead(agent)
         if VERBOSE_MODE:
