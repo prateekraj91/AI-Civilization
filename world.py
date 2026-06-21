@@ -107,6 +107,13 @@ world_state: dict[str, Any] = {
     "size": GRID_SIZE,   # grid is size x size
     "grid": [],          # 2D list[list[str]], grid[y][x] -> cell kind
     "food": [],          # list[tuple[int, int]] of (x, y) food coordinates
+    # Day 14 lifecycle. Both live in world_state so the death/respawn machinery
+    # stays inspectable and serializable like everything else (single source of
+    # truth). `pending_respawns` holds the turns at which a queued newcomer is due
+    # (one entry per death, see population.announce_death); `respawn_count` is the
+    # running number of newcomers spawned, used to cycle the newcomer roster.
+    "pending_respawns": [],  # list[int]: turns at which a respawn becomes due
+    "respawn_count": 0,      # how many newcomers have entered so far
 }
 
 
@@ -163,6 +170,9 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
       - food:    emptied (re-seeded afterwards via spawn_food)
       - events:  emptied
       - turn:    reset to 0
+      - pending_respawns / respawn_count: cleared (Day 14) — queued newcomers and
+        the respawn counter must not leak across simulations, or a fresh run would
+        spawn ghosts from a previous one's deaths.
 
     Lists are cleared in place rather than rebound so any reference already held
     elsewhere keeps pointing at the live (now-empty) collection.
@@ -173,6 +183,8 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state["agents"].clear()
     world_state["food"].clear()
     world_state["events"].clear()
+    world_state["pending_respawns"].clear()
+    world_state["respawn_count"] = 0
     return world_state["grid"]
 
 

@@ -28,6 +28,7 @@ import os
 
 import alliance
 import conversation
+import population
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
 from strategy import (
@@ -41,7 +42,6 @@ from world import (
     create_world,
     execute_action,
     is_dead,
-    mark_dead,
     observe,
     place_agent,
     record_memory,
@@ -111,7 +111,7 @@ AGENT_SPECS = [
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
 _IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked",
                           "stole", "Trust in", "allied", "ALLIANCE", "BETRAYED",
-                          "proposed an alliance")
+                          "proposed an alliance", "died on turn", "appeared on turn")
 
 
 def important_memories(memory: list[str], limit: int = 5) -> list[str]:
@@ -185,11 +185,14 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
                 print(f"  --- {agent.name} ate at the brink (hunger now {agent.hunger}) ---")
                 print(f"    {result}\n")
             return "eat"
-        record_memory(agent, "Starved")
-        mark_dead(agent)
+        # Day 14: death is now an event the society registers — a DEATH line in
+        # events[], a memory of it on every survivor, and a queued respawn.
+        survivors = population.announce_death(agent, turn, world_state, cause="starved")
         if VERBOSE_MODE:
             print(f"  --- {agent.name} ---")
             print(f"    {agent.name} has died of starvation at {agent.position}.")
+            print(f"    {len(survivors)} survivor(s) recorded the death; "
+                  f"respawn due turn {turn + population.RESPAWN_DELAY}.")
             print()
         return "starved"
 
@@ -320,9 +323,22 @@ def main() -> None:
 
         maybe_respawn_food(turn)
 
-        if not living_agents():
+        # Day 14: bring in any blank-slate newcomer whose respawn has come due. New
+        # agents enter at turn's end and first act NEXT turn, so mid-turn iteration
+        # is never disturbed. Track them for the summary like any other agent.
+        for newcomer in population.process_respawns(turn, world_state):
+            survived[newcomer.name] = turn
+            if DEBUG_MODE:
+                print(f"*** {newcomer.name} entered the world on turn {turn} (blank slate) ***")
+                print()
+            elif VERBOSE_MODE:
+                print(f"  *** {newcomer.name} entered the world (blank slate) ***\n")
+
+        # End only when the world is BOTH empty AND has no respawn pending — a
+        # scheduled newcomer can still repopulate an emptied world.
+        if not living_agents() and not world_state["pending_respawns"]:
             if VERBOSE_MODE:
-                print("All agents have died. Ending simulation.")
+                print("All agents have died and no respawn is pending. Ending simulation.")
             break
 
     # --- End-of-run analysis (both modes) -------------------------------

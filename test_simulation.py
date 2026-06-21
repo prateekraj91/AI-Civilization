@@ -787,6 +787,127 @@ def test_alliance_adds_no_llm_calls() -> None:
     print("PASS test_alliance_adds_no_llm_calls")
 
 
+# --- Death + respawn (Day 14) ---------------------------------------------
+def test_death_writes_survivor_memories_and_event() -> None:
+    """A death logs a DEATH event and records on every agent alive at the time."""
+    import population
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    alex = _agent("Alex", "friendly and outgoing", (5, 4))   # survivor
+    bob = _agent("Bob", "cautious and territorial", (4, 5))   # survivor
+    # A pre-existing relationship that must SURVIVE Kira's death (the dead are
+    # remembered): Alex distrusts Kira.
+    alex.relationships["Kira"] = {"trust": -6, "interactions": 4, "grudge": True}
+
+    survivors = population.announce_death(kira, 47, world_state, cause="starved")
+
+    assert kira.alive is False
+    assert {s.name for s in survivors} == {"Alex", "Bob"}, survivors
+    # Clear DEATH line in events[].
+    assert any("turn 47: Kira died (starved)" == e for e in world_state["events"]), world_state["events"]
+    # Every survivor remembers it; the dead agent keeps its own "Starved" memory.
+    assert any("Kira died on turn 47" in m for m in alex.memory), alex.memory
+    assert any("Kira died on turn 47" in m for m in bob.memory), bob.memory
+    assert "Starved" in kira.memory
+    # The survivor's relationship toward the deceased is untouched (remembered).
+    assert alex.relationships["Kira"] == {"trust": -6, "interactions": 4, "grudge": True}
+    # A respawn was queued for death_turn + RESPAWN_DELAY.
+    assert world_state["pending_respawns"] == [47 + population.RESPAWN_DELAY]
+    print("PASS test_death_writes_survivor_memories_and_event")
+
+
+def test_respawn_fires_after_exactly_respawn_delay() -> None:
+    """No newcomer before death_turn + RESPAWN_DELAY; exactly one on that turn."""
+    import population
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    _agent("Alex", "friendly and outgoing", (5, 4))  # a survivor to drop below target
+    death_turn = 5
+    population.announce_death(kira, death_turn, world_state)
+    due_turn = death_turn + population.RESPAWN_DELAY
+
+    # Every turn strictly before the due turn: nothing spawns, queue intact.
+    for turn in range(death_turn + 1, due_turn):
+        assert population.process_respawns(turn, world_state) == [], turn
+        assert world_state["pending_respawns"] == [due_turn]
+
+    # Exactly on the due turn: one newcomer enters and the queue drains.
+    spawned = population.process_respawns(due_turn, world_state)
+    assert len(spawned) == 1, spawned
+    assert world_state["pending_respawns"] == []
+    # Survivors were told a new agent appeared.
+    alex = next(a for a in world_state["agents"] if a.name == "Alex")
+    assert any(f"appeared on turn {due_turn}" in m for m in alex.memory), alex.memory
+    print("PASS test_respawn_fires_after_exactly_respawn_delay")
+
+
+def test_newcomer_is_blank_slate_and_participates() -> None:
+    """The newcomer has empty memory/relationships and can be observed + talked to."""
+    import population
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    alex = _agent("Alex", "friendly and outgoing", (5, 4))
+    population.announce_death(kira, 1, world_state)
+    [newcomer] = population.process_respawns(1 + population.RESPAWN_DELAY, world_state)
+
+    # Blank slate: no memory, no relationships, no allies/offers, hunger reset.
+    assert newcomer.memory == [], newcomer.memory
+    assert newcomer.relationships == {}, newcomer.relationships
+    assert newcomer.allies == set() and newcomer.ally_offers == set()
+    assert newcomer.hunger == 0
+    # No living agent has any trust toward it yet (social cold-start).
+    assert "?" not in newcomer.name  # sanity: real name assigned
+    assert all(newcomer.name not in a.relationships
+               for a in world_state["agents"] if a is not newcomer)
+    # It occupies a valid empty cell and is observable by a neighbour: drop Alex
+    # next to it and confirm detection + a talk both work like any other agent.
+    nx, ny = newcomer.position
+    place_agent(alex, nx, ny - 1)  # directly north of the newcomer
+    assert f"South: {newcomer.name}" in observe(alex, world_state)
+    res = conversation.handle_talk(alex, f"talk_to_{newcomer.name}", Strategy(kind="talk"),
+                                   False, 99, world_state)
+    assert f"talked to {newcomer.name}" in res, res
+    assert len(newcomer.inbox) == 1 and newcomer.inbox[0]["from"] == "Alex"
+    print("PASS test_newcomer_is_blank_slate_and_participates")
+
+
+def test_respawn_keeps_population_bounded() -> None:
+    """Respawn refills up to TARGET_POPULATION and never beyond it."""
+    import population
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    _agent("Alex", "friendly and outgoing", (5, 4))
+    _agent("Bob", "cautious and territorial", (4, 5))
+    assert population.living_count(world_state) == population.TARGET_POPULATION
+
+    # One death -> one queued respawn -> back to target, not above.
+    population.announce_death(kira, 1, world_state)
+    assert population.living_count(world_state) == population.TARGET_POPULATION - 1
+    spawned = population.process_respawns(1 + population.RESPAWN_DELAY, world_state)
+    assert len(spawned) == 1
+    assert population.living_count(world_state) == population.TARGET_POPULATION
+
+    # A surplus respawn coming due while already at target is DROPPED, not spawned.
+    world_state["pending_respawns"].append(20)
+    assert population.process_respawns(20, world_state) == []
+    assert population.living_count(world_state) == population.TARGET_POPULATION
+    assert world_state["pending_respawns"] == []
+    print("PASS test_respawn_keeps_population_bounded")
+
+
+def test_respawn_adds_no_llm_calls() -> None:
+    """Death + respawn are pure Python — they ride no inference at all."""
+    import population
+    _fresh_world()
+    llm.reset_call_stats()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    _agent("Alex", "friendly and outgoing", (5, 4))
+    population.announce_death(kira, 1, world_state)
+    population.process_respawns(1 + population.RESPAWN_DELAY, world_state)
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    print("PASS test_respawn_adds_no_llm_calls")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -824,6 +945,11 @@ def main_runner() -> None:
         test_grudge_blocks_reallying,
         test_independent_betrays_ally_under_pressure_friendly_does_not,
         test_alliance_adds_no_llm_calls,
+        test_death_writes_survivor_memories_and_event,
+        test_respawn_fires_after_exactly_respawn_delay,
+        test_newcomer_is_blank_slate_and_participates,
+        test_respawn_keeps_population_bounded,
+        test_respawn_adds_no_llm_calls,
     ]
     for t in tests:
         t()
