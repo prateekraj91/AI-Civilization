@@ -310,6 +310,25 @@ def adjacent_agents(agent: Any, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def visible_food(agent: Any, state: dict[str, Any]) -> set[tuple[int, int]]:
+    """The food coordinates `agent` can directly perceive right now (pure READ).
+
+    Built from scan(): the agent's own tile plus its four N/S/E/W neighbours —
+    the same perception range it reports in observe(). This is the unit allies
+    SHARE under Day 13: each ally contributes the food in ITS window, so a pair
+    sees more of a scarce map than either does alone (see alliance.shared_food_
+    sightings, which folds the union into the strategy prompt).
+    """
+    s = scan(agent, state)
+    coords: set[tuple[int, int]] = set()
+    if s["on_food"]:
+        coords.add(s["pos"])
+    for cell in s["cells"].values():
+        if cell["food"] and cell["pos"] is not None:
+            coords.add(cell["pos"])
+    return coords
+
+
 def observe(agent: Any, state: dict[str, Any]) -> str:
     """Human-readable perception string, built on scan() (Day 7 detection).
 

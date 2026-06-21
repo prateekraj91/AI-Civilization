@@ -72,3 +72,13 @@ class Agent:
     # first contact as {other_name: {"trust": int, "interactions": int}}. Pure
     # Python bookkeeping over conversation events — never an LLM call.
     relationships: dict[str, Any] = field(default_factory=dict)
+
+    # allies: names of agents this one is currently ALLIED with (Day 13). Always
+    # mutual — if Bob is in Alex.allies then Alex is in Bob.allies. Allies share
+    # food sightings; betrayal removes the name from both sides permanently.
+    allies: set = field(default_factory=set)
+
+    # ally_offers: names of agents who have PROPOSED an alliance to this one and
+    # are awaiting its answer (Day 13). An alliance forms only when the offered
+    # agent answers with its own ally_with action — never unilaterally.
+    ally_offers: set = field(default_factory=set)

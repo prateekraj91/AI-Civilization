@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import alliance
 import trust
 import world
 from personality import Personality
@@ -46,6 +47,8 @@ VALID_STRATEGIES: tuple[str, ...] = (
     "avoid",       # keep away from other agents
     "talk",        # talk to a named agent (target = agent name); message optional
     "steal",       # take food from a named agent (target = agent name) — Day 12
+    "ally",        # propose/accept an alliance with a named agent (target) — Day 13
+    "betray",      # betray a current ally (target = agent name) — Day 13
     "rest",        # conserve / hold position
     "wander",      # no strong plan — defer to personality (safe default)
 )
@@ -228,6 +231,44 @@ def _will_steal(thief: Any, victim: Any, pers: Personality) -> bool:
     return bucket == "low"
 
 
+def _will_ally(agent: Any, other: Any, pers: Personality) -> bool:
+    """Whether `agent` would form an alliance with `other` (Day 13).
+
+    Eligibility (alive, not already allied, no grudge either way) is checked by
+    alliance.can_ally; this adds the PERSONALITY-driven willingness on top:
+
+      - Friendly / cautious agents ally READILY — with any neighbour they do not
+        actively distrust (neutral or high trust is enough).
+      - Independent / competitive agents (Kira) ally RELUCTANTLY — only with
+        someone they ACTIVELY trust (high), because a loner joins forces only when
+        the relationship has already proven itself.
+
+    A latent grudge always wins (can_ally returns False) regardless of trust.
+    """
+    if not alliance.can_ally(agent, other):
+        return False
+    bucket = trust.trust_bucket(agent.relationships.get(other.name, {}).get("trust", 0))
+    if pers.dominant == "independence":
+        return bucket == "high"
+    return bucket != "low"
+
+
+def _will_betray(agent: Any, ally_name: str, pers: Personality) -> bool:
+    """Whether `agent` would betray its ally `ally_name` this turn (Day 13).
+
+    Betrayal is personality-driven and rational, never random: only an
+    independent/competitive agent betrays, and only under genuine survival
+    pressure (hunger >= STEAL_DESPERATION), when the alliance no longer pays its
+    way against the permanent-grudge cost. Friendly and cautious agents keep the
+    alliances they form — they never betray. The agent must actually be allied.
+    """
+    if ally_name not in getattr(agent, "allies", set()):
+        return False
+    if pers.dominant != "independence":
+        return False
+    return agent.hunger >= STEAL_DESPERATION
+
+
 def _navigate(scan: dict[str, Any], preferred: list[str]) -> str:
     """Pick the best open move from `preferred`, falling back to any open dir.
 
@@ -278,10 +319,13 @@ def choose_action(agent: Any, strat: Strategy | None,
       2. Survival: if starving, grab adjacent food; else (Day 12) if desperate
          and an adjacent distrusted neighbour sits on food, STEAL it; else
          beeline to the nearest food.
-      3. Cautious rest: a cautious, well-fed agent near food holds position.
-      4. Execute the cached strategy if it yields a concrete move (incl. an
-         LLM-chosen 'steal').
-      5. Otherwise fall back to the personality default.
+      3. Alliance (Day 13): when not starving, ACCEPT a pending ally offer from a
+         willing neighbour, or (friendly/cautious) PROPOSE one to a trusted
+         neighbour. Allying is a social investment, never an emergency act.
+      4. Cautious rest: a cautious, well-fed agent near food holds position.
+      5. Execute the cached strategy if it yields a concrete move (incl. an
+         LLM-chosen 'steal'/'ally'/'betray').
+      6. Otherwise fall back to the personality default.
     """
     pers = get_personality(agent)
     s = world.scan(agent, state)
@@ -297,25 +341,57 @@ def choose_action(agent: Any, strat: Strategy | None,
         d = _adjacent_food_dir(s)
         if d:
             return f"move_{d}", "survival: grab adjacent food"
-        # 2b. Day 12: if desperate and the only food in reach is held by a
-        # neighbour we don't trust, STEAL it rather than walk to distant food.
+        # 2b. Desperation turns on neighbours sitting on food. Day 13: an ally
+        # hoarding food while we starve is the moment an independent agent betrays
+        # the alliance (it no longer pays) — checked BEFORE theft, since you can't
+        # steal from an ally, you renounce them first. Day 12: anyone else we
+        # distrust, we steal from outright.
         if agent.hunger >= STEAL_DESPERATION:
             for holder in _adjacent_food_holders(s):
-                if _will_steal(agent, holder, pers):
+                if holder.name in agent.allies and _will_betray(agent, holder.name, pers):
+                    return f"betray_alliance_{holder.name}", f"desperate: betray ally {holder.name}"
+            for holder in _adjacent_food_holders(s):
+                if holder.name not in agent.allies and _will_steal(agent, holder, pers):
                     return f"steal_from_{holder.name}", f"desperate: steal from {holder.name}"
         # 2c. Otherwise head for the nearest free food on the map.
         nearest = _nearest(pos, state["food"])
         if nearest:
             return _navigate(s, _dirs_toward(pos, nearest)), "survival: head to food"
 
-    # 3. Cautious agents conserve near a food cache when not yet hungry.
+    # 3. Alliance (Day 13). Allying is a social investment, so it is gated on NOT
+    # starving (survival above always wins).
+    #   3a. ACCEPT first: if a willing neighbour has already offered, seal it —
+    #       this is the second half of the mutual handshake, and responding to a
+    #       proposal takes precedence over resting or another greeting.
+    #   3b. Otherwise friendly/cautious agents PROPOSE — but only to a neighbour
+    #       they ALREADY TRUST (high), so a bond is built by talking first and an
+    #       explicit talk/seek strategy is never overridden by an unprompted
+    #       proposal. Independent agents never court; they only ever accept.
+    if agent.hunger < SURVIVAL_HUNGER:
+        adj = world.adjacent_agents(agent, state)
+        for name in sorted(agent.ally_offers):
+            other = adj.get(name)
+            if other is not None and _will_ally(agent, other, pers):
+                return f"ally_with_{name}", f"accept alliance with {name}"
+        if pers.dominant in ("friendliness", "caution"):
+            for name in sorted(adj):
+                other = adj[name]
+                raw = agent.relationships.get(name, {}).get("trust", 0)
+                if (trust.trust_bucket(raw) == "high"
+                        and agent.name not in other.ally_offers
+                        and not alliance.are_allied(agent, other)
+                        and _will_ally(agent, other, pers)):
+                    return f"ally_with_{name}", f"propose alliance to {name}"
+
+    # 4. Cautious agents conserve near a food cache when not yet hungry.
     if pers.dominant == "caution" and agent.hunger < pers.comfort and _near_food(pos, state):
         return "rest", "cautious: resting near food"
 
-    # 3b. A well-fed FRIENDLY agent actively seeks company so social dynamics
+    # 4b. A well-fed FRIENDLY agent actively seeks company so social dynamics
     # (talk + trust) actually happen — otherwise a food/explore strategy keeps it
     # near the abundant food and it never meets anyone. Only when well-fed, so it
-    # never socialises itself into starvation.
+    # never socialises itself into starvation. (This is also what builds the trust
+    # an alliance later needs — see step 3.)
     if pers.dominant == "friendliness" and agent.hunger < SOCIAL_MAX_HUNGER:
         adjacent = _adjacent_agent_names(s)
         if adjacent:
@@ -395,6 +471,26 @@ def _strategy_action(agent: Any, strat: Strategy | None, scan: dict[str, Any],
             return _navigate(scan, _dirs_toward(pos, target_pos)), f"approach {target} to steal"
         return None
 
+    if strat.kind == "ally":
+        # Day 13: the LLM chose to ally with a named agent. Forming is mutual and
+        # range-gated (adjacent), so only emit ally_with when the target is in
+        # reach; if alive but out of range, close the distance first.
+        target = strat.target
+        if target and target in _adjacent_agent_names(scan):
+            return f"ally_with_{target}", f"ally with {target}"
+        target_pos = _agent_position(state, target)
+        if target and target_pos:
+            return _navigate(scan, _dirs_toward(pos, target_pos)), f"approach {target} to ally"
+        return None
+
+    if strat.kind == "betray":
+        # Day 13: the LLM chose to betray an ally. Valid only if currently allied;
+        # needs no adjacency (renouncing a bond is one-sided). Otherwise defer.
+        target = strat.target
+        if target and target in getattr(agent, "allies", set()):
+            return f"betray_alliance_{target}", f"betray ally {target}"
+        return None
+
     if strat.kind == "rest":
         return "rest", "strategy: rest"
 
@@ -461,17 +557,20 @@ def hunger_line(hunger: int) -> str:
 
 
 def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6,
-                          incoming: list[str] | None = None) -> str:
+                          incoming: list[str] | None = None,
+                          state: dict[str, Any] | None = None) -> str:
     """Build the (occasional) strategy prompt: identity + goals + memory + senses.
 
     Compact by design — it is sent only every N turns. It tells the model who the
     agent is (personality), WHAT IT WANTS (goals, Phase 2), what it has recently
-    seen (memories, Phase 3), any messages just received (Day 8), and its
-    surroundings, then asks for ONE strategy.
+    seen (memories, Phase 3), any messages just received (Day 8), its current
+    alliances and the food its allies can see (Day 13), and its surroundings, then
+    asks for ONE strategy.
 
     The schema carries `message` (what to say if talking) and `reaction` (how to
-    answer a received message) so a "talk" or a reply costs NO extra inference —
-    they ride along with this single strategy call.
+    answer a received message) so a "talk", a reply, an ally/betray decision all
+    cost NO extra inference — they ride along with this single strategy call. The
+    allies + shared-food blocks appear only when `state` is supplied.
     """
     pers = get_personality(agent)
     mems = recent_memories(agent.memory, memory_limit)
@@ -487,12 +586,31 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
             f"\nMessages you just received (decide a reaction):\n{lines}\n"
         )
 
+    # Day 13: current alliances, pending offers, and the concrete benefit —
+    # food only your allies can see, folded straight in so it informs the plan.
+    ally_block = ""
+    allies = sorted(getattr(agent, "allies", set()))
+    offers = sorted(getattr(agent, "ally_offers", set()))
+    if allies:
+        ally_block += f"Your allies: {', '.join(allies)} (you share food sightings).\n"
+    if offers:
+        ally_block += f"Alliance proposals awaiting your answer from: {', '.join(offers)}.\n"
+    if state is not None:
+        shared = alliance.shared_food_sightings(agent, state)
+        if shared:
+            sights = "; ".join(
+                f"{name} sees food at {', '.join(str(c) for c in coords)}"
+                for name, coords in shared.items()
+            )
+            ally_block += f"Food your allies can see (shared with you): {sights}.\n"
+
     return (
         f"You are {agent.name}, a {agent.personality} agent on a shared 10x10 grid.\n"
         f"Dominant trait: {pers.dominant}.\n"
         f"{hunger_line(agent.hunger)}\n"
         f"Your goals (higher = more important): {format_goals(agent.goals)}\n"
-        f"{trust_block}\n"
+        f"{trust_block}"
+        f"{ally_block}\n"
         f"Recent memories:\n{mem_block}\n"
         f"{inbox_block}\n"
         f"Surroundings:\n{observation}\n\n"
@@ -505,8 +623,18 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
         f"is scarce. Stealing makes a lasting enemy, so weigh it against friendship — "
         f"if you are independent/competitive you steal readily; if friendly/cautious, "
         f"only when truly desperate or already wronged.\n"
+        f"- 'ally' (target = a nearby agent's name) when you TRUST a neighbour and "
+        f"want to team up: allies share food sightings, so two scouts beat one under "
+        f"scarcity. An alliance forms only if BOTH of you choose it, and a grudge on "
+        f"either side blocks it. Friendly/cautious agents ally readily; "
+        f"independent/competitive agents only with someone they already trust.\n"
+        f"- 'betray' (target = an ally's name) tears up an alliance: a desperate, "
+        f"opportunistic last resort when the alliance no longer pays. It drops their "
+        f"trust hard and earns a PERMANENT grudge (you can never ally again), so weigh "
+        f"it heavily — only an independent/competitive agent under real survival "
+        f"pressure should consider it.\n"
         f"- 'explore' may set target to one of: {', '.join(DIRECTIONS)}.\n"
-        f"- 'approach'/'talk'/'steal' must set target to a nearby agent's name.\n"
+        f"- 'approach'/'talk'/'steal'/'ally'/'betray' must set target to an agent's name.\n"
         f"- If 'talk', also set message to what you say.\n"
         f"- If you received a message, set reaction to one of: reply, ignore, hostile.\n\n"
         f"Respond with ONLY a JSON object, no extra text, shaped exactly:\n"

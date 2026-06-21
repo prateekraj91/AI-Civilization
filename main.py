@@ -26,6 +26,7 @@ religion, crafting, combat, trading, conversations, God Mode.
 
 import os
 
+import alliance
 import conversation
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -109,7 +110,8 @@ AGENT_SPECS = [
 
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
 _IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked",
-                          "stole", "Trust in")
+                          "stole", "Trust in", "allied", "ALLIANCE", "BETRAYED",
+                          "proposed an alliance")
 
 
 def important_memories(memory: list[str], limit: int = 5) -> list[str]:
@@ -204,7 +206,8 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
 
     refreshed = False
     if refresh_due:
-        data = get_strategy(build_strategy_prompt(agent, observation, incoming=incoming))
+        data = get_strategy(build_strategy_prompt(agent, observation, incoming=incoming,
+                                                  state=world_state))
         strat = Strategy(kind=data["strategy"], target=data.get("target", ""),
                          message=data.get("message", ""), reaction=data.get("reaction", ""),
                          issued_turn=turn)
@@ -226,6 +229,10 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
         result = conversation.handle_talk(agent, action, strat, refreshed, turn, world_state)
     elif action.startswith("steal_from_"):
         result = conversation.handle_steal(agent, action, turn, world_state)
+    elif action.startswith("ally_with_"):
+        result = alliance.handle_ally(agent, action, turn, world_state)
+    elif action.startswith("betray_alliance_"):
+        result = alliance.handle_betray(agent, action, turn, world_state)
     else:
         result = execute_action(agent, action)
 

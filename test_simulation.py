@@ -628,6 +628,165 @@ def test_desperate_independent_steals_distrusted_holder() -> None:
     print("PASS test_desperate_independent_steals_distrusted_holder")
 
 
+def test_alliance_forms_only_mutually_with_plus3_both_ways() -> None:
+    """An alliance forms ONLY when both agents choose it, +3 trust both ways."""
+    import alliance
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "cautious and territorial", (5, 4))  # adjacent (north)
+
+    # (1) A unilateral ally_with is only a PROPOSAL — no alliance yet.
+    res = alliance.handle_ally(alex, "ally_with_Bob", 3, world_state)
+    assert "proposed an alliance" in res, res
+    assert not alliance.are_allied(alex, bob)
+    assert "Alex" in bob.ally_offers and "Bob" not in alex.allies
+    # The proposal alone moves NO trust.
+    assert "Bob" not in alex.relationships or alex.relationships["Bob"]["trust"] == 0
+
+    # (2) Bob answering with his own ally_with seals the mutual alliance.
+    res = alliance.handle_ally(bob, "ally_with_Alex", 4, world_state)
+    assert "formed an alliance" in res, res
+    assert alliance.are_allied(alex, bob)
+    assert "Bob" in alex.allies and "Alex" in bob.allies
+    # Offers are cleared once consumed.
+    assert not alex.ally_offers and not bob.ally_offers
+
+    # (3) +3 trust BOTH ways, and an ALLIANCE event + memory on both.
+    assert alex.relationships["Bob"]["trust"] == 3, alex.relationships
+    assert bob.relationships["Alex"]["trust"] == 3, bob.relationships
+    assert any("formed an ALLIANCE" in e and "Alex" in e and "Bob" in e
+               for e in world_state["events"])
+    assert any("I allied with Bob" in m for m in alex.memory), alex.memory
+    assert any("I allied with Alex" in m for m in bob.memory), bob.memory
+    print("PASS test_alliance_forms_only_mutually_with_plus3_both_ways")
+
+
+def test_allies_share_food_sighting_until_betrayal() -> None:
+    """Allied agents share food the other can see; betrayal stops it immediately."""
+    import alliance
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (1, 1))
+    kira = _agent("Kira", "independent and competitive", (8, 8))  # far apart
+    # Food only KIRA can see (adjacent to Kira, nowhere near Alex).
+    world_state["food"].append((8, 7))  # north of Kira
+
+    # Before allying, Alex shares nothing with Kira (they aren't allied).
+    assert alliance.shared_food_sightings(alex, world_state) == {}
+
+    # Ally them directly (bypassing range, just exercising the share mechanic).
+    alex.allies.add("Kira"); kira.allies.add("Alex")
+
+    # Now Kira's private sighting is shared into Alex's view...
+    shared = alliance.shared_food_sightings(alex, world_state)
+    assert shared == {"Kira": [(8, 7)]}, shared
+    # ...and it surfaces verbatim in Alex's next strategy prompt.
+    prompt = build_strategy_prompt(alex, observe(alex, world_state), state=world_state)
+    assert "Food your allies can see (shared with you)" in prompt
+    assert "Kira sees food at (8, 7)" in prompt, prompt
+
+    # Kira betrays the alliance -> sharing stops on the very next lookup.
+    alliance.handle_betray(kira, "betray_alliance_Alex", 9, world_state)
+    assert alliance.shared_food_sightings(alex, world_state) == {}
+    prompt2 = build_strategy_prompt(alex, observe(alex, world_state), state=world_state)
+    assert "shared with you" not in prompt2
+    print("PASS test_allies_share_food_sighting_until_betrayal")
+
+
+def test_betrayal_drops_trust_8_latches_grudge_both_memories() -> None:
+    """Betrayal dissolves the alliance, drops trust 8, latches a permanent grudge."""
+    import alliance, trust
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    alex = _agent("Alex", "friendly and outgoing", (5, 4))
+    # Start them allied with the +3 each that forming would have granted.
+    kira.allies.add("Alex"); alex.allies.add("Kira")
+    kira.relationships["Alex"] = {"trust": 3, "interactions": 1, "grudge": False}
+    alex.relationships["Kira"] = {"trust": 3, "interactions": 1, "grudge": False}
+
+    res = alliance.handle_betray(kira, "betray_alliance_Alex", 12, world_state)
+    assert "betrayed the alliance with Alex" in res, res
+
+    # Alliance dissolved on BOTH sides.
+    assert not alliance.are_allied(kira, alex)
+    assert "Alex" not in kira.allies and "Kira" not in alex.allies
+
+    # The betrayed (Alex) loses exactly BETRAYAL_PENALTY (8): 3 -> -5, grudge latched.
+    assert alliance.BETRAYAL_PENALTY == 8
+    assert alex.relationships["Kira"]["trust"] == -5, alex.relationships
+    assert alex.relationships["Kira"]["grudge"] is True, alex.relationships
+
+    # BOTH memories record the betrayal; events[] carries the BETRAYAL line.
+    assert any("Kira BETRAYED our alliance" in m for m in alex.memory), alex.memory
+    assert any("I BETRAYED my alliance with Alex" in m for m in kira.memory), kira.memory
+    assert any("*** Kira BETRAYED the alliance with Alex ***" in e
+               for e in world_state["events"])
+    print("PASS test_betrayal_drops_trust_8_latches_grudge_both_memories")
+
+
+def test_grudge_blocks_reallying() -> None:
+    """A grudged/betrayed pair can NEVER form an alliance again (either side)."""
+    import alliance
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5))
+    alex = _agent("Alex", "friendly and outgoing", (5, 4))  # adjacent
+    kira.allies.add("Alex"); alex.allies.add("Kira")
+    alliance.handle_betray(kira, "betray_alliance_Alex", 7, world_state)
+    assert alex.relationships["Kira"]["grudge"] is True
+
+    # can_ally refuses because of the grudge on Alex's side...
+    assert not alliance.can_ally(alex, kira)
+    assert not alliance.can_ally(kira, alex)  # blocked from EITHER direction
+
+    # ...and a real ally_with action is rejected as a logged no-op, not a bond.
+    res = alliance.handle_ally(alex, "ally_with_Kira", 8, world_state)
+    assert "could not ally" in res and "grudge" in res, res
+    assert not alliance.are_allied(alex, kira)
+    res = alliance.handle_ally(kira, "ally_with_Alex", 9, world_state)
+    assert "could not ally" in res, res
+    assert not alliance.are_allied(alex, kira)
+    print("PASS test_grudge_blocks_reallying")
+
+
+def test_independent_betrays_ally_under_pressure_friendly_does_not() -> None:
+    """The executor turns survival pressure into a betrayal — only for a loner."""
+    import alliance
+    # Independent Kira, starving, beside an ALLY hoarding food -> betrays the bond.
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    alex = _agent("Alex", "friendly and outgoing", (5, 4))
+    kira.allies.add("Alex"); alex.allies.add("Kira")
+    world_state["food"].append(alex.position)  # Alex sits on food
+    action, _ = choose_action(kira, Strategy(kind="wander"), world_state)
+    assert action == "betray_alliance_Alex", action
+    # An ally is never STOLEN from — betrayal is the only move against a partner.
+    assert not action.startswith("steal_from_")
+
+    # Friendly Alex, equally starving beside an ally on food, does NOT betray.
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious and territorial", (5, 4))
+    alex.allies.add("Bob"); bob.allies.add("Alex")
+    world_state["food"].append(bob.position)
+    action, _ = choose_action(alex, Strategy(kind="wander"), world_state)
+    assert not action.startswith("betray_alliance_"), action
+    print("PASS test_independent_betrays_ally_under_pressure_friendly_does_not")
+
+
+def test_alliance_adds_no_llm_calls() -> None:
+    """Forming and betraying an alliance ride the strategy call — zero new inference."""
+    import alliance
+    _fresh_world()
+    llm.reset_call_stats()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    bob = _agent("Bob", "cautious and territorial", (5, 4))
+    alliance.handle_ally(alex, "ally_with_Bob", 1, world_state)
+    alliance.handle_ally(bob, "ally_with_Alex", 2, world_state)
+    alliance.handle_betray(bob, "betray_alliance_Alex", 3, world_state)
+    stats = llm.get_call_stats()
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    print("PASS test_alliance_adds_no_llm_calls")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -659,6 +818,12 @@ def main_runner() -> None:
         test_theft_grudge_is_permanent,
         test_theft_noop_when_no_food,
         test_desperate_independent_steals_distrusted_holder,
+        test_alliance_forms_only_mutually_with_plus3_both_ways,
+        test_allies_share_food_sighting_until_betrayal,
+        test_betrayal_drops_trust_8_latches_grudge_both_memories,
+        test_grudge_blocks_reallying,
+        test_independent_betrays_ally_under_pressure_friendly_does_not,
+        test_alliance_adds_no_llm_calls,
     ]
     for t in tests:
         t()
