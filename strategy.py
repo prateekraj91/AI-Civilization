@@ -45,6 +45,7 @@ VALID_STRATEGIES: tuple[str, ...] = (
     "approach",    # move toward a named agent (target = agent name)
     "avoid",       # keep away from other agents
     "talk",        # talk to a named agent (target = agent name); message optional
+    "steal",       # take food from a named agent (target = agent name) — Day 12
     "rest",        # conserve / hold position
     "wander",      # no strong plan — defer to personality (safe default)
 )
@@ -75,6 +76,13 @@ SOCIAL_MAX_HUNGER: int = 3
 
 # How near (Manhattan distance) counts as "near food" for cautious resting.
 NEAR_FOOD_RADIUS: int = 2
+
+# Hunger at/above which an agent is desperate enough to STEAL from a neighbour
+# (Day 12). Higher than SURVIVAL_HUNGER: an agent first tries to reach its own
+# food and only robs someone when genuinely close to starving. Stealing is also
+# gated on DISTRUST and personality (see _will_steal) so it is a rational choice
+# under scarcity, never indiscriminate.
+STEAL_DESPERATION: int = 6
 
 
 @dataclass
@@ -185,6 +193,41 @@ def _adjacent_agent_names(scan: dict[str, Any]) -> list[str]:
     )
 
 
+def _adjacent_food_holders(scan: dict[str, Any]) -> list[Any]:
+    """Adjacent living agents that are standing on a food tile (theft targets).
+
+    A neighbour on food shows up as cell["agent"] set AND cell["food"] True (the
+    cell is a food coordinate that the neighbour occupies). Sorted by name so the
+    choice is deterministic.
+    """
+    holders = [
+        cell["agent"] for cell in scan["cells"].values()
+        if cell["agent"] is not None and cell["food"]
+    ]
+    return sorted(holders, key=lambda a: a.name)
+
+
+def _will_steal(thief: Any, victim: Any, pers: Personality) -> bool:
+    """Whether `thief` would rob `victim` of food when desperate (Day 12).
+
+    Encodes requirement: steal on LOW trust, and let personality tilt it —
+    independent/competitive agents steal more readily, friendly/cautious less so.
+
+      - Never steal from someone you actively trust (bucket 'high').
+      - Independent (competitive) agents steal from anyone they don't trust
+        (neutral OR low) — they put survival over the relationship.
+      - Everyone else steals only from an agent they actively DISTRUST (low) —
+        a real grudge, e.g. after a prior theft or hostility.
+    """
+    raw = thief.relationships.get(victim.name, {}).get("trust", 0)
+    bucket = trust.trust_bucket(raw)
+    if bucket == "high":
+        return False
+    if pers.dominant == "independence":
+        return True
+    return bucket == "low"
+
+
 def _navigate(scan: dict[str, Any], preferred: list[str]) -> str:
     """Pick the best open move from `preferred`, falling back to any open dir.
 
@@ -232,9 +275,12 @@ def choose_action(agent: Any, strat: Strategy | None,
 
     Priority cascade:
       1. Eat if standing on worthwhile food.
-      2. Survival: if starving, beeline to the nearest food.
+      2. Survival: if starving, grab adjacent food; else (Day 12) if desperate
+         and an adjacent distrusted neighbour sits on food, STEAL it; else
+         beeline to the nearest food.
       3. Cautious rest: a cautious, well-fed agent near food holds position.
-      4. Execute the cached strategy if it yields a concrete move.
+      4. Execute the cached strategy if it yields a concrete move (incl. an
+         LLM-chosen 'steal').
       5. Otherwise fall back to the personality default.
     """
     pers = get_personality(agent)
@@ -247,9 +293,17 @@ def choose_action(agent: Any, strat: Strategy | None,
 
     # 2. Survival override — ignore strategy when close to starving.
     if agent.hunger >= SURVIVAL_HUNGER:
+        # 2a. Prefer free, unowned food adjacent to us.
         d = _adjacent_food_dir(s)
         if d:
             return f"move_{d}", "survival: grab adjacent food"
+        # 2b. Day 12: if desperate and the only food in reach is held by a
+        # neighbour we don't trust, STEAL it rather than walk to distant food.
+        if agent.hunger >= STEAL_DESPERATION:
+            for holder in _adjacent_food_holders(s):
+                if _will_steal(agent, holder, pers):
+                    return f"steal_from_{holder.name}", f"desperate: steal from {holder.name}"
+        # 2c. Otherwise head for the nearest free food on the map.
         nearest = _nearest(pos, state["food"])
         if nearest:
             return _navigate(s, _dirs_toward(pos, nearest)), "survival: head to food"
@@ -327,6 +381,18 @@ def _strategy_action(agent: Any, strat: Strategy | None, scan: dict[str, Any],
         # target missing/dead — still emit talk so it logs the documented no-op
         if target:
             return f"talk_to_{target}", f"talk to {target} (no one there)"
+        return None
+
+    if strat.kind == "steal":
+        # Day 12: the LLM chose to rob a named agent. Steal only if that agent is
+        # adjacent AND on food; if alive but out of reach, close the distance.
+        target = strat.target
+        target_pos = _agent_position(state, target)
+        if target and target_pos:
+            on_food = target_pos in state["food"]
+            if target in _adjacent_agent_names(scan) and on_food:
+                return f"steal_from_{target}", f"steal from {target}"
+            return _navigate(scan, _dirs_toward(pos, target_pos)), f"approach {target} to steal"
         return None
 
     if strat.kind == "rest":
@@ -433,9 +499,14 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
         f"Pick ONE high-level strategy to pursue for the next few turns, consistent "
         f"with your personality and goals, and informed by your memories.\n"
         f"Valid strategies: {', '.join(VALID_STRATEGIES)}.\n"
-        f"- If hunger is 6 or more, choose 'seek_food' (survival comes first).\n"
+        f"- If hunger is 6 or more, choose 'seek_food' (survival comes first)...\n"
+        f"- ...UNLESS you are starving and a nearby agent you DISTRUST is sitting on "
+        f"food: then 'steal' (target = their name) is a rational last resort. Food "
+        f"is scarce. Stealing makes a lasting enemy, so weigh it against friendship — "
+        f"if you are independent/competitive you steal readily; if friendly/cautious, "
+        f"only when truly desperate or already wronged.\n"
         f"- 'explore' may set target to one of: {', '.join(DIRECTIONS)}.\n"
-        f"- 'approach'/'talk' must set target to a nearby agent's name.\n"
+        f"- 'approach'/'talk'/'steal' must set target to a nearby agent's name.\n"
         f"- If 'talk', also set message to what you say.\n"
         f"- If you received a message, set reaction to one of: reply, ignore, hostile.\n\n"
         f"Respond with ONLY a JSON object, no extra text, shaped exactly:\n"

@@ -108,7 +108,8 @@ AGENT_SPECS = [
 ]
 
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
-_IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked")
+_IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked",
+                          "stole", "Trust in")
 
 
 def important_memories(memory: list[str], limit: int = 5) -> list[str]:
@@ -223,6 +224,8 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     action, note = choose_action(agent, strat, world_state)
     if action.startswith("talk_to_"):
         result = conversation.handle_talk(agent, action, strat, refreshed, turn, world_state)
+    elif action.startswith("steal_from_"):
+        result = conversation.handle_steal(agent, action, turn, world_state)
     else:
         result = execute_action(agent, action)
 

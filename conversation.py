@@ -141,6 +141,60 @@ def handle_talk(agent: Any, action: str, strat: Any, refreshed: bool,
     return f'{agent.name} talked to {target.name}: "{msg}"'
 
 
+def handle_steal(agent: Any, action: str, turn: int,
+                 state: dict[str, Any]) -> str:
+    """Execute a `steal_from_<name>` action: take a neighbour's food (Day 12).
+
+    Range rule (documented): the victim must be in an ADJACENT N/S/E/W cell — the
+    same reach as talk. (Agents can never share a cell, so "adjacent" is the only
+    workable contact range.) The theft SUCCEEDS only when the victim is alive and
+    is standing on a food tile (the food it holds / is about to eat).
+
+    On success the food transfers to the thief, who eats it immediately (hunger
+    relief), and it is removed from the victim's reach. Consequences:
+      - events[]   gets a clear THEFT line.
+      - the victim remembers the betrayal and its trust in the thief drops by
+        trust.THEFT_PENALTY PERMANENTLY (a latched grudge — see trust.adjust_trust).
+      - the thief remembers it may be retaliated against.
+
+    Invalid attempts (no one there, dead, or no food to take) are a logged no-op —
+    never a crash. Like talk, this rides the existing strategy call and adds NO
+    new inference.
+    """
+    victim_name = action[len("steal_from_"):]
+    victim = world.adjacent_agents(agent, state).get(victim_name)
+
+    # --- Validity gates: in range, alive, actually holding food -------------
+    if victim is None or not getattr(victim, "alive", True):
+        world.record_memory(agent, f"Tried to steal from {victim_name} but no one was there")
+        state["events"].append(
+            f"turn {turn}: {agent.name} tried to steal from {victim_name} but no one was in reach"
+        )
+        return f"{agent.name} tried to steal from {victim_name} but no one was in reach."
+
+    if victim.position not in state["food"]:
+        world.record_memory(agent, f"Tried to steal from {victim.name} but they had no food")
+        state["events"].append(
+            f"turn {turn}: {agent.name} tried to steal from {victim.name} but they had no food"
+        )
+        return f"{agent.name} tried to steal from {victim.name} but there was no food to take."
+
+    # --- Success: transfer the food, thief eats it -------------------------
+    state["food"].remove(victim.position)
+    agent.hunger = max(0, agent.hunger - world.EAT_RELIEF)
+
+    world.record_memory(agent, f"I stole from {victim.name}. They may retaliate.")
+    world.record_memory(victim, f"{agent.name} stole my food on turn {turn}.")
+    state["events"].append(f"turn {turn}: {agent.name} stole food from {victim.name}")
+
+    # Permanent, dominant trust hit (bigger than a hostile message's -3).
+    trust.bump_interaction(victim, agent.name)
+    trust.adjust_trust(victim, agent.name, -trust.THEFT_PENALTY, "theft", turn, state,
+                       permanent=True)
+
+    return f"{agent.name} stole food from {victim.name}."
+
+
 def process_inbox(agent: Any, refreshed: bool, llm_reaction: str,
                   turn: int, state: dict[str, Any]) -> list[tuple[str, str]]:
     """Consume this turn's deliverable messages and react (Day 8).

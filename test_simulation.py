@@ -530,6 +530,104 @@ def test_talk_adds_no_llm_calls() -> None:
           f"(strategy={stats['strategy']}, decision={stats['decision']})")
 
 
+# --- Steal + retaliation (Day 12) -----------------------------------------
+def test_theft_drops_trust_5_and_writes_memories() -> None:
+    """A successful steal drops the victim's trust by exactly 5 and logs both sides."""
+    import trust
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious and territorial", (5, 4))  # north of Kira, adjacent
+    world_state["food"].append(bob.position)  # Bob is standing on food
+    bob.relationships["Kira"] = {"trust": -1, "interactions": 1, "grudge": False}
+
+    res = conversation.handle_steal(kira, "steal_from_Bob", 23, world_state)
+    assert "stole food from Bob" in res, res
+
+    # Food left the victim's reach; thief ate it (hunger relief).
+    assert bob.position not in world_state["food"], world_state["food"]
+    assert kira.hunger == max(0, 8 - 7), kira.hunger
+
+    # Victim trust dropped by EXACTLY THEFT_PENALTY (-1 -> -6) and latched a grudge.
+    assert trust.THEFT_PENALTY == 5
+    assert bob.relationships["Kira"]["trust"] == -6, bob.relationships
+    assert bob.relationships["Kira"]["grudge"] is True, bob.relationships
+
+    # Both memories written, in the documented shape.
+    assert any("Kira stole my food on turn 23." == m for m in bob.memory), bob.memory
+    assert any("I stole from Bob. They may retaliate." == m for m in kira.memory), kira.memory
+
+    # events[] carries the THEFT line and the trust-change line.
+    assert any("turn 23: Kira stole food from Bob" == e for e in world_state["events"])
+    assert any("Bob trust in Kira: -1 -> -6 (theft)" in e for e in world_state["events"])
+    print("PASS test_theft_drops_trust_5_and_writes_memories")
+
+
+def test_theft_grudge_is_permanent() -> None:
+    """Friendly messages cannot repair a stolen-from grudge (Day 12 permanence)."""
+    import trust
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious", (5, 4))
+    world_state["food"].append(bob.position)
+    conversation.handle_steal(kira, "steal_from_Bob", 5, world_state)
+    assert bob.relationships["Kira"]["trust"] == -5, bob.relationships
+
+    # Any later positive trust toward the thief is refused — the grudge holds.
+    trust.adjust_trust(bob, "Kira", +1, "friendly message", 7, world_state)
+    trust.adjust_trust(bob, "Kira", +5, "friendly message", 9, world_state)
+    assert bob.relationships["Kira"]["trust"] == -5, bob.relationships
+    # But trust can still fall further (a second wrong).
+    trust.adjust_trust(bob, "Kira", -3, "hostile message", 11, world_state)
+    assert bob.relationships["Kira"]["trust"] == -8, bob.relationships
+    print("PASS test_theft_grudge_is_permanent")
+
+
+def test_theft_noop_when_no_food() -> None:
+    """Stealing from a victim with no food (or out of range) is a logged no-op."""
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious", (5, 4))  # adjacent but NOT on food
+    res = conversation.handle_steal(kira, "steal_from_Bob", 4, world_state)
+    assert "no food to take" in res, res
+    assert "Kira" not in bob.relationships, bob.relationships  # no trust hit
+    assert any("had no food" in e for e in world_state["events"])
+
+    # Out of range entirely.
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    far = _agent("Bob", "cautious", (0, 0))
+    world_state["food"].append(far.position)
+    res = conversation.handle_steal(kira, "steal_from_Bob", 4, world_state)
+    assert "no one was in reach" in res, res
+    assert far.position in world_state["food"]  # untouched
+    print("PASS test_theft_noop_when_no_food")
+
+
+def test_desperate_independent_steals_distrusted_holder() -> None:
+    """The executor turns desperation + distrust + opportunity into a steal action."""
+    # Independent Kira, starving, beside a food-holder she doesn't trust -> steals.
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious", (5, 4))
+    world_state["food"].append(bob.position)
+    action, _ = choose_action(kira, Strategy(kind="wander"), world_state)
+    assert action == "steal_from_Bob", action
+
+    # Friendly Alex at NEUTRAL trust does NOT steal (gate respected)...
+    _fresh_world()
+    alex = _agent("Alex", "friendly and outgoing", (5, 5), hunger=8)
+    bob = _agent("Bob", "cautious", (5, 4))
+    world_state["food"].append(bob.position)
+    action, _ = choose_action(alex, Strategy(kind="wander"), world_state)
+    assert not action.startswith("steal_from_"), action
+
+    # ...but once Alex actively distrusts Bob (low trust), desperation tips him over.
+    alex.relationships["Bob"] = {"trust": -3, "interactions": 1, "grudge": False}
+    action, _ = choose_action(alex, Strategy(kind="wander"), world_state)
+    assert action == "steal_from_Bob", action
+    print("PASS test_desperate_independent_steals_distrusted_holder")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -557,6 +655,10 @@ def main_runner() -> None:
         test_trust_hostile_drops_3_friendly_raises_1,
         test_trust_summary_buckets_and_prompt,
         test_talk_adds_no_llm_calls,
+        test_theft_drops_trust_5_and_writes_memories,
+        test_theft_grudge_is_permanent,
+        test_theft_noop_when_no_food,
+        test_desperate_independent_steals_distrusted_holder,
     ]
     for t in tests:
         t()
