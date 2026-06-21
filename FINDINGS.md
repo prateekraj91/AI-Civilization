@@ -12,3 +12,4 @@ My first cut was scarce but TOO scarce in the wrong way: agents dispersed and st
 
 In a 50-turn Qwen run (qwen3:8b, think-off), the agents stood adjacent on 4 turns, Alex talked to Bob twice, and Bob's trust in Alex rose 0 -> 1 -> 2 — all while food was still scarce enough that Bob starved on turn 17, Alex on turn 20, and Kira (who ate 7 times by camping the central food) on turn 39, each dying mid-movement, not stuck. I scripted none of it: who befriends whom, who hoards, who starves — clustering a scarce resource was enough to turn dispersal into a contested commons.
 
+Day 11 (scarcity): Under clustered scarce food, a social split emerged on its own — Bob and Alex traded friendly messages and built mutual trust to +5, while Alex's exchanges with Kira turned hostile and his trust in her fell to -6. I never wrote a rule deciding who allies or who feuds; the alliance and the grudge both came out of the talk-and-trust loop running under survival pressure.
