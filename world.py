@@ -91,6 +91,14 @@ EAT_RELIEF = 7         # hunger removed by eating one food (clamped at 0)
 MEMORY_LIMIT = 20      # an agent retains only its most recent N memories;
                        # older memories are discarded oldest-first.
 
+# --- Food clustering (Day 11) --------------------------------------------
+# When spawn_food(cluster=True), food is confined to a square window of this
+# Chebyshev radius around the grid centre instead of scattered across the whole
+# map. Day 11 turns this on so scarce food appears on the SAME central tiles the
+# agents start near — they converge and contend for it, rather than each starving
+# alone in a separate corner. Radius 2 on a 10x10 grid = a 5x5 central arena.
+FOOD_CLUSTER_RADIUS = 2
+
 # The authoritative world state. Keep this as the ONLY mutable global.
 world_state: dict[str, Any] = {
     "turn": 0,           # current simulation tick
@@ -183,15 +191,22 @@ def place_agent(agent: Any, x: int, y: int) -> tuple[int, int]:
     return agent.position
 
 
-def spawn_food(count: int = 5) -> list[tuple[int, int]]:
-    """Randomly place `count` food cells onto the grid.
+def spawn_food(count: int = 5, *, cluster: bool = False) -> list[tuple[int, int]]:
+    """Place up to `count` food cells onto free grid cells.
 
     Rules enforced:
       - food never overlaps existing food
       - food never overlaps an agent's position
 
-    Food coordinates are stored in world_state["food"] AND written onto the grid
-    so both the list (for debugging) and the spatial view agree.
+    `cluster` (Day 11): when True, food is restricted to a FOOD_CLUSTER_RADIUS
+    window around the grid centre so scarce food lands on contested central tiles
+    instead of scattering to the corners. When False (legacy), the whole grid is
+    eligible.
+
+    Cells are chosen by shuffling the free candidate pool and taking the first
+    `count` — so a full window simply yields fewer placements rather than looping
+    forever. Food coordinates are stored in world_state["food"] AND written onto
+    the grid so the list (for debugging) and the spatial view agree.
     """
     size = world_state["size"]
 
@@ -199,16 +214,22 @@ def spawn_food(count: int = 5) -> list[tuple[int, int]]:
     occupied: set[tuple[int, int]] = {a.position for a in world_state["agents"]}
     occupied |= set(world_state["food"])
 
-    placed = 0
-    while placed < count:
-        x = random.randint(0, size - 1)
-        y = random.randint(0, size - 1)
-        if (x, y) in occupied:
-            continue  # collision with agent or food — try again
-        occupied.add((x, y))
+    if cluster:
+        cx, cy = size // 2, size // 2
+        r = FOOD_CLUSTER_RADIUS
+        candidates = [
+            (x, y)
+            for x in range(max(0, cx - r), min(size, cx + r + 1))
+            for y in range(max(0, cy - r), min(size, cy + r + 1))
+        ]
+    else:
+        candidates = [(x, y) for x in range(size) for y in range(size)]
+
+    free = [c for c in candidates if c not in occupied]
+    random.shuffle(free)
+    for x, y in free[:count]:
         world_state["food"].append((x, y))
         world_state["grid"][y][x] = FOOD
-        placed += 1
 
     return world_state["food"]
 

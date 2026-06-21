@@ -59,21 +59,45 @@ _OUTPUT = os.getenv("AICIV_OUTPUT", "debug").lower()
 VERBOSE_MODE = _OUTPUT == "verbose"
 DEBUG_MODE = not VERBOSE_MODE  # default
 
-# Maximum turns to simulate (or until every agent has starved). Day 9 runs are
-# longer so social dynamics (talk + trust) have time to emerge.
-NUM_TURNS = 40
+# Maximum turns to simulate (or until every agent has starved). Day 9 lengthened
+# runs so social dynamics (talk + trust) had time to emerge; Day 11 keeps them
+# long (50) so survival pressure has room to force visible eat/starve outcomes.
+NUM_TURNS = 50
 
 # Phase 4: how often (in turns) to refresh an agent's strategy via the LLM.
 # Between refreshes the cached strategy is executed in Python — no inference.
 STRATEGY_INTERVAL = 5
 
-# Food economy. Day 9 rebalance: the world is deliberately ABUNDANT so a
-# reasonably-playing agent survives ~40 turns and lives long enough to socialise.
-# On a 10x10 grid this keeps the nearest food usually within a step or two.
-# (Scarcity / competition for limited food is Day 11 — not here.)
-INITIAL_FOOD = 14
-FOOD_RESPAWN_TO = 12      # keep at least this many food cells on the map
-FOOD_RESPAWN_BATCH = 5    # how many to add when topping up
+# --- Food economy: scarcity knobs (Day 11) --------------------------------
+# These are the ONLY dials for survival pressure — keep them named here, not as
+# magic numbers buried in the loop. Day 11 deliberately REVERSES the Day 9
+# abundance rebalance: Day 9 flooded the map (INITIAL_FOOD=14, topped back up to
+# 12 EVERY turn) so the social layer could emerge with nobody starving. Day 11
+# makes food genuinely SCARCE so agents must compete or cooperate — supply is
+# tuned BELOW what three hungry agents consume, so not everyone can stay fed.
+#
+#   knob                  Day 9 (abundant)      Day 11 (scarce, current)
+#   INITIAL_FOOD          14                    5      (was 3; raised for contact)
+#   respawn rule          top up to 12 / turn   ~1 food every 5 turns
+#   placement             scattered             clustered at centre (contention)
+#
+# Demand vs supply (why someone starves): EAT_RELIEF=7 means each agent needs
+# ~1 food per 7 turns; three agents demand ~0.43 food/turn. The drip below
+# supplies ~0.20 food/turn — a deliberate deficit, so food runs out under load.
+#
+# Day 11 contention tune-up: pure scarcity made agents starve alone in separate
+# corners (0 talks, 0 trust changes). Two fixes pull them together WITHOUT making
+# the world generous: (1) INITIAL_FOOD 3->5 so they live a few turns longer and
+# actually meet; (2) FOOD_CLUSTERED — scarce food spawns on the SAME central
+# tiles they start near, so they converge and compete instead of dispersing.
+INITIAL_FOOD = 5            # food cells on the map at t=0 (was 3; Day 9 was 14)
+FOOD_RESPAWN_EVERY = 5      # respawn cadence: add food once every N turns (~0.2/turn)
+FOOD_RESPAWN_AMOUNT = 1     # food cells added on each respawn tick
+FOOD_RESPAWN_CAP = 5        # never respawn above this many standing food cells; this
+                            # only bounds accumulation AFTER agents die — while the
+                            # world is contested, demand keeps food well below it.
+FOOD_CLUSTERED = True       # spawn food in a central arena (world.FOOD_CLUSTER_RADIUS)
+                            # so agents contend over shared tiles, not scatter.
 
 # The starting cast. Each agent has a distinct dominant trait so behaviour and
 # logs are easy to tell apart: Alex = friendly, Bob = cautious, Kira = independent.
@@ -98,12 +122,20 @@ def important_memories(memory: list[str], limit: int = 5) -> list[str]:
     return chosen[-limit:]
 
 
-def maybe_respawn_food() -> None:
-    """Top the food supply back up to FOOD_RESPAWN_TO if it has run low."""
-    if FOOD_RESPAWN_TO <= 0:
+def maybe_respawn_food(turn: int) -> None:
+    """Day 11 scarcity: drip food onto the map slowly instead of topping it up.
+
+    Day 9 refilled to FOOD_RESPAWN_TO (12) EVERY turn — effectively unlimited
+    food. Day 11 replaces that with a slow trickle of FOOD_RESPAWN_AMOUNT every
+    FOOD_RESPAWN_EVERY turns (~1 food / 5 turns), which is intentionally SLOWER
+    than three agents eat, so food genuinely runs out and they must compete. The
+    CAP only stops unbounded accumulation once agents stop eating; while the
+    world is contested it almost never binds.
+    """
+    if FOOD_RESPAWN_EVERY <= 0:
         return
-    if len(world_state["food"]) < FOOD_RESPAWN_TO:
-        spawn_food(FOOD_RESPAWN_BATCH)
+    if turn % FOOD_RESPAWN_EVERY == 0 and len(world_state["food"]) < FOOD_RESPAWN_CAP:
+        spawn_food(FOOD_RESPAWN_AMOUNT, cluster=FOOD_CLUSTERED)
 
 
 def living_agents() -> list[Agent]:
@@ -240,7 +272,7 @@ def main() -> None:
     create_world()
     for name, personality, goals, (x, y) in AGENT_SPECS:
         place_agent(Agent(name=name, personality=personality, goals=goals), x, y)
-    spawn_food(INITIAL_FOOD)
+    spawn_food(INITIAL_FOOD, cluster=FOOD_CLUSTERED)
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -276,7 +308,7 @@ def main() -> None:
             print(f"Food remaining: {len(world_state['food'])}")
             print()
 
-        maybe_respawn_food()
+        maybe_respawn_food(turn)
 
         if not living_agents():
             if VERBOSE_MODE:
