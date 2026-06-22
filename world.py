@@ -114,6 +114,14 @@ world_state: dict[str, Any] = {
     # running number of newcomers spawned, used to cycle the newcomer roster.
     "pending_respawns": [],  # list[int]: turns at which a respawn becomes due
     "respawn_count": 0,      # how many newcomers have entered so far
+    # Day 15 God mode. Both are PLAIN world_state so god_mode.py only ever
+    # reads/writes the single source of truth. `treasures` are high-value items the
+    # god can drop (each {"pos": (x, y), "value": int}); a treasure's position is
+    # ALSO mirrored into `food` so the existing perception/navigation loop targets
+    # it with zero executor changes — claiming it (eat) just pays out more.
+    # `drought_until` is the last turn through which food respawn is suppressed.
+    "treasures": [],         # list[dict]: high-value items dropped by God mode
+    "drought_until": 0,      # int: respawn suppressed while turn <= this value
 }
 
 
@@ -152,6 +160,20 @@ def agent_at(x: int, y: int, state: dict[str, Any] | None = None) -> Any | None:
     return living_agents_by_position(state).get((x, y))
 
 
+def treasure_at(pos: tuple[int, int],
+                state: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Return the treasure record sitting on `pos` (Day 15), or None.
+
+    Treasures live in world_state["treasures"] as {"pos", "value"} dicts. This is
+    the single lookup behind the eat handler's treasure branch and the renderer.
+    """
+    state = world_state if state is None else state
+    for t in state["treasures"]:
+        if t["pos"] == pos:
+            return t
+    return None
+
+
 def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     """Build a fresh, empty `size` x `size` world and store it in world_state.
 
@@ -185,6 +207,8 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state["events"].clear()
     world_state["pending_respawns"].clear()
     world_state["respawn_count"] = 0
+    world_state["treasures"].clear()
+    world_state["drought_until"] = 0
     return world_state["grid"]
 
 
@@ -459,6 +483,20 @@ def execute_action(agent: Any, action: str) -> str:
     if action == "eat":
         # The agent may only eat what is on its CURRENT tile. The grid cell
         # stays AGENT (agent on top); only the food record + hunger change.
+        #
+        # Day 15: a treasure dropped by God mode is checked FIRST. A treasure is
+        # mirrored into the food list too (so the existing navigation loop heads for
+        # it), but claiming it pays out its full value as hunger relief — more than a
+        # normal meal — and goes into the agent's inventory as wealth.
+        treasure = treasure_at(agent.position)
+        if treasure is not None:
+            world_state["treasures"].remove(treasure)
+            if agent.position in world_state["food"]:
+                world_state["food"].remove(agent.position)
+            agent.hunger = max(0, agent.hunger - treasure["value"])
+            agent.inventory.append({"treasure": treasure["value"]})
+            record_memory(agent, f"Claimed treasure (value {treasure['value']})")
+            return f"{agent.name} claimed a treasure (value {treasure['value']})!"
         if agent.position in world_state["food"]:
             world_state["food"].remove(agent.position)
             agent.hunger = max(0, agent.hunger - EAT_RELIEF)
@@ -519,9 +557,10 @@ def mark_dead(agent: Any) -> None:
 def render(state: dict[str, Any] | None = None) -> str:
     """Return an ASCII snapshot of the world for logging (Day 6).
 
-    Legend: '.' empty, '*' food, and each living agent's first initial on its
-    cell. Built from the food list and live agent positions (not the grid array)
-    so the picture always matches the authoritative state.
+    Legend: '.' empty, '*' food, '$' treasure (Day 15), and each living agent's
+    first initial on its cell. Built from the food/treasure lists and live agent
+    positions (not the grid array) so the picture always matches the authoritative
+    state.
     """
     state = world_state if state is None else state
     size = state["size"]
@@ -529,6 +568,9 @@ def render(state: dict[str, Any] | None = None) -> str:
 
     for fx, fy in state["food"]:
         cells[fy][fx] = "*"
+    for t in state["treasures"]:
+        tx, ty = t["pos"]
+        cells[ty][tx] = "$"
     for agent in state["agents"]:
         if getattr(agent, "alive", True):
             ax, ay = agent.position

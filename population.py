@@ -156,29 +156,47 @@ def _empty_cell_near_centre(state: dict[str, Any]) -> tuple[int, int] | None:
     return candidates[0]
 
 
-def _spawn_newcomer(turn: int, state: dict[str, Any]) -> Any | None:
-    """Create and place ONE blank-slate newcomer, notifying the survivors.
+def spawn_blank_agent(name: str, personality: str, turn: int, state: dict[str, Any],
+                      goals: dict[str, int] | None = None,
+                      pos: tuple[int, int] | None = None) -> Any | None:
+    """Create + place ONE blank-slate agent and notify the survivors (Day 14).
 
-    The Agent is built from its dataclass defaults except name/personality/goals, so
-    memory is empty, relationships/allies/ally_offers/inbox are empty, and hunger is
-    0 — a true cold start. Returns the newcomer, or None if no cell was free.
+    The single cold-start path, shared by the Day 14 timed respawn (_spawn_newcomer)
+    and Day 15 God mode (god_mode.spawn_agent), so a god-summoned agent is a proper
+    citizen built exactly like a respawned one. The Agent is its dataclass defaults
+    except name/personality/goals: empty memory, empty relationships/allies/offers/
+    inbox, hunger 0 — a true social cold start. The name is made unique against every
+    agent ever in the world (so it can never inherit a predecessor's reputation).
+
+    `pos` overrides placement (god mode can target a cell); otherwise a valid empty
+    cell near the centre is chosen. Returns the new agent, or None if no cell free.
     """
-    cell = _empty_cell_near_centre(state)
+    cell = pos if pos is not None else _empty_cell_near_centre(state)
     if cell is None:
         return None
 
-    count = state.get("respawn_count", 0)
-    base, personality, goals = NEWCOMER_SPECS[count % len(NEWCOMER_SPECS)]
-    state["respawn_count"] = count + 1
-
-    name = _unique_name(base, state)
-    newcomer = Agent(name=name, personality=personality, goals=dict(goals))
+    unique = _unique_name(name, state)
+    newcomer = Agent(name=unique, personality=personality, goals=dict(goals or {}))
     world.place_agent(newcomer, *cell)
 
     for survivor in state["agents"]:
         if survivor.alive and survivor is not newcomer:
-            world.record_memory(survivor, f"A new agent, {name}, appeared on turn {turn}.")
-    state["events"].append(f"turn {turn}: a new agent {name} appeared (blank slate)")
+            world.record_memory(survivor, f"A new agent, {unique}, appeared on turn {turn}.")
+    state["events"].append(f"turn {turn}: a new agent {unique} appeared (blank slate)")
+    return newcomer
+
+
+def _spawn_newcomer(turn: int, state: dict[str, Any]) -> Any | None:
+    """Pick the next roster entry and spawn it as a blank-slate newcomer (Day 14).
+
+    Cycles NEWCOMER_SPECS by respawn_count and delegates the actual creation to the
+    shared spawn_blank_agent. Returns the newcomer, or None if no cell was free.
+    """
+    count = state.get("respawn_count", 0)
+    base, personality, goals = NEWCOMER_SPECS[count % len(NEWCOMER_SPECS)]
+    newcomer = spawn_blank_agent(base, personality, turn, state, goals=goals)
+    if newcomer is not None:
+        state["respawn_count"] = count + 1
     return newcomer
 
 

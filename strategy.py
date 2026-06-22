@@ -604,13 +604,27 @@ def build_strategy_prompt(agent: Any, observation: str, *, memory_limit: int = 6
             )
             ally_block += f"Food your allies can see (shared with you): {sights}.\n"
 
+    # Day 15: surface any God-dropped treasure so the LLM path values it ABOVE
+    # ordinary food (the deterministic executor already targets it, since treasure
+    # is mirrored into the food list). Reading world_state only — no new mechanic.
+    treasure_block = ""
+    if state is not None and state.get("treasures"):
+        spots = "; ".join(
+            f"({t['pos'][0]}, {t['pos'][1]}) worth {t['value']}"
+            for t in state["treasures"]
+        )
+        treasure_block = (
+            f"TREASURE on the map (worth more than food — go claim it): {spots}.\n"
+        )
+
     return (
         f"You are {agent.name}, a {agent.personality} agent on a shared 10x10 grid.\n"
         f"Dominant trait: {pers.dominant}.\n"
         f"{hunger_line(agent.hunger)}\n"
         f"Your goals (higher = more important): {format_goals(agent.goals)}\n"
         f"{trust_block}"
-        f"{ally_block}\n"
+        f"{ally_block}"
+        f"{treasure_block}\n"
         f"Recent memories:\n{mem_block}\n"
         f"{inbox_block}\n"
         f"Surroundings:\n{observation}\n\n"

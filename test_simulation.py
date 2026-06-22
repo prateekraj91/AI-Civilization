@@ -908,6 +908,156 @@ def test_respawn_adds_no_llm_calls() -> None:
     print("PASS test_respawn_adds_no_llm_calls")
 
 
+# --- God mode (Day 15) -----------------------------------------------------
+def test_god_mode_imports_only_world_state_layers() -> None:
+    """god_mode.py must touch ONLY world_state — no decision-logic imports."""
+    import ast
+    with open("god_mode.py") as f:
+        tree = ast.parse(f.read())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    forbidden = {"strategy", "trust", "conversation", "alliance", "personality", "llm"}
+    assert not (imported & forbidden), f"god_mode imports decision logic: {imported & forbidden}"
+    # The only project modules it may lean on are the world-state layers.
+    project = imported - {"__future__", "typing", "ast", "os", "sys", "random"}
+    assert project <= {"world", "population"}, project
+    print("PASS test_god_mode_imports_only_world_state_layers")
+
+
+def test_god_spawn_food_mutates_world_and_logs() -> None:
+    """spawn_food adds a food tile at (x,y) and logs a [GOD] event."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 12
+    res = god_mode.spawn_food(world_state, 3, 4)
+    assert (3, 4) in world_state["food"]
+    assert world_state["grid"][4][3] == "food"
+    assert res == "turn 12: [GOD] spawned food at (3,4)"
+    assert any("[GOD] spawned food at (3,4)" in e for e in world_state["events"])
+    print("PASS test_god_spawn_food_mutates_world_and_logs")
+
+
+def test_god_spawn_agent_is_blank_slate_citizen() -> None:
+    """spawn_agent reuses the Day 14 cold-start path: blank state + logged."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 5
+    alex = _agent("Alex", "friendly and outgoing", (1, 1))
+    res = god_mode.spawn_agent(world_state, "Zed", "curious and bold")
+    zed = next(a for a in world_state["agents"] if a.name == "Zed")
+    assert zed.memory == [] and zed.relationships == {} and zed.hunger == 0
+    assert zed.alive and zed.position in {(x, y) for x in range(10) for y in range(10)}
+    # The survivor was told, and BOTH the blank-slate line and the [GOD] line logged.
+    assert any("A new agent, Zed, appeared on turn 5" in m for m in alex.memory)
+    assert any("a new agent Zed appeared (blank slate)" in e for e in world_state["events"])
+    assert "[GOD] spawned agent Zed" in res
+    print("PASS test_god_spawn_agent_is_blank_slate_citizen")
+
+
+def test_god_drought_zeroes_respawn_for_exactly_20_turns() -> None:
+    """trigger_drought stops food respawn for exactly DROUGHT_TURNS turns."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 30
+    res = god_mode.trigger_drought(world_state)  # default 20
+    assert world_state["drought_until"] == 50
+    assert "[GOD] drought triggered (20 turns)" in res
+
+    # Respawn ticks every main.FOOD_RESPAWN_EVERY turns. Walk every turn from the
+    # trigger through past the drought's end and assert: EVERY respawn tick inside
+    # the 20-turn window (turns 31..50) adds nothing, and the first tick AFTER the
+    # window (turn 50 < tick) resumes adding food.
+    suppressed_ticks = 0
+    resumed = False
+    for turn in range(31, 60):
+        before = len(world_state["food"])
+        main.maybe_respawn_food(turn)
+        added = len(world_state["food"]) - before
+        if turn % main.FOOD_RESPAWN_EVERY != 0:
+            continue  # not a respawn tick
+        if turn <= 50:                       # inside the drought window
+            assert added == 0, f"drought leaked food at turn {turn}"
+            suppressed_ticks += 1
+        elif not resumed and len(world_state["food"]) <= main.FOOD_RESPAWN_CAP:
+            resumed = added >= 1             # first post-drought tick
+    assert suppressed_ticks == 4, suppressed_ticks   # ticks at 35, 40, 45, 50
+    assert resumed, "respawn did not resume after the drought ended"
+    print("PASS test_god_drought_zeroes_respawn_for_exactly_20_turns")
+
+
+def test_god_treasure_is_contestable_and_more_valuable() -> None:
+    """drop_treasure places a claimable, high-value item; claiming pays out value."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 8
+    res = god_mode.drop_treasure(world_state, 5, 5)  # default value 10
+    assert world_state["treasures"] == [{"pos": (5, 5), "value": 10}]
+    # Mirrored into food so the existing navigation loop targets it (contestable).
+    assert (5, 5) in world_state["food"]
+    assert "[GOD] dropped treasure (value 10) at (5,5)" in res
+
+    # A hungry agent standing on it claims it: hunger relief = value (10 > EAT_RELIEF
+    # 7), it lands in inventory, and it is removed from BOTH treasures and food.
+    a = _agent("Alex", "friendly and outgoing", (5, 5), hunger=9)
+    result = execute_action(a, "eat")
+    assert "claimed a treasure" in result, result
+    assert a.hunger == 0 and a.inventory == [{"treasure": 10}]
+    assert world_state["treasures"] == [] and (5, 5) not in world_state["food"]
+    print("PASS test_god_treasure_is_contestable_and_more_valuable")
+
+
+def test_god_spawned_food_draws_hungry_agent_within_two_turns() -> None:
+    """The reaction is emergent: a hungry agent navigates to god-spawned food."""
+    import god_mode
+    _fresh_world()
+    # A hungry agent with no food anywhere; survival override will seek food.
+    a = _agent("Bob", "cautious and territorial", (5, 5), hunger=6)
+    god_mode.spawn_food(world_state, 5, 8)  # 3 cells due south
+    # No script: the real executor, reading the changed world, heads south.
+    start = a.position
+    for _ in range(2):
+        action, _note = choose_action(a, Strategy(kind="wander"), world_state)
+        execute_action(a, action)
+    moved_closer = abs(a.position[1] - 8) < abs(start[1] - 8)
+    assert moved_closer, f"agent did not move toward spawned food: {start} -> {a.position}"
+    print("PASS test_god_spawned_food_draws_hungry_agent_within_two_turns")
+
+
+def test_god_menu_pauses_and_resumes_cleanly() -> None:
+    """A scripted God session runs commands then resumes on a blank line."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 20
+    scripted = iter(["status", "spawn_food 2 2", "trigger_drought", ""])  # blank resumes
+    out_lines: list[str] = []
+    god_mode.god_menu(world_state, 20,
+                      read_line=lambda _prompt="": next(scripted),
+                      out=out_lines.append)
+    # Commands took effect...
+    assert (2, 2) in world_state["food"]
+    assert world_state["drought_until"] == 40
+    # ...and the session ended on the blank line with a resume notice.
+    assert any("resuming simulation" in line for line in out_lines)
+    print("PASS test_god_menu_pauses_and_resumes_cleanly")
+
+
+def test_god_mode_adds_no_llm_calls() -> None:
+    """Every God intervention is pure world_state mutation — zero inference."""
+    import god_mode
+    _fresh_world()
+    llm.reset_call_stats()
+    god_mode.spawn_food(world_state, 1, 1)
+    god_mode.drop_treasure(world_state, 2, 2)
+    god_mode.trigger_drought(world_state)
+    god_mode.spawn_agent(world_state, "Newbie", "curious")
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    print("PASS test_god_mode_adds_no_llm_calls")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -950,6 +1100,14 @@ def main_runner() -> None:
         test_newcomer_is_blank_slate_and_participates,
         test_respawn_keeps_population_bounded,
         test_respawn_adds_no_llm_calls,
+        test_god_mode_imports_only_world_state_layers,
+        test_god_spawn_food_mutates_world_and_logs,
+        test_god_spawn_agent_is_blank_slate_citizen,
+        test_god_drought_zeroes_respawn_for_exactly_20_turns,
+        test_god_treasure_is_contestable_and_more_valuable,
+        test_god_spawned_food_draws_hungry_agent_within_two_turns,
+        test_god_menu_pauses_and_resumes_cleanly,
+        test_god_mode_adds_no_llm_calls,
     ]
     for t in tests:
         t()

@@ -28,6 +28,7 @@ import os
 
 import alliance
 import conversation
+import god_mode
 import population
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -68,6 +69,12 @@ NUM_TURNS = 50
 # Phase 4: how often (in turns) to refresh an agent's strategy via the LLM.
 # Between refreshes the cached strategy is executed in Python — no inference.
 STRATEGY_INTERVAL = 5
+
+# Day 15 God mode: pause into the interactive God menu every N turns. Default 0
+# (OFF) so normal/automated runs never block on input(); set AICIV_GOD_EVERY=10 to
+# drop into the menu every 10 turns. The pause happens at a clean turn boundary, so
+# resuming continues the loop uncorrupted.
+GOD_EVERY = int(os.getenv("AICIV_GOD_EVERY", "0"))
 
 # --- Food economy: scarcity knobs (Day 11) --------------------------------
 # These are the ONLY dials for survival pressure — keep them named here, not as
@@ -136,6 +143,9 @@ def maybe_respawn_food(turn: int) -> None:
     world is contested it almost never binds.
     """
     if FOOD_RESPAWN_EVERY <= 0:
+        return
+    # Day 15: a god-triggered drought suppresses ALL respawn while it lasts.
+    if turn <= world_state.get("drought_until", 0):
         return
     if turn % FOOD_RESPAWN_EVERY == 0 and len(world_state["food"]) < FOOD_RESPAWN_CAP:
         spawn_food(FOOD_RESPAWN_AMOUNT, cluster=FOOD_CLUSTERED)
@@ -333,6 +343,12 @@ def main() -> None:
                 print()
             elif VERBOSE_MODE:
                 print(f"  *** {newcomer.name} entered the world (blank slate) ***\n")
+
+        # Day 15: pause into the interactive God menu at a clean turn boundary. Any
+        # world change made here is perceived by the agents on the NEXT turn through
+        # the normal senses -> strategy -> executor loop — no reaction is scripted.
+        if GOD_EVERY > 0 and turn % GOD_EVERY == 0:
+            god_mode.god_menu(world_state, turn)
 
         # End only when the world is BOTH empty AND has no respawn pending — a
         # scheduled newcomer can still repopulate an emptied world.
