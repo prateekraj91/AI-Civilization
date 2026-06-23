@@ -913,6 +913,74 @@ def test_respawn_adds_no_llm_calls() -> None:
     print("PASS test_respawn_adds_no_llm_calls")
 
 
+# --- Renderer (Day 18) -----------------------------------------------------
+def test_renderer_imports_only_state_reading_modules() -> None:
+    """renderer/text_renderer.py must READ state only — no decision-logic imports.
+
+    Mirrors the god_mode AST boundary test: the renderer is the only thing that DRAWS
+    the world, and it may touch nothing but `world` (the state-reading layer) plus the
+    third-party `rich`. Importing strategy/trust/conversation/alliance/personality/
+    agents/llm/god_mode would let presentation reach into decision logic.
+    """
+    import ast
+    with open("renderer/text_renderer.py") as f:
+        tree = ast.parse(f.read())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    forbidden = {"strategy", "trust", "conversation", "alliance", "personality",
+                 "agents", "llm", "god_mode", "population"}
+    assert not (imported & forbidden), f"renderer imports decision logic: {imported & forbidden}"
+    # The only project module it may lean on is `world`; the rest is stdlib + rich.
+    project = imported - {"__future__", "typing", "contextlib", "os", "sys", "rich"}
+    assert project <= {"world"}, project
+    print("PASS test_renderer_imports_only_state_reading_modules")
+
+
+def test_render_frame_does_not_mutate_world_state() -> None:
+    """A render is a pure READ: world_state is byte-identical before and after.
+
+    Builds a known world (agents at known hunger, food, a treasure, an alliance, an
+    event) then snapshots every world_state field with a deep copy, renders a frame,
+    and asserts nothing changed and a renderable was produced.
+    """
+    import copy
+    from renderer import render_frame, RichRenderer
+    _fresh_world()
+    world_state["turn"] = 7
+    alex = _agent("Alex", "friendly and outgoing", (4, 4), hunger=3)
+    bob = _agent("Bob", "cautious and territorial", (6, 4), hunger=8)
+    kira = _agent("Kira", "independent and competitive", (4, 6), hunger=2)
+    spawn_food(3, cluster=True)
+    world_state["treasures"].append({"pos": (5, 5), "value": 9})
+    alex.allies.add("Bob"); bob.allies.add("Alex")
+    alex.relationships["Bob"] = {"trust": 3, "interactions": 2, "grudge": False}
+    world_state["events"].append("turn 6: [GOD] dropped a treasure at (5,5)")
+    mark_dead(kira)  # exercise the dead-agent rendering path too
+
+    before = copy.deepcopy({k: world_state[k] for k in world_state
+                            if k not in ("agents",)})
+    agents_before = [(a.name, a.position, a.hunger, a.alive,
+                      set(a.allies), copy.deepcopy(a.relationships))
+                     for a in world_state["agents"]]
+
+    frame = render_frame(world_state)
+    assert frame is not None
+
+    after = {k: world_state[k] for k in world_state if k not in ("agents",)}
+    assert after == before, "render_frame mutated world_state"
+    agents_after = [(a.name, a.position, a.hunger, a.alive,
+                     set(a.allies), a.relationships) for a in world_state["agents"]]
+    assert agents_after == agents_before, "render_frame mutated an agent"
+
+    # The renderer can also produce a frame off-Live (one-shot) without a terminal.
+    RichRenderer()  # constructs cleanly (binds to the real stdout, devnull sink)
+    print("PASS test_render_frame_does_not_mutate_world_state")
+
+
 # --- God mode (Day 15) -----------------------------------------------------
 def test_god_mode_imports_only_world_state_layers() -> None:
     """god_mode.py must touch ONLY world_state — no decision-logic imports."""
@@ -1256,6 +1324,8 @@ def main_runner() -> None:
         test_newcomer_is_blank_slate_and_participates,
         test_respawn_keeps_population_bounded,
         test_respawn_adds_no_llm_calls,
+        test_renderer_imports_only_state_reading_modules,
+        test_render_frame_does_not_mutate_world_state,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
         test_god_spawn_agent_is_blank_slate_citizen,

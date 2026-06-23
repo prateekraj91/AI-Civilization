@@ -390,17 +390,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--god-every", type=int, default=None,
         help="drop into the interactive God menu every N turns (default from "
              "AICIV_GOD_EVERY, else off). Ignored when --god-script is given.")
+    p.add_argument(
+        "--render", choices=("plain", "rich"), default="plain",
+        help="output style. 'plain' (default) is the unchanged turn-by-turn text "
+             "print. 'rich' shows a live in-place dashboard (grid + per-agent status "
+             "+ event log) via the `rich` library. With --render rich the dashboard "
+             "owns the terminal during the run and the plain per-turn text is "
+             "suppressed there; under --log that plain text is still captured to the "
+             "log file byte-for-byte, and the end-of-run summary prints to both.")
     return p.parse_args(argv)
 
 
 def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = None,
-                   god_every: int = 0) -> None:
+                   god_every: int = 0, renderer: "Any" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
     explicit turn count and an optional non-interactive god script. The caller is
     responsible for seeding `random` BEFORE calling this (so world setup is part of the
     reproducible sequence) and for any stdout capture.
+
+    Day 18: an optional `renderer` (renderer.RichRenderer) draws a live dashboard from
+    world_state after each turn. When given, the dashboard owns the terminal and the
+    plain per-turn prints are redirected to `renderer.sink` (the log file under --log,
+    else os.devnull) so they never scroll over the dashboard but are still captured.
+    The renderer ONLY READS world_state — it cannot affect the simulation, so a run is
+    byte-identical with or without it (the plain text is merely routed elsewhere). When
+    `renderer is None` the path is exactly the pre-Day-18 plain behaviour.
     """
     god_script = god_script or {}
 
@@ -422,7 +438,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         print()
 
     # --- The shared survival loop ---------------------------------------
-    for turn in range(1, num_turns + 1):
+    # Day 18: in rich mode the Live dashboard owns the terminal for the whole loop,
+    # and the plain per-turn prints are redirected to renderer.sink (log or devnull)
+    # so they don't scroll over it. Both context managers are no-ops when there is no
+    # renderer, so the plain path below is byte-identical to before.
+    live_cm = renderer.live() if renderer is not None else contextlib.nullcontext()
+    sink_cm = (contextlib.redirect_stdout(renderer.sink)
+               if renderer is not None else contextlib.nullcontext())
+    with live_cm, sink_cm:
+      for turn in range(1, num_turns + 1):
         world_state["turn"] = turn
 
         if VERBOSE_MODE:
@@ -472,6 +496,10 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         elif god_every > 0 and turn % god_every == 0:
             god_mode.god_menu(world_state, turn)
 
+        # Day 18: redraw the live dashboard from the now-resolved turn (READ only).
+        if renderer is not None:
+            renderer.update(world_state)
+
         # End only when the world is BOTH empty AND has no respawn pending — a
         # scheduled newcomer can still repopulate an emptied world.
         if not living_agents() and not world_state["pending_respawns"]:
@@ -486,8 +514,31 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     print_events_log()
 
 
+def _make_renderer(mode: str, *, sink: "Any" = None):
+    """Build the optional Day 18 renderer for --render (None for plain mode).
+
+    Imported lazily so a plain run never imports `rich` (or the renderer package) at
+    all — keeping the default path's dependencies and import-time behaviour unchanged.
+    `sink` is where the plain per-turn text is redirected during the loop: the open log
+    file under --log, else None (the renderer defaults it to os.devnull).
+    """
+    if mode != "rich":
+        return None
+    from renderer import RichRenderer
+    return RichRenderer(sink=sink)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    # Day 18: importing `rich` consumes some of the global `random` stream at import
+    # time. Since the offline provider AND world/food placement draw from that same
+    # stream, importing it AFTER seeding would shift the sequence and make a seeded
+    # --render rich run diverge from the plain run. Trigger the import BEFORE seeding
+    # (it is cached, so the later RichRenderer construction is free) so the seed
+    # governs an identical world whether or not the dashboard is on.
+    if args.render == "rich":
+        import renderer  # noqa: F401  (import-for-side-effect: warm rich before seed)
 
     # Seed BEFORE any world setup so placement + food spawns + provider RNG are all
     # part of the reproducible sequence. --seed wins over AICIV_SEED; absent both, the
@@ -507,17 +558,26 @@ def main(argv: list[str] | None = None) -> None:
         log_file = open(args.log, "w")
         original = sys.stdout
         sys.stdout = _Tee(original, log_file)
+        # Day 18: in rich mode the dashboard takes the terminal during the loop, so the
+        # plain per-turn text is routed to the log file ONLY (not owned by the renderer
+        # — main closes it). The end-of-run summary still prints through the Tee to both.
+        renderer = _make_renderer(args.render, sink=log_file)
         try:
             if seed is not None:
                 print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
-            run_simulation(num_turns, god_script=god_script, god_every=god_every)
+            run_simulation(num_turns, god_script=god_script, god_every=god_every,
+                           renderer=renderer)
         finally:
             sys.stdout = original
             log_file.close()
         print(f"[run] captured to {args.log}")
     else:
+        # No log: rich mode drops the plain per-turn text (devnull) and shows only the
+        # dashboard; the summary prints to the terminal after the run.
+        renderer = _make_renderer(args.render, sink=None)
         with contextlib.suppress(KeyboardInterrupt):
-            run_simulation(num_turns, god_script=god_script, god_every=god_every)
+            run_simulation(num_turns, god_script=god_script, god_every=god_every,
+                           renderer=renderer)
 
 
 if __name__ == "__main__":
