@@ -3,6 +3,8 @@
 
 # Virtual environment
 Jarvis/
+.Jarvis/
+.venv/
 
 # Python bytecode
 __pycache__/

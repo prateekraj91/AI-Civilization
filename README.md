@@ -22,7 +22,7 @@ the agents actually did.
 ```bash
 # clone, then from the repo root:
 python3 -m venv .Jarvis
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .Jarvis/bin/activate         # Windows: .Jarvis\Scripts\activate
 pip install -r requirements.txt
 ```
 
