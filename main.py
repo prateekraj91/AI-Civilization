@@ -29,6 +29,7 @@ import contextlib
 import os
 import random
 import sys
+import time
 
 import alliance
 import conversation
@@ -362,6 +363,32 @@ def parse_god_script(spec: str | None) -> dict[int, list[str]]:
     return script
 
 
+# Day 19: named pacing presets for --speed, in SECONDS of pause between rendered
+# turns. Presentation only — the pause is applied AFTER a turn is fully resolved and
+# drawn, so it never touches world_state, the RNG, or what a log captures.
+_SPEED_PRESETS = {"slow": 2.0, "normal": 0.5, "fast": 0.1}
+
+
+def parse_speed(value: str) -> float:
+    """Map a --speed value to a per-turn delay in seconds (Day 19).
+
+    Accepts a named preset (slow/normal/fast) or a raw non-negative number for fine
+    control (e.g. "0.3"). Raises argparse.ArgumentTypeError on anything else so the
+    CLI reports a clean error. The returned delay only ever paces a RENDERED run.
+    """
+    if value in _SPEED_PRESETS:
+        return _SPEED_PRESETS[value]
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"--speed must be one of {sorted(_SPEED_PRESETS)} or a number of seconds, "
+            f"got {value!r}")
+    if secs < 0:
+        raise argparse.ArgumentTypeError(f"--speed seconds must be >= 0, got {secs}")
+    return secs
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """CLI for a reproducible, capturable run (Day 17)."""
     p = argparse.ArgumentParser(
@@ -398,11 +425,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "owns the terminal during the run and the plain per-turn text is "
              "suppressed there; under --log that plain text is still captured to the "
              "log file byte-for-byte, and the end-of-run summary prints to both.")
+    p.add_argument(
+        "--speed", type=parse_speed, default=_SPEED_PRESETS["normal"], metavar="SPEED",
+        help="pacing for a RENDERED run: slow (~2.0s/turn), normal (~0.5s/turn, "
+             "default), fast (~0.1s/turn), or a raw number of seconds (e.g. 0.3). The "
+             "pause is presentation-only — it applies ONLY with --render rich, after "
+             "each turn is drawn, and never affects tests, plain/logged runs, or the "
+             "seeded RNG. Demo invocation: --render rich --speed slow --turns 30.")
     return p.parse_args(argv)
 
 
 def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = None,
-                   god_every: int = 0, renderer: "Any" = None) -> None:
+                   god_every: int = 0, renderer: "Any" = None,
+                   turn_delay: float = 0.0) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -497,8 +532,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             god_mode.god_menu(world_state, turn)
 
         # Day 18: redraw the live dashboard from the now-resolved turn (READ only).
+        # Day 19: then pause `turn_delay`s so a human can watch the rendered run. The
+        # sleep is gated on `renderer` so it ONLY ever paces a rendered run — a plain
+        # or logged-plain run has no renderer and never sleeps, and the pause touches
+        # neither world_state nor the RNG, so reproducibility is unaffected.
         if renderer is not None:
             renderer.update(world_state)
+            if turn_delay > 0:
+                time.sleep(turn_delay)
 
         # End only when the world is BOTH empty AND has no respawn pending — a
         # scheduled newcomer can still repopulate an emptied world.
@@ -566,7 +607,7 @@ def main(argv: list[str] | None = None) -> None:
             if seed is not None:
                 print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
-                           renderer=renderer)
+                           renderer=renderer, turn_delay=args.speed)
         finally:
             sys.stdout = original
             log_file.close()
@@ -577,7 +618,7 @@ def main(argv: list[str] | None = None) -> None:
         renderer = _make_renderer(args.render, sink=None)
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
-                           renderer=renderer)
+                           renderer=renderer, turn_delay=args.speed)
 
 
 if __name__ == "__main__":

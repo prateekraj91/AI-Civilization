@@ -981,6 +981,90 @@ def test_render_frame_does_not_mutate_world_state() -> None:
     print("PASS test_render_frame_does_not_mutate_world_state")
 
 
+def test_event_styling_emphasises_major_moments() -> None:
+    """The EVENTS panel highlights deaths/theft/alliance/betrayal/[GOD] (Day 19).
+
+    event_style() is a pure classifier over the verbatim events[] strings, so we can
+    assert each major kind maps to its bold colour AND is flagged major, while routine
+    chatter stays muted/non-major. Betrayal must win over the 'alliance' substring it
+    contains.
+    """
+    from renderer.text_renderer import event_style
+    cases = {
+        "turn 5: Kira died (starved)": ("bold red", True),
+        "turn 5: Bob stole food from Alex": ("bold orange3", True),
+        "turn 9: Alex and Bob formed an ALLIANCE": ("bold green", True),
+        "turn 9: *** Bob BETRAYED the alliance with Alex ***": ("bold bright_red", True),
+        "turn 6: [GOD] plague struck Kira (10 turns)": ("bold yellow", True),
+        # Lead-ups are coloured but NOT major (no bullet, won't dominate the panel).
+        "turn 4: Bob proposed an alliance to Alex (awaiting reply)": ("green", False),
+        "turn 5: a new agent Zed appeared (blank slate)": ("green", False),
+        # Routine chatter stays muted.
+        'turn 2: Alex talked to Bob: "Hi!"': ("grey70", False),
+        "turn 3: Bob trust in Alex: 0 -> 1 (friendly message)": ("grey70", False),
+    }
+    for line, expected in cases.items():
+        assert event_style(line) == expected, (line, event_style(line), expected)
+    print("PASS test_event_styling_emphasises_major_moments")
+
+
+def test_speed_parsing_and_delay_only_when_rendering() -> None:
+    """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
+
+    Presets slow/normal/fast and a raw number map to the right seconds; bad values are
+    rejected. The delay is presentation-only: run_simulation must NOT sleep without a
+    renderer (so tests/plain/logged runs are unpaced), and MUST sleep once per turn with
+    one. A fake renderer + a patched time.sleep prove both branches without a terminal.
+    """
+    import argparse
+    from contextlib import contextmanager
+
+    assert main.parse_speed("slow") == 2.0
+    assert main.parse_speed("normal") == 0.5
+    assert main.parse_speed("fast") == 0.1
+    assert main.parse_speed("0.3") == 0.3
+    for bad in ("turbo", "-1"):
+        try:
+            main.parse_speed(bad)
+            assert False, f"{bad!r} should have been rejected"
+        except argparse.ArgumentTypeError:
+            pass
+
+    class _FakeRenderer:
+        """Minimal stand-in: a real sink + live() context, counts update() calls."""
+        def __init__(self) -> None:
+            self.sink = io.StringIO()
+            self.updates = 0
+
+        @contextmanager
+        def live(self):
+            yield self
+
+        def update(self, state: dict) -> None:
+            self.updates += 1
+
+    slept: list[float] = []
+    orig_sleep = main.time.sleep
+    main.time.sleep = lambda s: slept.append(s)
+    try:
+        # No renderer: a non-zero delay must be ignored entirely.
+        _fresh_world()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run_simulation(3, turn_delay=2.0)
+        assert slept == [], f"slept without a renderer: {slept}"
+
+        # With a renderer: one pause per simulated turn, at the requested delay.
+        _fresh_world()
+        fake = _FakeRenderer()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run_simulation(3, renderer=fake, turn_delay=0.05)
+        assert slept == [0.05, 0.05, 0.05], slept
+        assert fake.updates == 3, fake.updates
+    finally:
+        main.time.sleep = orig_sleep
+    print("PASS test_speed_parsing_and_delay_only_when_rendering")
+
+
 # --- God mode (Day 15) -----------------------------------------------------
 def test_god_mode_imports_only_world_state_layers() -> None:
     """god_mode.py must touch ONLY world_state — no decision-logic imports."""
@@ -1326,6 +1410,8 @@ def main_runner() -> None:
         test_respawn_adds_no_llm_calls,
         test_renderer_imports_only_state_reading_modules,
         test_render_frame_does_not_mutate_world_state,
+        test_event_styling_emphasises_major_moments,
+        test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
         test_god_spawn_agent_is_blank_slate_citizen,

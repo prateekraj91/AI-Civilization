@@ -194,22 +194,52 @@ def _build_agents_panel(state: dict[str, Any]) -> Panel:
     return Panel(table, title="AGENTS", border_style="blue")
 
 
-def _style_event(line: str) -> Text:
-    """Colour an event line by kind: GOD yellow, death red, alliance green."""
+def event_style(line: str) -> tuple[str, bool]:
+    """Classify an event line into (rich style, is_major) for the EVENTS panel.
+
+    The big moments are made unmissable at a glance when recording; routine chatter
+    (talk, moves, trust ticks) stays muted so it never competes. Order matters: a
+    BETRAYAL line also contains the word "alliance", so betrayal is matched first.
+
+        DEATH     -> bold red          THEFT     -> bold orange3
+        ALLIANCE  -> bold green        BETRAYAL  -> bold bright_red
+        [GOD] ... -> bold yellow
+
+    Pure string classification — it never reads or changes events[] content.
+    """
     low = line.lower()
     if "[god]" in low or "god-script" in low:
-        style = "yellow"
-    elif "died" in low or "death" in low or "betray" in low:
-        style = "red"
-    elif "alliance" in low or "allied" in low or "appeared" in low:
-        style = "green"
-    else:
-        style = "grey70"
-    return Text(line, style=style)
+        return "bold yellow", True
+    if "betrayed" in low:                       # success: "*** X BETRAYED ... ***"
+        return "bold bright_red", True
+    if "died" in low:
+        return "bold red", True
+    if "stole" in low:                          # success: "X stole food from Y"
+        return "bold orange3", True
+    if "formed an alliance" in low:             # success: "X and Y formed an ALLIANCE"
+        return "bold green", True
+    # Softer, non-major cues for the lead-ups (proposals, newcomers).
+    if "proposed an alliance" in low or "appeared" in low:
+        return "green", False
+    return "grey70", False
+
+
+def _style_event(line: str) -> Text:
+    """Render one event line, emphasising major moments with a colour + marker.
+
+    Major events get a leading '●' bullet in their colour so they pop in a scan of
+    the panel; routine lines are indented to align under it without a marker. Styling
+    only — the text content is the verbatim events[] string.
+    """
+    style, major = event_style(line)
+    text = Text()
+    text.append("● " if major else "  ", style=style)
+    text.append(line, style=style)
+    return text
 
 
 def _build_events_panel(state: dict[str, Any], limit: int = 12) -> Panel:
-    """The most recent events (deaths, [GOD] interventions, alliances)."""
+    """The most recent events (deaths, [GOD] interventions, alliances, betrayals)."""
     events = state.get("events", [])
     recent = events[-limit:]
     if recent:
