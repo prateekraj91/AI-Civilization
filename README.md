@@ -1,181 +1,199 @@
 # AI Civilization
 
-A sandbox simulation where AI-driven agents inhabit a shared world, perceive their
-surroundings, and act according to their personalities and goals — powered by a local
-LLM via Ollama (default), with Google Gemini and an offline backend also supported
-behind one provider-agnostic interface.
+A multi-agent simulation where every citizen is a **real LLM-driven agent**. Each
+agent has a personality, weighted goals (survive / wealth / friendship), bounded
+memory, and a voice — and they all share one 10×10 world and one scarce food
+supply. From nothing but survival pressure and the ability to perceive and talk to
+each other, **social behaviour emerges**: agents build trust, form alliances, share
+what they see, steal when desperate, and occasionally betray the very allies that
+kept them alive. And you are not a spectator — **you are God**, and can reach into
+the running world to start a drought, unleash a plague, drop treasure, or introduce
+a stranger, then watch the society react.
 
-## What is AI Civilization?
+No event is scripted. The drama (and, just as often, the *lack* of drama) is what
+the agents actually did.
 
-AI Civilization is an experiment in emergent, agent-based simulation. Each inhabitant is
-an autonomous **Agent** with a personality, a weighted set of goals (e.g. survival,
-wealth, friendship), and a memory of what it has experienced. Agents read from a single
-authoritative **world state** to decide how to behave, and a language model (Gemini)
-gives them their voice and reasoning.
+---
 
-The long-term vision is a living world you can observe and intervene in — watching
-agents form relationships, pursue goals, and react to events over many simulation turns.
+## Quickstart
 
-## Current Status — Personality & Goal-Driven Behaviour ✅
+### 1. Install
 
-The simulation now runs a **multi-agent world** end to end, and the agents
-**behave differently** according to who they are:
-
-- ✅ World layer (`world_state`) as the single source of truth
-- ✅ `Agent` data model (personality, goals, hunger, position, memory, **alive**)
-- ✅ 10×10 grid, movement, food, and a per-turn **hunger / starvation** system
-- ✅ Provider-agnostic LLM layer: **Ollama** (default, local), **Gemini** (cloud),
-  **random** (offline), with a graceful `rest` fallback that never crashes
-- ✅ Bounded per-agent **memory** (last 20 events, oldest discarded)
-- ✅ **Day 6 — Multiple agents:** Alex, Bob, Kira share one world, take turns
-  sequentially, and compete for the same food (eaten food vanishes for everyone)
-- ✅ **Day 7 — Agent detection:** observation reports adjacent agents by name
-  (e.g. `North: Bob`)
-- ✅ **Day 8 — Social memory:** sightings become memories like
-  `Observed Bob north of me` / `Observed Kira near food`
-- ✅ **Personality impact:** a typed-trait layer (`personality.py`) turns each
-  agent's description into instincts — curious agents explore and rarely rest,
-  cautious agents hug food and conserve, friendly agents close on others,
-  independent agents drift away.
-- ✅ **Goal weights in context:** each agent's weighted goals are sent to the
-  model so it knows what the agent values.
-- ✅ **Memory influence:** the most recent memories are included in the decision
-  context (compact) and shape future plans.
-- ✅ **Strategy caching (cost control):** the LLM is asked for a high-level
-  *strategy* only every N turns; in between, the strategy is executed in pure
-  Python. Typical run: **~80% fewer LLM calls** than deciding every turn.
-
-**Intentionally out of scope:** economies, villages, governments, factions,
-religion, crafting, combat, trading, conversations, trust / reputation, "God
-Mode," and professions.
-
-### How behaviour works (the decision loop)
-
-```
-every N turns   →  llm.get_strategy(prompt)   # personality + goals + memory + senses
-                   → "seek_food" / "explore north" / "approach Bob" / ...
-every turn      →  strategy.choose_action(...) # pure Python, no inference
-                   → personality + hunger + surroundings → one concrete action
-```
-
-## Architecture Principles
-
-1. **Single source of truth.** `world_state` (in `world.py`) is the one authoritative
-   description of the entire simulation. Everything else reads from it.
-2. **Agents read, the world layer writes.** Agents never mutate global state directly.
-   All changes flow through helpers like `add_agent()` so there is one place to add
-   validation, indexing, and future hooks.
-3. **Plain data over cleverness.** The world is a plain `dict` and agents are simple
-   `@dataclass` containers — easy to serialize (JSON), diff, inspect, and extend with
-   new fields/keys without schema migrations.
-4. **Secrets stay out of source.** The Gemini API key is read from the environment via
-   `.env` and is never hard-coded or committed.
-5. **Designed for expansion.** New top-level world keys (grid, weather, economy) and new
-   agent fields can be added without breaking existing readers.
-
-## Tech Stack
-
-| Layer            | Choice                                             |
-| ---------------- | -------------------------------------------------- |
-| Language         | Python 3.14                                         |
-| AI model         | Google Gemini (`gemini-2.5-flash`)                  |
-| AI SDK           | `google-genai` (the new unified Google Gen AI SDK)  |
-| Config / secrets | `python-dotenv`                                     |
-| Environment      | `venv` (named **Jarvis**)                           |
-
-## Roadmap (V1 Milestones)
-
-- **Day 1 — Foundation (done):** world state, agent model, LLM handshake.
-- **Day 2-3 — Grid, perception & decisions (done):** 2D world, observation, action loop.
-- **Day 4-5 — Survival & memory (done):** hunger/starvation, bounded per-agent memory.
-- **Day 5.5 — Provider abstraction (done):** Ollama/Gemini behind one interface.
-- **Day 6 — Multiple agents (done):** Alex, Bob, Kira share a world and compete for food.
-- **Day 7 — Agent detection (done):** agents perceive neighbours by name.
-- **Day 8 — Social memory (done):** sightings recorded as bounded memories.
-- **Personality & goal-driven behaviour (done):** typed traits, goals in context,
-  memory influence, and a strategy-caching layer that cuts inference cost ~80%.
-- **Relationships & reputation (next):** turn sightings into per-agent opinions
-  (familiarity, trust, rivalry over contested food) that bias strategy choice.
-- **Conversation (later):** let adjacent agents exchange short messages that
-  influence memory and relationships.
-- **Later:** memory summarization, events & economy, God Mode, rendering.
-
-## How to Run Locally
-
-### Prerequisites
-- Python 3.14+
-- A Gemini API key — get one at https://aistudio.google.com/apikey
-
-### 1. Clone and enter the project
 ```bash
-git clone <your-repo-url>
-cd "AI Civilisation"
-```
-
-### 2. Create and activate the virtual environment
-```bash
-python3 -m venv Jarvis
-source Jarvis/bin/activate        # macOS / Linux
-```
-
-### 3. Install dependencies
-```bash
+# clone, then from the repo root:
+python3 -m venv .Jarvis
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 4. Configure your API key
-Create a `.env` file in the project root (it is gitignored and must never be committed):
+### 2. (Optional) Local LLM via Ollama + Qwen
+
+The default provider is a **local** model through [Ollama](https://ollama.com).
+The simulation never talks to a model directly — it goes through one
+provider-agnostic layer (`llm.py`), so this step is only needed if you want real
+LLM reasoning rather than the offline backend.
+
 ```bash
-echo "GEMINI_API_KEY=your_key_here" > .env
+# install Ollama (see ollama.com), then pull the model the sim defaults to:
+ollama pull qwen3:8b
+ollama serve            # serves at http://127.0.0.1:11434 (the sim's default URL)
 ```
 
-### 5. Run the simulation
+No GPU / don't want to run a model? Skip this and use `AICIV_PROVIDER=random` — a
+fully offline backend that returns plausible, valid actions. Every command below
+works offline by prefixing `AICIV_PROVIDER=random`.
 
-Default (local Ollama — requires `ollama serve` running with the configured model):
+### 3. Run it
+
 ```bash
-python main.py
+# A) plain text simulation (turn-by-turn log to the terminal)
+python main.py --turns 30
+#    offline, no model server needed:
+AICIV_PROVIDER=random python main.py --turns 30
+
+# B) live rich dashboard — grid + per-agent fullness bars + highlighted events,
+#    paced so a human can watch it unfold
+python main.py --render rich --speed normal --turns 30
+
+# C) a reproducible, god-scripted run (the demo invocation):
+python main.py --seed 7 --turns 40 --render rich --speed slow \
+    --god-script "10:trigger_plague Kira;10:trigger_drought;25:drop_treasure 5 5" \
+    --log logs/my_demo.txt
 ```
 
-No model server handy? Run fully offline with the built-in `random` provider:
+Run the tests (offline, deterministic — does not contact Qwen):
+
 ```bash
-AICIV_PROVIDER=random python main.py
+AICIV_PROVIDER=random python test_simulation.py
 ```
 
-Use the cloud Gemini provider instead:
-```bash
-AICIV_PROVIDER=gemini python main.py
+---
+
+## Key flags & environment
+
+| Flag / env | What it does |
+|---|---|
+| `--turns N` | Number of turns to simulate (default 50, or until everyone has died with no respawn pending). |
+| `--seed N` | Seed Python's RNG **before** world setup. Fixes agent/food placement *and* the offline `random` provider, so a seeded offline run replays identically. (Qwen sampling is not fully deterministic, so a seed fixes the *world*, not Qwen's word choices.) |
+| `--render rich` | Live in-place dashboard via the `rich` library instead of plain text. **Read-only** — it never touches the simulation. Default is plain text. |
+| `--speed slow\|normal\|fast\|<secs>` | Pacing for a **rendered** run: slow ≈ 2.0s/turn, normal ≈ 0.5s/turn (default), fast ≈ 0.1s/turn, or a raw number (`--speed 0.3`). Presentation-only — never affects tests, plain/logged runs, or the RNG. |
+| `--god-script SPEC` | Run God interventions non-interactively. Inline `"10:trigger_plague Kira;25:drop_treasure 5 5"` or a path to a file of `<turn>:<command>` lines. Each fires at the end of its turn — so a scripted run reproduces a hand-played one exactly. |
+| `--log PATH` | Mirror the full plain run (turn log + summary + events) to a file. Coexists with `--render rich`: the dashboard owns the terminal while the plain transcript is captured byte-for-byte to the log. |
+| `AICIV_PROVIDER` | `ollama` (default, local Qwen), `gemini` (cloud, needs `GEMINI_API_KEY`), or `random` (offline). |
+| `AICIV_GOD_EVERY` | Drop into the **interactive** God menu every N turns (default 0 = off). Ignored when `--god-script` is given so automated runs never block on input. |
+
+**God commands** (for `--god-script` or the interactive menu): `trigger_drought
+[turns]`, `trigger_plague [name]`, `drop_treasure <x> <y> [value]`, `spawn_food <x>
+<y>`, `spawn_agent <name> <personality...>`, `introduce_stranger <name>
+[personality...]`, `status`, `help`.
+
+---
+
+## Architecture
+
+Everything funnels through one authoritative dict, **`world_state`** — the single
+source of truth. Three subsystems touch it, each across a hard, test-enforced
+boundary:
+
+```
+                       ┌───────────────────────────────────┐
+                       │            world_state             │
+                       │   (the single source of truth)     │
+                       │  turn · grid · agents · food ·      │
+                       │  treasures · events · respawns ...  │
+                       └───────────────────────────────────┘
+                          ▲              │              │
+              READ state  │              │ READ state   │ READ state
+              return an   │              │ (perceive)   │ (snapshot)
+              action      │              ▼              ▼
+        ┌─────────────────┴──┐   ┌──────────────┐  ┌──────────────────┐
+        │   AGENTS — DECIDE  │   │ god_mode.py  │  │   renderer/      │
+        │  agents + strategy │   │   MUTATES    │  │   DISPLAYS       │
+        │  + conversation +  │   │ (write-only) │  │  (read-only)     │
+        │  trust + alliance  │   │  drought,    │  │  rich dashboard: │
+        │                    │   │  plague,     │  │  grid, hunger,   │
+        │  decisions flow    │   │  treasure,   │  │  events panel    │
+        │  BACK through the  │   │  newcomers   │  │                  │
+        │  world layer ──────┼──▶│──────────────┼─▶│  never writes    │
+        │  (never poke state)│   │  the ONLY    │  │  state; a stale  │
+        └────────────────────┘   │  writer from │  │  mark can't leak │
+                                  │  outside the │  └──────────────────┘
+                                  │  engine      │
+                                  └──────────────┘
 ```
 
-You should see Alex, Bob, and Kira take turns on the shared grid: a per-turn map,
-each agent's observation (including neighbours by name), its decision, and the
-result. A final summary lists survivors, casualties, and every agent's memory.
+- **Agents DECIDE.** Agents read `world_state` to perceive, then return one of a
+  closed set of actions; all world changes flow back through the world layer, never
+  by an agent writing globals. (`agents.py`, `strategy.py`, `conversation.py`,
+  `trust.py`, `alliance.py`, `personality.py`)
+- **God MUTATES (write-only).** `god_mode.py` is the only thing outside the engine
+  that *writes* the world. It imports no decision logic — an AST test enforces it.
+- **The renderer DISPLAYS (read-only).** `renderer/text_renderer.py` turns a
+  snapshot into a `rich` dashboard and mutates nothing. It imports only `rich` +
+  `world` — another AST boundary test enforces it.
 
-### Run the tests
-```bash
-python test_simulation.py
+Two more design points worth knowing:
+
+- **Strategy caching = zero-inference turns.** The LLM is asked for a *high-level
+  strategy* only once every few turns (`STRATEGY_INTERVAL`, default 5); in between,
+  that cached plan is executed in pure Python. So ~80% of agent-turns make **no LLM
+  call at all** — cheaper, faster, and still reproducible. Death, respawn, trust,
+  alliances and God interventions are all pure Python and add **zero** inference.
+- **Provider abstraction.** The simulation has no idea which model is behind it.
+  `llm.py` dispatches to Ollama (local Qwen, default), Gemini (cloud), or a `random`
+  offline backend, and always degrades to a safe fallback so a model hiccup can
+  never crash a run.
+
+---
+
+## What emerged
+
+The interesting results are written up in two companion docs:
+
+- **[DEMO_STORY.md](DEMO_STORY.md)** — a narrative walkthrough of a single run: a
+  drought-driven collapse and an alliance that formed, unprompted, late in the game.
+- **[FINDINGS.md](FINDINGS.md)** — the running day-by-day log of what each mechanic
+  actually produced, including the dead ends.
+
+One honest finding deserves top billing: **the dramatic social acts — betrayal,
+alliance — are RARE under competent play.** When agents play survival well, they
+mostly just eat, wander, and exchange the occasional message; full-blown betrayals
+emerge only when scarcity squeezes hard enough that cooperating and defecting
+genuinely diverge. That rarity isn't a gap in the write-up — it *is* the result.
+A world where betrayal is common would be a world whose incentives were mis-tuned.
+The mechanics make dramatic acts *possible*; the agents reserve them for when they
+actually pay off, which is exactly what makes the rare ones feel earned.
+
+---
+
+## Roadmap / V2
+
+V1 is a survival sandbox with emergent *social* behaviour. V2 points at **emergent
+civilization** — letting technology, governance, and economics arise from agent
+decisions rather than from new hard-coded rules: agents that trade and accumulate,
+specialise, agree on norms, and build institutions that outlive any single citizen.
+The architecture (one source of truth, write-only God, read-only display, a
+provider-agnostic mind) is built to grow in that direction.
+
+---
+
+## Repo layout
+
 ```
-Deterministic checks (no LLM needed) for detection, social memory, the memory
-bound, food competition, movement collision, and starvation.
-
-### Deactivating the environment
-```bash
-deactivate
-```
-
-## Project Structure
-
-```
-.
-├── main.py              # Entry point: builds the world, runs the multi-agent loop
-├── world.py             # world_state (single source of truth): grid, food, hunger,
-│                        #   movement, perception (scan/observe), detection, memory
-├── agents.py            # Agent dataclass (personality, goals, hunger, memory, alive)
-├── personality.py       # Free-text personality -> typed traits (curiosity, caution, …)
-├── strategy.py          # Strategy model + pure-Python action executor + strategy prompt
-├── llm.py               # Provider-agnostic layer: get_strategy/get_decision
-│                        #   (ollama / gemini / random) + call counters
-├── test_simulation.py   # Deterministic tests (mechanics, personality, strategy)
-├── requirements.txt     # Python dependencies
-├── .env                 # API key (gitignored — not committed)
-└── .gitignore
+world.py            single source of truth + perception/movement/hunger
+agents.py           the Agent data model (pure data, no logic)
+personality.py      typed-trait instincts per agent
+strategy.py         LLM strategy prompt + cached Python execution
+conversation.py     talk / steal + message delivery
+trust.py            per-relationship trust bookkeeping
+alliance.py         alliances, shared sightings, betrayal
+population.py       death events + blank-slate respawn
+god_mode.py         write-only world interventions (the "you are God" layer)
+llm.py              provider-agnostic model layer (Ollama / Gemini / random)
+renderer/           read-only rich terminal dashboard
+main.py             setup + the shared survival loop + CLI
+test_simulation.py  60 deterministic tests (run with AICIV_PROVIDER=random)
+logs/               captured demo runs
+FINDINGS.md         day-by-day findings
+DEMO_STORY.md       narrative of a standout run
 ```
