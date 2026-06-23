@@ -1,0 +1,211 @@
+[run] seed=7 turns=18 provider=random
+TURN 1
+Alex -> move_east
+Bob -> rest
+Kira -> move_south
+
+Food remaining: 5
+
+TURN 2
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> eat
+
+Food remaining: 4
+
+TURN 3
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> move_south
+
+Food remaining: 4
+
+TURN 4
+Alex -> talk_to_Bob
+Bob -> ally_with_Alex
+Kira -> move_south
+
+Food remaining: 4
+
+[GOD-SCRIPT turn 4] trigger_plague Bob
+turn 4: [GOD] plague struck Bob (10 turns)
+
+TURN 5
+Alex -> move_west
+Bob -> move_east
+Kira -> move_north
+
+Food remaining: 4
+
+TURN 6
+Alex -> move_north
+Bob -> starved
+Kira -> move_north
+
+Food remaining: 5
+
+TURN 7
+Alex -> eat
+Kira -> move_north
+
+Food remaining: 4
+
+TURN 8
+Alex -> move_south
+Kira -> move_north
+
+Food remaining: 4
+
+[GOD-SCRIPT turn 8] drop_treasure 5 5 10
+turn 8: [GOD] dropped treasure (value 10) at (5,5)
+
+TURN 9
+Alex -> talk_to_Kira
+Kira -> eat
+
+Food remaining: 4
+
+TURN 10
+Alex -> move_north
+Kira -> move_east
+
+Food remaining: 4
+
+TURN 11
+Alex -> move_south
+Kira -> eat
+
+Food remaining: 4
+
+TURN 12
+Alex -> move_east
+Kira -> move_south
+
+Food remaining: 4
+
+[GOD-SCRIPT turn 12] introduce_stranger Vera quiet and guarded
+turn 12: [GOD] stranger Vera introduced
+
+TURN 13
+Alex -> move_north
+Kira -> move_south
+Vera -> move_east
+
+Food remaining: 4
+
+TURN 14
+Alex -> eat
+Kira -> move_south
+Vera -> move_south
+
+Food remaining: 3
+
+TURN 15
+Alex -> move_south
+Kira -> move_south
+Vera -> eat
+
+Food remaining: 2
+
+TURN 16
+Alex -> move_south
+Kira -> move_east
+Vera -> move_east
+
+Food remaining: 3
+
+TURN 17
+Alex -> rest
+Kira -> move_north
+Vera -> eat
+
+Food remaining: 2
+
+TURN 18
+Alex -> rest
+Kira -> move_east
+Vera -> rest
+
+Food remaining: 2
+
+
+========================================================
+AGENT SUMMARY
+========================================================
+Agent:           Alex
+Personality:     friendly and outgoing (dominant: friendliness)
+Goals:           friendship=8, survive=7, wealth=2
+Status:          ALIVE
+Turns survived:  18 / 18
+Important memories:
+  - Trust in Kira fell to -3 (hostile message)
+  - New strategy: wander
+  - Observed Vera south of me
+  - Ate food
+  - New strategy: rest
+
+Agent:           Bob
+Personality:     cautious and territorial (dominant: caution)
+Goals:           survive=9, wealth=5, friendship=2
+Status:          DEAD
+Turns survived:  5 / 18
+Important memories:
+  - Trust in Alex rose to 2 (friendly message)
+  - Observed Alex west of me
+  - I proposed an alliance to Alex.
+  - Trust in Alex rose to 3 (friendly message)
+  - Starved
+
+Agent:           Kira
+Personality:     independent and competitive (dominant: independence)
+Goals:           wealth=8, survive=7, friendship=1
+Status:          ALIVE
+Turns survived:  18 / 18
+Important memories:
+  - New strategy: wander
+  - Observed Alex north of me
+  - Observed Alex near food
+  - Observed Vera north of me
+  - New strategy: seek_food
+
+Agent:           Vera
+Personality:     quiet and guarded (dominant: curiosity)
+Goals:           (none)
+Status:          ALIVE
+Turns survived:  18 / 18
+Important memories:
+  - New strategy: wander
+  - Ate food
+  - Ate food
+  - New strategy: rest
+
+========================================================
+INFERENCE COST (strategy caching)
+========================================================
+Agent-turns executed:      47
+LLM strategy calls made:   11
+Per-turn design would use: 47 LLM calls
+Saved by caching:          36 calls (~77% fewer)
+
+========================================================
+EVENTS LOG (world_state['events'])
+========================================================
+turn 2: Alex talked to Bob: "Hi! Want to team up? I'm focused on friendship."
+turn 3: Alex talked to Bob: "Hi! Want to team up? I'm focused on friendship."
+turn 3: Bob received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 3: Bob trust in Alex: 0 -> 1 (friendly message)
+turn 4: Alex talked to Bob: "Hi! Want to team up? I'm focused on friendship."
+turn 4: Bob received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 4: Bob trust in Alex: 1 -> 2 (friendly message)
+turn 4: Bob proposed an alliance to Alex (awaiting reply)
+turn 4: [GOD] plague struck Bob (10 turns)
+turn 5: Bob received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 5: Bob trust in Alex: 2 -> 3 (friendly message)
+turn 6: Bob died (starved)
+turn 8: [GOD] dropped treasure (value 10) at (5,5)
+turn 9: Alex talked to Kira: "Hi! Want to team up? I'm focused on friendship."
+turn 10: Kira received from Alex: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 10: Kira flagged hostility toward Alex
+turn 10: Alex trust in Kira: 0 -> -3 (hostile message)
+turn 12: [GOD] stranger Vera introduced
+

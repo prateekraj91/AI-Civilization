@@ -24,7 +24,11 @@ OUT OF SCOPE (intentionally): economies, villages, governments, factions,
 religion, crafting, combat, trading, conversations, God Mode.
 """
 
+import argparse
+import contextlib
 import os
+import random
+import sys
 
 import alliance
 import conversation
@@ -254,7 +258,7 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     return action
 
 
-def print_agent_summary(survived: dict[str, int]) -> None:
+def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) -> None:
     """Phase 5: per-agent post-run report for easy analysis."""
     print("=" * 56)
     print("AGENT SUMMARY")
@@ -265,11 +269,27 @@ def print_agent_summary(survived: dict[str, int]) -> None:
         print(f"Personality:     {agent.personality} (dominant: {pers.dominant})")
         print(f"Goals:           {format_goals(agent.goals)}")
         print(f"Status:          {'ALIVE' if agent.alive else 'DEAD'}")
-        print(f"Turns survived:  {survived.get(agent.name, 0)} / {NUM_TURNS}")
+        print(f"Turns survived:  {survived.get(agent.name, 0)} / {num_turns}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
         print()
+
+
+def print_events_log() -> None:
+    """Day 17: dump the full chronological events[] log (deaths, respawns, [GOD]
+    interventions). Printed at end-of-run so a captured log shows cause->effect in
+    one place — every god intervention is here next to the deaths it caused.
+    """
+    print("=" * 56)
+    print("EVENTS LOG (world_state['events'])")
+    print("=" * 56)
+    events = world_state["events"]
+    if not events:
+        print("(no events recorded)")
+    for e in events:
+        print(e)
+    print()
 
 
 def print_inference_savings(counters: dict[str, int]) -> None:
@@ -289,7 +309,101 @@ def print_inference_savings(counters: dict[str, int]) -> None:
     print()
 
 
-def main() -> None:
+# --- Day 17: reproducibility + run capture --------------------------------
+class _Tee:
+    """Duplicate writes to several streams at once (used to mirror stdout to a log).
+
+    Presentation only — capturing the run never touches world_state or the loop. It
+    just lets `--log` save exactly what the terminal shows, byte for byte.
+    """
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data: str) -> int:
+        for s in self._streams:
+            s.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        for s in self._streams:
+            s.flush()
+
+
+def parse_god_script(spec: str | None) -> dict[int, list[str]]:
+    """Parse a non-interactive god script into {turn: [command, ...]} (Day 17).
+
+    Two accepted forms (same grammar):
+      - inline:  "5:trigger_plague Bob;15:drop_treasure 5 5"
+      - file:    a path whose lines are "<turn>:<command>" (blank lines and lines
+                 starting with '#' are ignored).
+    Each entry fires at the END of its turn — the same clean boundary the interactive
+    God menu uses — so a scripted run reproduces a hand-played one exactly. Commands
+    for the same turn run in listed order. Returns {} for an empty/None spec.
+    """
+    if not spec:
+        return {}
+    if os.path.isfile(spec):
+        with open(spec) as f:
+            raw = [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    else:
+        raw = [part.strip() for part in spec.split(";") if part.strip()]
+
+    script: dict[int, list[str]] = {}
+    for entry in raw:
+        if ":" not in entry:
+            raise ValueError(f"bad god-script entry {entry!r} (expected '<turn>:<command>')")
+        turn_str, command = entry.split(":", 1)
+        try:
+            turn = int(turn_str.strip())
+        except ValueError:
+            raise ValueError(f"bad god-script turn in {entry!r} (must be an integer)")
+        script.setdefault(turn, []).append(command.strip())
+    return script
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """CLI for a reproducible, capturable run (Day 17)."""
+    p = argparse.ArgumentParser(
+        prog="main.py", description="AI Civilization — multi-agent survival simulation.")
+    p.add_argument(
+        "--seed", type=int, default=None,
+        help="RNG seed for a REPRODUCIBLE run. Seeds Python's `random`, which drives "
+             "agent/food placement AND the offline 'random' provider, so the same seed "
+             "replays an identical run offline. NOTE: the Qwen/Ollama LLM is NOT fully "
+             "deterministic even with a seed (sampling temperature), so a seed fixes the "
+             "WORLD setup but Qwen-driven turns may still vary slightly. "
+             "Falls back to the AICIV_SEED env var.")
+    p.add_argument(
+        "--turns", type=int, default=None,
+        help=f"number of turns to simulate (default {NUM_TURNS}).")
+    p.add_argument(
+        "--log", metavar="PATH", default=None,
+        help="capture the full run (turn-by-turn log + final summary + events[] log, "
+             "including god interventions) to PATH as well as stdout.")
+    p.add_argument(
+        "--god-script", metavar="SPEC", default=None,
+        help="run god commands non-interactively. SPEC is either inline "
+             "\"5:trigger_plague Bob;15:drop_treasure 5 5\" or a path to a file of "
+             "'<turn>:<command>' lines. Each fires at the end of its turn.")
+    p.add_argument(
+        "--god-every", type=int, default=None,
+        help="drop into the interactive God menu every N turns (default from "
+             "AICIV_GOD_EVERY, else off). Ignored when --god-script is given.")
+    return p.parse_args(argv)
+
+
+def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = None,
+                   god_every: int = 0) -> None:
+    """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
+
+    Pulled out of main() so the exact production loop can be driven head-less with an
+    explicit turn count and an optional non-interactive god script. The caller is
+    responsible for seeding `random` BEFORE calling this (so world setup is part of the
+    reproducible sequence) and for any stdout capture.
+    """
+    god_script = god_script or {}
+
     # --- Setup ----------------------------------------------------------
     reset_call_stats()
     create_world()
@@ -308,7 +422,7 @@ def main() -> None:
         print()
 
     # --- The shared survival loop ---------------------------------------
-    for turn in range(1, NUM_TURNS + 1):
+    for turn in range(1, num_turns + 1):
         world_state["turn"] = turn
 
         if VERBOSE_MODE:
@@ -344,10 +458,18 @@ def main() -> None:
             elif VERBOSE_MODE:
                 print(f"  *** {newcomer.name} entered the world (blank slate) ***\n")
 
-        # Day 15: pause into the interactive God menu at a clean turn boundary. Any
-        # world change made here is perceived by the agents on the NEXT turn through
-        # the normal senses -> strategy -> executor loop — no reaction is scripted.
-        if GOD_EVERY > 0 and turn % GOD_EVERY == 0:
+        # Day 17: fire any scripted god commands at this clean turn boundary. Same
+        # semantics as the interactive menu — world_state is mutated here, perceived
+        # NEXT turn — but driven from a file/flag so a dramatic run reproduces exactly.
+        if turn in god_script:
+            for command in god_script[turn]:
+                print(f"[GOD-SCRIPT turn {turn}] {command}")
+                god_mode.run_command(command, world_state)
+            print()
+        # Day 15: otherwise pause into the interactive God menu at the boundary. A
+        # script and the live menu are mutually exclusive so an automated/recorded run
+        # never blocks on input().
+        elif god_every > 0 and turn % god_every == 0:
             god_mode.god_menu(world_state, turn)
 
         # End only when the world is BOTH empty AND has no respawn pending — a
@@ -359,8 +481,43 @@ def main() -> None:
 
     # --- End-of-run analysis (both modes) -------------------------------
     print()
-    print_agent_summary(survived)
+    print_agent_summary(survived, num_turns)
     print_inference_savings(counters)
+    print_events_log()
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    # Seed BEFORE any world setup so placement + food spawns + provider RNG are all
+    # part of the reproducible sequence. --seed wins over AICIV_SEED; absent both, the
+    # run stays unseeded (varied), exactly as before Day 17.
+    seed = args.seed if args.seed is not None else (
+        int(os.environ["AICIV_SEED"]) if os.environ.get("AICIV_SEED") else None)
+    if seed is not None:
+        random.seed(seed)
+
+    num_turns = args.turns if args.turns is not None else NUM_TURNS
+    god_script = parse_god_script(args.god_script)
+    god_every = args.god_every if args.god_every is not None else GOD_EVERY
+
+    # --log mirrors stdout to a file via a Tee for the whole run, then restores it.
+    if args.log:
+        os.makedirs(os.path.dirname(args.log) or ".", exist_ok=True)
+        log_file = open(args.log, "w")
+        original = sys.stdout
+        sys.stdout = _Tee(original, log_file)
+        try:
+            if seed is not None:
+                print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
+            run_simulation(num_turns, god_script=god_script, god_every=god_every)
+        finally:
+            sys.stdout = original
+            log_file.close()
+        print(f"[run] captured to {args.log}")
+    else:
+        with contextlib.suppress(KeyboardInterrupt):
+            run_simulation(num_turns, god_script=god_script, god_every=god_every)
 
 
 if __name__ == "__main__":

@@ -12,10 +12,14 @@ Run:  ./Jarvis/bin/python test_simulation.py
 
 import contextlib
 import io
+import os
+import random
+import tempfile
 
 import conversation
 import llm
 import main
+import world
 from agents import Agent
 from personality import Personality
 from strategy import Strategy, build_strategy_prompt, choose_action, get_personality
@@ -24,6 +28,7 @@ from world import (
     create_world,
     execute_action,
     is_dead,
+    is_sick,
     mark_dead,
     move_agent,
     observe,
@@ -1058,6 +1063,157 @@ def test_god_mode_adds_no_llm_calls() -> None:
     print("PASS test_god_mode_adds_no_llm_calls")
 
 
+# --- Plague + stranger (Day 16) --------------------------------------------
+def test_god_plague_raises_hunger_for_exactly_the_window_and_logs() -> None:
+    """trigger_plague drains extra hunger for exactly PLAGUE_TURNS turns, then recovers."""
+    import god_mode
+    _fresh_world()
+    kira = _agent("Kira", "independent and competitive", (5, 5), hunger=0)
+    world_state["turn"] = 1
+    res = god_mode.trigger_plague(world_state, "Kira")  # default 10 turns
+    assert kira.plague_until == 11, kira.plague_until           # 1 + 10
+    assert res == "turn 1: [GOD] plague struck Kira (10 turns)"
+    assert any("[GOD] plague struck Kira (10 turns)" in e for e in world_state["events"])
+    assert any("A plague struck you" in m for m in kira.memory)  # victim notified
+
+    # Isolate the per-turn hunger increment: reset to 0 before each tick and read the
+    # delta the existing hunger loop applies. +3 while sick (turn <= 11), +1 after.
+    sick_ticks = healthy_ticks = 0
+    for turn in range(2, 14):
+        world_state["turn"] = turn
+        kira.hunger = 0
+        update_hunger(kira)
+        if turn <= 11:
+            assert kira.hunger == world.PLAGUE_HUNGER_PER_TURN, (turn, kira.hunger)
+            sick_ticks += 1
+        else:
+            assert kira.hunger == world.HUNGER_PER_TURN, (turn, kira.hunger)
+            healthy_ticks += 1
+    assert sick_ticks == 10, sick_ticks       # exactly the 10-turn window (turns 2..11)
+    assert healthy_ticks == 2                  # turns 12, 13 back to normal
+    assert kira.plague_until == 0              # marker cleared on recovery
+    assert any("Recovered from the plague" in m for m in kira.memory)
+    print("PASS test_god_plague_raises_hunger_for_exactly_the_window_and_logs")
+
+
+def test_god_plague_afflicts_random_living_agent() -> None:
+    """With no name, the plague hits some LIVING agent (never a dead one)."""
+    import god_mode
+    _fresh_world()
+    a = _agent("Alex", "friendly", (4, 4))
+    b = _agent("Bob", "cautious", (5, 4))
+    mark_dead(b)                                # only Alex is alive
+    world_state["turn"] = 3
+    god_mode.trigger_plague(world_state)
+    assert a.plague_until == 13 and b.plague_until == 0   # the dead are not afflicted
+    print("PASS test_god_plague_afflicts_random_living_agent")
+
+
+def test_god_sick_neighbour_is_visible_in_perception() -> None:
+    """A plagued neighbour 'looks sick' through observe() and social memory."""
+    import god_mode
+    _fresh_world()
+    alex = _agent("Alex", "friendly", (5, 5))
+    kira = _agent("Kira", "independent", (6, 5))   # directly East of Alex
+    world_state["turn"] = 2
+    god_mode.trigger_plague(world_state, "Kira")
+    assert "Kira (looks sick)" in observe(alex, world_state)
+    record_social_memories(alex, world_state)
+    assert any("Observed Kira looking sick" in m for m in alex.memory)
+    print("PASS test_god_sick_neighbour_is_visible_in_perception")
+
+
+def test_god_stranger_is_blank_slate_and_seeds_wariness_memory() -> None:
+    """introduce_stranger adds a cold-start agent and seeds wariness as MEMORY."""
+    import god_mode
+    _fresh_world()
+    world_state["turn"] = 40
+    alex = _agent("Alex", "friendly and outgoing", (5, 5))
+    res = god_mode.introduce_stranger(world_state, "Vera", "quiet and guarded")
+    vera = next(a for a in world_state["agents"] if a.name == "Vera")
+    # Blank-slate cold start, exactly like a respawn.
+    assert vera.memory == [] and vera.relationships == {}
+    assert vera.allies == set() and vera.hunger == 0 and vera.alive
+    # Wariness is seeded as a MEMORY on existing agents — NOT a hardcoded trust hit.
+    assert any("A stranger, Vera, arrived. You know nothing about them." in m
+               for m in alex.memory)
+    assert "Vera" not in alex.relationships          # no trust penalty applied
+    # Logged as a [GOD] stranger event; the neutral "new agent appeared" line is NOT.
+    assert res == "turn 40: [GOD] stranger Vera introduced"
+    assert any("[GOD] stranger Vera introduced" in e for e in world_state["events"])
+    assert not any("a new agent Vera appeared" in e for e in world_state["events"])
+    # And the stranger is a real, interactable citizen: perceivable by name when near.
+    place_agent(alex, vera.position[0] - 1, vera.position[1])  # stand to its West
+    assert "Vera" in observe(alex, world_state)
+    print("PASS test_god_stranger_is_blank_slate_and_seeds_wariness_memory")
+
+
+def test_god_day16_commands_add_no_llm_calls() -> None:
+    """trigger_plague and introduce_stranger are pure world_state mutation."""
+    import god_mode
+    _fresh_world()
+    _agent("Alex", "friendly", (5, 5))
+    world_state["turn"] = 1
+    llm.reset_call_stats()
+    god_mode.trigger_plague(world_state)
+    god_mode.introduce_stranger(world_state, "Vera", "quiet and guarded")
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    print("PASS test_god_day16_commands_add_no_llm_calls")
+
+
+# --- Reproducibility + run capture (Day 17) --------------------------------
+def test_seeded_random_runs_are_identical() -> None:
+    """Same seed + random provider => byte-identical run (world setup + every turn)."""
+    def capture() -> str:
+        random.seed(20260623)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(15)
+        return buf.getvalue()
+
+    first, second = capture(), capture()
+    assert first == second, "two seeded random runs diverged"
+    # And the capture is a real run: turn-by-turn log, summary, and events log present.
+    assert "TURN 1" in first and "AGENT SUMMARY" in first and "EVENTS LOG" in first
+    print("PASS test_seeded_random_runs_are_identical")
+
+
+def test_god_script_parses_inline_and_file() -> None:
+    """parse_god_script accepts both an inline spec and a file of '<turn>:<cmd>' lines."""
+    inline = main.parse_god_script("3:trigger_drought;5:drop_treasure 5 5 10;5:trigger_plague Bob")
+    assert inline == {3: ["trigger_drought"], 5: ["drop_treasure 5 5 10", "trigger_plague Bob"]}
+    assert main.parse_god_script(None) == {} and main.parse_god_script("") == {}
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("# a demo god script\n8: trigger_plague Kira\n\n12: drop_treasure 4 4\n")
+        path = f.name
+    try:
+        assert main.parse_god_script(path) == {8: ["trigger_plague Kira"], 12: ["drop_treasure 4 4"]}
+    finally:
+        os.unlink(path)
+    print("PASS test_god_script_parses_inline_and_file")
+
+
+def test_god_script_runs_and_capture_includes_god_events() -> None:
+    """A scripted run fires god commands at their turns and the capture shows them."""
+    random.seed(7)
+    script = main.parse_god_script("3:trigger_drought;5:drop_treasure 5 5 10")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main.run_simulation(8, god_script=script)
+    out = buf.getvalue()
+    # The non-interactive driver announced each command...
+    assert "[GOD-SCRIPT turn 3] trigger_drought" in out
+    assert "[GOD-SCRIPT turn 5] drop_treasure 5 5 10" in out
+    # ...the interventions actually logged [GOD] events...
+    assert "[GOD] drought triggered" in out and "[GOD] dropped treasure (value 10)" in out
+    # ...and they appear in the end-of-run EVENTS LOG (cause->effect in one place).
+    events_section = out.split("EVENTS LOG")[1]
+    assert "[GOD] drought triggered" in events_section
+    assert "[GOD] dropped treasure (value 10)" in events_section
+    print("PASS test_god_script_runs_and_capture_includes_god_events")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -1108,6 +1264,14 @@ def main_runner() -> None:
         test_god_spawned_food_draws_hungry_agent_within_two_turns,
         test_god_menu_pauses_and_resumes_cleanly,
         test_god_mode_adds_no_llm_calls,
+        test_god_plague_raises_hunger_for_exactly_the_window_and_logs,
+        test_god_plague_afflicts_random_living_agent,
+        test_god_sick_neighbour_is_visible_in_perception,
+        test_god_stranger_is_blank_slate_and_seeds_wariness_memory,
+        test_god_day16_commands_add_no_llm_calls,
+        test_seeded_random_runs_are_identical,
+        test_god_script_parses_inline_and_file,
+        test_god_script_runs_and_capture_includes_god_events,
     ]
     for t in tests:
         t()

@@ -1,0 +1,842 @@
+[run] seed=1 turns=100 provider=ollama
+TURN 1
+Alex -> move_east
+Bob -> rest
+Kira -> move_north
+
+Food remaining: 5
+
+TURN 2
+Alex -> eat
+Bob -> rest
+Kira -> move_north
+
+Food remaining: 4
+
+TURN 3
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> move_north
+
+Food remaining: 4
+
+TURN 4
+Alex -> talk_to_Bob
+Bob -> rest
+Kira -> eat
+
+Food remaining: 3
+
+TURN 5
+Alex -> move_north
+Bob -> move_north
+Kira -> move_north
+
+Food remaining: 3
+
+TURN 6
+Alex -> move_north
+Bob -> eat
+Kira -> move_north
+
+Food remaining: 3
+
+TURN 7
+Alex -> move_west
+Bob -> rest
+Kira -> move_north
+
+Food remaining: 3
+
+TURN 8
+Alex -> move_south
+Bob -> rest
+Kira -> move_south
+
+Food remaining: 3
+
+TURN 9
+Alex -> eat
+Bob -> move_south
+Kira -> move_south
+
+Food remaining: 2
+
+TURN 10
+Alex -> talk_to_Kira
+Bob -> rest
+Kira -> move_east
+
+Food remaining: 2
+
+[GOD-SCRIPT turn 10] trigger_plague Bob
+turn 10: [GOD] plague struck Bob (10 turns)
+
+TURN 11
+Alex -> move_east
+Bob -> move_east
+Kira -> move_east
+
+Food remaining: 3
+
+TURN 12
+Alex -> move_east
+Bob -> starved
+Kira -> move_east
+
+Food remaining: 3
+
+TURN 13
+Alex -> move_east
+Kira -> steal_from_Alex
+
+Food remaining: 2
+
+TURN 14
+Alex -> move_south
+Kira -> move_south
+
+Food remaining: 2
+
+TURN 15
+Alex -> move_south
+Kira -> move_south
+
+Food remaining: 2
+
+TURN 16
+Alex -> eat
+Kira -> move_north
+
+Food remaining: 2
+
+TURN 17
+Alex -> move_north
+Kira -> eat
+
+Food remaining: 1
+
+TURN 18
+Alex -> talk_to_Kira
+Kira -> move_north
+
+Food remaining: 1
+
+TURN 19
+Alex -> move_south
+Kira -> move_south
+
+Food remaining: 1
+
+TURN 20
+Alex -> move_south
+Kira -> move_south
+
+Food remaining: 1
+
+TURN 21
+Alex -> eat
+Kira -> move_north
+
+Food remaining: 1
+
+TURN 22
+Alex -> move_north
+Kira -> move_south
+
+Food remaining: 1
+
+*** Mira entered the world on turn 22 (blank slate) ***
+
+TURN 23
+Alex -> talk_to_Kira
+Kira -> move_north
+Mira -> move_north
+
+Food remaining: 1
+
+TURN 24
+Alex -> move_south
+Kira -> move_south
+Mira -> move_north
+
+Food remaining: 1
+
+TURN 25
+Alex -> move_south
+Kira -> move_south
+Mira -> move_north
+
+Food remaining: 1
+
+TURN 26
+Alex -> eat
+Kira -> move_west
+Mira -> move_north
+
+Food remaining: 1
+
+TURN 27
+Alex -> move_north
+Kira -> starved
+Mira -> move_south
+
+Food remaining: 1
+
+TURN 28
+Alex -> move_north
+Mira -> move_south
+
+Food remaining: 1
+
+TURN 29
+Alex -> move_west
+Mira -> move_south
+
+Food remaining: 1
+
+TURN 30
+Alex -> move_west
+Mira -> move_west
+
+Food remaining: 1
+
+[GOD-SCRIPT turn 30] trigger_drought
+turn 30: [GOD] drought triggered (20 turns)
+
+TURN 31
+Alex -> move_south
+Mira -> move_west
+
+Food remaining: 2
+
+TURN 32
+Alex -> move_west
+Mira -> eat
+
+Food remaining: 1
+
+TURN 33
+Alex -> move_south
+Mira -> move_north
+
+Food remaining: 1
+
+TURN 34
+Alex -> eat
+Mira -> move_north
+
+Food remaining: 0
+
+TURN 35
+Alex -> move_north
+Mira -> move_north
+
+Food remaining: 0
+
+TURN 36
+Alex -> move_north
+Mira -> move_north
+
+Food remaining: 0
+
+TURN 37
+Alex -> move_north
+Mira -> move_east
+
+Food remaining: 0
+
+*** Otto entered the world on turn 37 (blank slate) ***
+
+TURN 38
+Alex -> move_north
+Mira -> move_east
+Otto -> move_north
+
+Food remaining: 0
+
+TURN 39
+Alex -> move_north
+Mira -> starved
+Otto -> move_north
+
+Food remaining: 0
+
+TURN 40
+Alex -> move_north
+Otto -> move_north
+
+Food remaining: 0
+
+TURN 41
+Alex -> move_east
+Otto -> rest
+
+Food remaining: 0
+
+TURN 42
+Alex -> talk_to_Otto
+Otto -> rest
+
+Food remaining: 0
+
+TURN 43
+Alex -> starved
+Otto -> rest
+
+Food remaining: 0
+
+TURN 44
+Otto -> rest
+
+Food remaining: 0
+
+TURN 45
+Otto -> rest
+
+Food remaining: 0
+
+TURN 46
+Otto -> rest
+
+Food remaining: 0
+
+TURN 47
+Otto -> starved
+
+Food remaining: 0
+
+TURN 48
+
+Food remaining: 0
+
+TURN 49
+
+Food remaining: 0
+
+*** Zane entered the world on turn 49 (blank slate) ***
+
+TURN 50
+Zane -> move_north
+
+Food remaining: 0
+
+TURN 51
+Zane -> move_north
+
+Food remaining: 0
+
+TURN 52
+Zane -> move_north
+
+Food remaining: 0
+
+TURN 53
+Zane -> move_north
+
+Food remaining: 0
+
+*** Nova entered the world on turn 53 (blank slate) ***
+
+TURN 54
+Zane -> move_north
+Nova -> move_north
+
+Food remaining: 0
+
+TURN 55
+Zane -> move_south
+Nova -> move_north
+
+Food remaining: 0
+
+[GOD-SCRIPT turn 55] introduce_stranger Vera quiet and guarded
+turn 55: [GOD] stranger Vera introduced
+
+TURN 56
+Zane -> move_east
+Nova -> move_north
+Vera -> move_north
+
+Food remaining: 1
+
+TURN 57
+Zane -> move_south
+Nova -> move_north
+Vera -> move_north
+
+Food remaining: 1
+
+TURN 58
+Zane -> move_east
+Nova -> move_east
+Vera -> move_north
+
+Food remaining: 1
+
+TURN 59
+Zane -> starved
+Nova -> move_south
+Vera -> move_north
+
+Food remaining: 1
+
+TURN 60
+Nova -> move_east
+Vera -> move_east
+
+Food remaining: 1
+
+TURN 61
+Nova -> move_south
+Vera -> move_south
+
+Food remaining: 2
+
+TURN 62
+Nova -> eat
+Vera -> move_south
+
+Food remaining: 1
+
+TURN 63
+Nova -> move_north
+Vera -> move_south
+
+Food remaining: 1
+
+TURN 64
+Nova -> move_north
+Vera -> move_east
+
+Food remaining: 1
+
+TURN 65
+Nova -> move_south
+Vera -> starved
+
+Food remaining: 1
+
+TURN 66
+Nova -> move_west
+
+Food remaining: 2
+
+TURN 67
+Nova -> move_south
+
+Food remaining: 2
+
+TURN 68
+Nova -> eat
+
+Food remaining: 1
+
+TURN 69
+Nova -> move_north
+
+Food remaining: 1
+
+*** Mira2 entered the world on turn 69 (blank slate) ***
+
+TURN 70
+Nova -> move_north
+Mira2 -> move_north
+
+Food remaining: 1
+
+TURN 71
+Nova -> move_north
+Mira2 -> move_north
+
+Food remaining: 2
+
+TURN 72
+Nova -> move_south
+Mira2 -> move_north
+
+Food remaining: 2
+
+TURN 73
+Nova -> move_south
+Mira2 -> move_north
+
+Food remaining: 2
+
+TURN 74
+Nova -> move_south
+Mira2 -> move_south
+
+Food remaining: 2
+
+TURN 75
+Nova -> move_south
+Mira2 -> move_south
+
+Food remaining: 2
+
+*** Otto2 entered the world on turn 75 (blank slate) ***
+
+TURN 76
+Nova -> eat
+Mira2 -> move_south
+Otto2 -> rest
+
+Food remaining: 2
+
+TURN 77
+Nova -> move_north
+Mira2 -> move_north
+Otto2 -> rest
+
+Food remaining: 2
+
+TURN 78
+Nova -> move_north
+Mira2 -> move_south
+Otto2 -> rest
+
+Food remaining: 2
+
+TURN 79
+Nova -> move_south
+Mira2 -> starved
+Otto2 -> rest
+
+Food remaining: 2
+
+TURN 80
+Nova -> move_south
+Otto2 -> move_south
+
+Food remaining: 2
+
+TURN 81
+Nova -> move_east
+Otto2 -> eat
+
+Food remaining: 2
+
+TURN 82
+Nova -> move_south
+Otto2 -> move_east
+
+Food remaining: 2
+
+TURN 83
+Nova -> eat
+Otto2 -> move_west
+
+Food remaining: 1
+
+TURN 84
+Nova -> move_north
+Otto2 -> move_west
+
+Food remaining: 1
+
+TURN 85
+Nova -> move_north
+Otto2 -> rest
+
+Food remaining: 1
+
+TURN 86
+Nova -> move_west
+Otto2 -> move_west
+
+Food remaining: 2
+
+TURN 87
+Nova -> move_south
+Otto2 -> move_south
+
+Food remaining: 2
+
+TURN 88
+Nova -> eat
+Otto2 -> eat
+
+Food remaining: 0
+
+TURN 89
+Nova -> move_west
+Otto2 -> rest
+
+Food remaining: 0
+
+*** Zane2 entered the world on turn 89 (blank slate) ***
+
+TURN 90
+Nova -> talk_to_Zane2
+Otto2 -> rest
+Zane2 -> move_south
+
+Food remaining: 0
+
+TURN 91
+Nova -> move_north
+Otto2 -> move_north
+Zane2 -> move_north
+
+Food remaining: 1
+
+TURN 92
+Nova -> move_north
+Otto2 -> move_north
+Zane2 -> move_north
+
+Food remaining: 1
+
+TURN 93
+Nova -> move_east
+Otto2 -> move_east
+Zane2 -> move_north
+
+Food remaining: 1
+
+TURN 94
+Nova -> move_south
+Otto2 -> move_east
+Zane2 -> move_north
+
+Food remaining: 1
+
+TURN 95
+Nova -> eat
+Otto2 -> move_north
+Zane2 -> move_west
+
+Food remaining: 0
+
+TURN 96
+Nova -> move_west
+Otto2 -> move_south
+Zane2 -> move_south
+
+Food remaining: 1
+
+TURN 97
+Nova -> talk_to_Zane2
+Otto2 -> move_south
+Zane2 -> move_south
+
+Food remaining: 1
+
+TURN 98
+Nova -> move_south
+Otto2 -> eat
+Zane2 -> move_west
+
+Food remaining: 0
+
+TURN 99
+Nova -> move_north
+Otto2 -> rest
+Zane2 -> starved
+
+Food remaining: 0
+
+TURN 100
+Nova -> move_north
+Otto2 -> rest
+
+Food remaining: 0
+
+
+========================================================
+AGENT SUMMARY
+========================================================
+Agent:           Alex
+Personality:     friendly and outgoing (dominant: friendliness)
+Goals:           friendship=8, survive=7, wealth=2
+Status:          DEAD
+Turns survived:  42 / 100
+Important memories:
+  - A new agent, Otto, appeared on turn 37.
+  - Mira died on turn 39 — they were starving.
+  - New strategy: seek_food
+  - Observed Otto south of me
+  - Starved
+
+Agent:           Bob
+Personality:     cautious and territorial (dominant: caution)
+Goals:           survive=9, wealth=5, friendship=2
+Status:          DEAD
+Turns survived:  11 / 100
+Important memories:
+  - Trust in Alex rose to 2 (friendly message)
+  - New strategy: seek_food
+  - Ate food
+  - New strategy: seek_food
+  - Starved
+
+Agent:           Kira
+Personality:     independent and competitive (dominant: independence)
+Goals:           wealth=8, survive=7, friendship=1
+Status:          DEAD
+Turns survived:  26 / 100
+Important memories:
+  - New strategy: explore north
+  - A new agent, Mira, appeared on turn 22.
+  - Observed Alex south of me
+  - New strategy: seek_food
+  - Starved
+
+Agent:           Mira
+Personality:     curious and adventurous (dominant: curiosity)
+Goals:           survive=7, friendship=5, wealth=3
+Status:          DEAD
+Turns survived:  38 / 100
+Important memories:
+  - Ate food
+  - New strategy: explore north
+  - A new agent, Otto, appeared on turn 37.
+  - New strategy: seek_food
+  - Starved
+
+Agent:           Otto
+Personality:     cautious and careful (dominant: caution)
+Goals:           survive=9, wealth=4, friendship=3
+Status:          DEAD
+Turns survived:  46 / 100
+Important memories:
+  - Observed Alex north of me
+  - Alex died on turn 43 — they were starving.
+  - New strategy: seek_food
+  - Trust in Alex rose to 1 (friendly message)
+  - Starved
+
+Agent:           Zane
+Personality:     independent and competitive (dominant: independence)
+Goals:           wealth=8, survive=7, friendship=1
+Status:          DEAD
+Turns survived:  58 / 100
+Important memories:
+  - New strategy: explore north
+  - A new agent, Nova, appeared on turn 53.
+  - New strategy: seek_food
+  - Starved
+
+Agent:           Nova
+Personality:     friendly and outgoing (dominant: friendliness)
+Goals:           friendship=8, survive=7, wealth=2
+Status:          ALIVE
+Turns survived:  100 / 100
+Important memories:
+  - Ate food
+  - Observed Zane2 west of me
+  - Trust in Zane2 fell to -6 (hostile message)
+  - New strategy: explore north
+  - Zane2 died on turn 99 — they were starving.
+
+Agent:           Vera
+Personality:     quiet and guarded (dominant: curiosity)
+Goals:           (none)
+Status:          DEAD
+Turns survived:  64 / 100
+Important memories:
+  - New strategy: explore north
+  - Zane died on turn 59 — they were starving.
+  - Observed Nova east of me
+  - New strategy: seek_food
+  - Starved
+
+Agent:           Mira2
+Personality:     curious and adventurous (dominant: curiosity)
+Goals:           survive=7, friendship=5, wealth=3
+Status:          DEAD
+Turns survived:  78 / 100
+Important memories:
+  - New strategy: explore north
+  - A new agent, Otto2, appeared on turn 75.
+  - Observed Otto2 south of me
+  - Observed Otto2 near food
+  - Starved
+
+Agent:           Otto2
+Personality:     cautious and careful (dominant: caution)
+Goals:           survive=9, wealth=4, friendship=3
+Status:          ALIVE
+Turns survived:  100 / 100
+Important memories:
+  - New strategy: explore north
+  - New strategy: seek_food Nova
+  - Observed Nova north of me
+  - Ate food
+  - Zane2 died on turn 99 — they were starving.
+
+Agent:           Zane2
+Personality:     independent and competitive (dominant: independence)
+Goals:           wealth=8, survive=7, friendship=1
+Status:          DEAD
+Turns survived:  98 / 100
+Important memories:
+  - Observed Nova near food
+  - New strategy: seek_food
+  - Observed Nova east of me
+  - Observed Nova east of me
+  - Starved
+
+========================================================
+INFERENCE COST (strategy caching)
+========================================================
+Agent-turns executed:      212
+LLM strategy calls made:   47
+Per-turn design would use: 212 LLM calls
+Saved by caching:          165 calls (~78% fewer)
+
+========================================================
+EVENTS LOG (world_state['events'])
+========================================================
+turn 3: Alex talked to Bob: "Hi! Want to team up? I'm focused on friendship."
+turn 4: Alex talked to Bob: "Hi! Want to team up? I'm focused on friendship."
+turn 4: Bob received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 4: Bob trust in Alex: 0 -> 1 (friendly message)
+turn 5: Bob received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 5: Bob trust in Alex: 1 -> 2 (friendly message)
+turn 10: Alex talked to Kira: "Hi! Want to team up? I'm focused on friendship."
+turn 10: [GOD] plague struck Bob (10 turns)
+turn 11: Kira received from Alex: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 11: Kira flagged hostility toward Alex
+turn 11: Alex trust in Kira: 0 -> -3 (hostile message)
+turn 12: Bob died (starved)
+turn 13: Kira stole food from Alex
+turn 13: Alex trust in Kira: -3 -> -8 (theft)
+turn 18: Alex talked to Kira: "Hi! Want to team up? I'm focused on friendship."
+turn 19: Kira received from Alex: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 19: Kira flagged hostility toward Alex
+turn 19: Alex trust in Kira: -8 -> -11 (hostile message)
+turn 22: a new agent Mira appeared (blank slate)
+turn 23: Alex talked to Kira: "Hi! Want to team up? I'm focused on friendship."
+turn 24: Kira received from Alex: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 24: Kira flagged hostility toward Alex
+turn 24: Alex trust in Kira: -11 -> -14 (hostile message)
+turn 27: Kira died (starved)
+turn 30: [GOD] drought triggered (20 turns)
+turn 37: a new agent Otto appeared (blank slate)
+turn 39: Mira died (starved)
+turn 42: Alex talked to Otto: "Hi! Want to team up? I'm focused on friendship."
+turn 43: Alex died (starved)
+turn 43: Otto received from Alex: "Hi! Want to team up? I'm focused on friendship." -> ignore
+turn 43: Otto trust in Alex: 0 -> 1 (friendly message)
+turn 47: Otto died (starved)
+turn 49: a new agent Zane appeared (blank slate)
+turn 53: a new agent Nova appeared (blank slate)
+turn 55: [GOD] stranger Vera introduced
+turn 59: Zane died (starved)
+turn 65: Vera died (starved)
+turn 69: a new agent Mira2 appeared (blank slate)
+turn 75: a new agent Otto2 appeared (blank slate)
+turn 79: Mira2 died (starved)
+turn 89: a new agent Zane2 appeared (blank slate)
+turn 90: Nova talked to Zane2: "Hi! Want to team up? I'm focused on friendship."
+turn 91: Zane2 received from Nova: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 91: Zane2 flagged hostility toward Nova
+turn 91: Nova trust in Zane2: 0 -> -3 (hostile message)
+turn 97: Nova talked to Zane2: "Hi! Want to team up? I'm focused on friendship."
+turn 98: Zane2 received from Nova: "Hi! Want to team up? I'm focused on friendship." -> hostile
+turn 98: Zane2 flagged hostility toward Nova
+turn 98: Nova trust in Zane2: -3 -> -6 (hostile message)
+turn 99: Zane2 died (starved)
+

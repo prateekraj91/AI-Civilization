@@ -158,18 +158,28 @@ def _empty_cell_near_centre(state: dict[str, Any]) -> tuple[int, int] | None:
 
 def spawn_blank_agent(name: str, personality: str, turn: int, state: dict[str, Any],
                       goals: dict[str, int] | None = None,
-                      pos: tuple[int, int] | None = None) -> Any | None:
+                      pos: tuple[int, int] | None = None,
+                      arrival_memory: str | None = None,
+                      log_event: bool = True) -> Any | None:
     """Create + place ONE blank-slate agent and notify the survivors (Day 14).
 
-    The single cold-start path, shared by the Day 14 timed respawn (_spawn_newcomer)
-    and Day 15 God mode (god_mode.spawn_agent), so a god-summoned agent is a proper
-    citizen built exactly like a respawned one. The Agent is its dataclass defaults
-    except name/personality/goals: empty memory, empty relationships/allies/offers/
-    inbox, hunger 0 — a true social cold start. The name is made unique against every
-    agent ever in the world (so it can never inherit a predecessor's reputation).
+    The single cold-start path, shared by the Day 14 timed respawn (_spawn_newcomer),
+    Day 15 God mode (god_mode.spawn_agent) and Day 16 (god_mode.introduce_stranger),
+    so every newcomer — respawn, summon or stranger — is built identically: dataclass
+    defaults except name/personality/goals (empty memory, empty relationships/allies/
+    offers/inbox, hunger 0 — a true social cold start). The name is made unique against
+    every agent ever in the world (so it can never inherit a predecessor's reputation).
 
     `pos` overrides placement (god mode can target a cell); otherwise a valid empty
-    cell near the centre is chosen. Returns the new agent, or None if no cell free.
+    cell near the centre is chosen.
+
+    `arrival_memory` is the template written onto each survivor's memory (formatted
+    with the newcomer's final unique name); it defaults to the Day 14 neutral arrival
+    line. Day 16 passes a wariness line instead ("A stranger, X, arrived. You know
+    nothing about them.") so wariness is seeded as MEMORY, never a hardcoded trust
+    penalty. `log_event=False` lets a caller suppress the default population event when
+    it logs its own (e.g. god_mode's tagged [GOD] line). Returns the new agent, or None
+    if no cell is free.
     """
     cell = pos if pos is not None else _empty_cell_near_centre(state)
     if cell is None:
@@ -179,10 +189,12 @@ def spawn_blank_agent(name: str, personality: str, turn: int, state: dict[str, A
     newcomer = Agent(name=unique, personality=personality, goals=dict(goals or {}))
     world.place_agent(newcomer, *cell)
 
+    template = arrival_memory or "A new agent, {name}, appeared on turn {turn}."
     for survivor in state["agents"]:
         if survivor.alive and survivor is not newcomer:
-            world.record_memory(survivor, f"A new agent, {unique}, appeared on turn {turn}.")
-    state["events"].append(f"turn {turn}: a new agent {unique} appeared (blank slate)")
+            world.record_memory(survivor, template.format(name=unique, turn=turn))
+    if log_event:
+        state["events"].append(f"turn {turn}: a new agent {unique} appeared (blank slate)")
     return newcomer
 
 

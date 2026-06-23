@@ -38,11 +38,17 @@ THE COMMANDS
                                  mirrored into the food list so the existing nav loop
                                  targets it, but claiming it pays out its full value
                                  (more than a meal) into hunger relief + inventory
+  trigger_plague [name]          afflict a random (or named) living agent so it loses
+                                 extra hunger per turn for N turns (Day 16) — it
+                                 recovers if it survives, dies if it cannot keep fed
+  introduce_stranger name pers   add a blank-slate stranger (Day 16); existing agents
+                                 get a wariness MEMORY, not a hardcoded trust penalty
   status / help / resume         inspect the world, list commands, continue
 """
 
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import population
@@ -55,12 +61,19 @@ DROUGHT_TURNS = 20
 # desirable than normal food: claiming it relieves more hunger and is worth wealth.
 TREASURE_VALUE = 10
 
+# Default span of a plague: the afflicted agent loses extra hunger per turn for this
+# many turns (Day 16), then recovers automatically if it survived (see world.update_
+# hunger). ~10 turns is long enough to genuinely threaten the agent under scarcity.
+PLAGUE_TURNS = 10
+
 # (command usage, one-line help). Single source for both the menu and `help`.
 COMMANDS: list[tuple[str, str]] = [
     ("spawn_food x y", "add a food tile at (x, y)"),
     ("spawn_agent name personality...", "summon a blank-slate cold-start agent"),
     ("trigger_drought [turns]", f"stop food respawn for N turns (default {DROUGHT_TURNS})"),
     ("drop_treasure x y [value]", f"drop a high-value item (default value {TREASURE_VALUE})"),
+    ("trigger_plague [name]", f"sicken a random/named agent for {PLAGUE_TURNS} turns (faster hunger)"),
+    ("introduce_stranger name personality...", "add a blank-slate stranger; others grow wary via memory"),
     ("status", "print the current world state"),
     ("help", "show this command list"),
     ("resume / <blank line>", "leave God mode and continue the simulation"),
@@ -142,6 +155,54 @@ def drop_treasure(state: dict[str, Any], x: int, y: int,
     return _log(state, f"dropped treasure (value {value}) at ({x},{y})")
 
 
+def trigger_plague(state: dict[str, Any], name: str | None = None,
+                   turns: int = PLAGUE_TURNS) -> str:
+    """Afflict a random (or named) living agent with a plague for `turns` turns.
+
+    Sets ONLY a world_state marker — the victim's plague_until turn. The existing
+    hunger loop (world.update_hunger) reads that marker and drains extra hunger while
+    it is in force, and clears it (recovery) once the window elapses with the agent
+    still alive. We do NOT touch the agent's decisions: it may starve if it cannot
+    keep fed, or pull through on its own. The victim also gets a memory of falling ill
+    (informational, like a death notice) so its own prompt reflects the new reality.
+    """
+    living = [a for a in state["agents"] if a.alive]
+    if not living:
+        return _log(state, "trigger_plague ignored — no living agent to afflict")
+    if name is not None:
+        victim = next((a for a in living if a.name == name), None)
+        if victim is None:
+            return _log(state, f"trigger_plague ignored — no living agent named {name!r}")
+    else:
+        victim = random.choice(living)
+    victim.plague_until = _turn(state) + turns
+    world.record_memory(victim, "A plague struck you — you weaken faster now.")
+    return _log(state, f"plague struck {victim.name} ({turns} turns)")
+
+
+def introduce_stranger(state: dict[str, Any], name: str,
+                       personality: str = "an unknown newcomer",
+                       goals: dict[str, int] | None = None) -> str:
+    """Introduce a blank-slate STRANGER through the Day 14/15 cold-start path (Day 16).
+
+    Mechanically identical to spawn_agent (empty memory/relationships/allies, hunger 0,
+    unique name) — the difference is purely SOCIAL framing: every existing agent gets a
+    wariness MEMORY ("A stranger, X, arrived. You know nothing about them.") instead of
+    the neutral arrival line, so distrust is seeded as memory, not a hardcoded trust
+    penalty. The stranger then integrates (or not) entirely through the existing talk/
+    trust loop — nothing here scripts that. The default population event is suppressed
+    in favour of the tagged [GOD] line below.
+    """
+    newcomer = population.spawn_blank_agent(
+        name, personality, _turn(state), state, goals=goals,
+        arrival_memory="A stranger, {name}, arrived. You know nothing about them.",
+        log_event=False,
+    )
+    if newcomer is None:
+        return _log(state, f"introduce_stranger {name} ignored — no empty cell available")
+    return _log(state, f"stranger {newcomer.name} introduced")
+
+
 # --- Inspection + CLI ------------------------------------------------------
 def status(state: dict[str, Any]) -> str:
     """A human-readable snapshot of the world (no mutation)."""
@@ -149,9 +210,10 @@ def status(state: dict[str, Any]) -> str:
     living = [a for a in state["agents"] if a.alive]
     lines.append(f"living agents: {len(living)}")
     for a in living:
+        sick = "  SICK(until %d)" % a.plague_until if world.is_sick(a, state) else ""
         lines.append(
             f"  {a.name:<6} pos {a.position}  hunger {a.hunger}/{world.HUNGER_MAX}"
-            f"  allies {sorted(a.allies) or '-'}  inv {len(a.inventory)}"
+            f"  allies {sorted(a.allies) or '-'}  inv {len(a.inventory)}{sick}"
         )
     lines.append(f"food tiles: {len(state['food'])}  {sorted(state['food'])}")
     lines.append(f"treasures:  {[(t['pos'], t['value']) for t in state['treasures']]}")
@@ -186,11 +248,19 @@ def run_command(line: str, state: dict[str, Any], out: Any = print) -> str:
             res = drop_treasure(state, int(args[0]), int(args[1]), value)
         elif cmd == "trigger_drought":
             res = trigger_drought(state, int(args[0]) if args else DROUGHT_TURNS)
+        elif cmd == "trigger_plague":
+            res = trigger_plague(state, args[0] if args else None)
         elif cmd == "spawn_agent":
             if len(args) < 2:
                 res = "usage: spawn_agent <name> <personality...>"
             else:
                 res = spawn_agent(state, args[0], " ".join(args[1:]))
+        elif cmd == "introduce_stranger":
+            if len(args) < 1:
+                res = "usage: introduce_stranger <name> [personality...]"
+            else:
+                pers = " ".join(args[1:]) if len(args) > 1 else "an unknown newcomer"
+                res = introduce_stranger(state, args[0], pers)
         elif cmd == "status":
             res = status(state)
         elif cmd in ("help", "?"):

@@ -82,6 +82,9 @@ _MOVES = {
 # --- Hunger constants (Day 4) --------------------------------------------
 HUNGER_MAX = 10        # at this level the agent starves and dies
 HUNGER_PER_TURN = 1    # hunger gained each turn
+PLAGUE_HUNGER_PER_TURN = 3  # hunger gained each turn while sick (Day 16 plague). A
+                            # plagued agent burns through reserves 3x as fast, so it
+                            # must eat far more often or starve before it recovers.
 EAT_RELIEF = 7         # hunger removed by eating one food (clamped at 0)
                        # Day 9 rebalance: a meal lasts longer so agents spend
                        # fewer turns scrambling and more turns interacting.
@@ -382,7 +385,11 @@ def observe(agent: Any, state: dict[str, Any]) -> str:
         if cell["wall"]:
             label = "wall"
         elif cell["agent"] is not None:
+            # Day 16: a plagued neighbour visibly looks sick, surfaced through the
+            # ordinary perception string (no new sense, no extra cost).
             label = cell["agent"].name
+            if is_sick(cell["agent"], state):
+                label += " (looks sick)"
         elif cell["food"]:
             label = FOOD
         else:
@@ -421,6 +428,10 @@ def record_social_memories(agent: Any, state: dict[str, Any]) -> list[str]:
         record_memory(agent, f"Observed {other.name} {name.lower()} of me")
         if _is_near_food(other.position, state):
             record_memory(agent, f"Observed {other.name} near food")
+        # Day 16: noticing a sick neighbour is recorded like any other sighting, so
+        # the plague becomes social knowledge through the existing memory path.
+        if is_sick(other, state):
+            record_memory(agent, f"Observed {other.name} looking sick")
         observed.append(other.name)
 
     return observed
@@ -527,13 +538,38 @@ def record_memory(agent: Any, text: str) -> list[str]:
     return agent.memory
 
 
+def is_sick(agent: Any, state: dict[str, Any] | None = None) -> bool:
+    """True if `agent` is currently afflicted by a plague (Day 16).
+
+    Sick means a god-set plague marker is still in force: the current turn has not
+    yet passed agent.plague_until. Pure READ over world_state — the same single
+    source of truth god_mode mutated. Used by the hunger loop (extra drain) and by
+    perception/social memory (others can SEE that a neighbour looks sick).
+    """
+    state = world_state if state is None else state
+    until = getattr(agent, "plague_until", 0)
+    return 0 < until and state["turn"] <= until
+
+
 def update_hunger(agent: Any) -> int:
     """Advance hunger by one turn, clamped at HUNGER_MAX. Returns the new hunger.
 
-    Called once per turn by the simulation loop. Hunger never exceeds
-    HUNGER_MAX (10); reaching it means starvation (see is_dead).
+    Called once per turn by the simulation loop. Hunger never exceeds HUNGER_MAX
+    (10); reaching it means starvation (see is_dead).
+
+    Day 16 plague: a sick agent (is_sick) loses PLAGUE_HUNGER_PER_TURN instead of
+    HUNGER_PER_TURN. When the plague window has fully elapsed and the agent is still
+    alive, it RECOVERS here — the marker is cleared and a single recovery memory is
+    written — so survival is its own escape from the sickness. god_mode only set the
+    marker; the effect and the recovery both fall out of this existing loop, never a
+    scripted reaction.
     """
-    agent.hunger = min(HUNGER_MAX, agent.hunger + HUNGER_PER_TURN)
+    until = getattr(agent, "plague_until", 0)
+    if until and world_state["turn"] > until:
+        agent.plague_until = 0  # survived the window — recover
+        record_memory(agent, "Recovered from the plague")
+    per = PLAGUE_HUNGER_PER_TURN if is_sick(agent) else HUNGER_PER_TURN
+    agent.hunger = min(HUNGER_MAX, agent.hunger + per)
     return agent.hunger
 
 

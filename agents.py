@@ -82,3 +82,9 @@ class Agent:
     # are awaiting its answer (Day 13). An alliance forms only when the offered
     # agent answers with its own ally_with action — never unilaterally.
     ally_offers: set = field(default_factory=set)
+
+    # plague_until: the last turn this agent is sick (Day 16 God mode). While the
+    # current turn is <= this value the hunger-update step drains extra hunger per
+    # turn (simulating a plague); 0 means healthy. God mode sets it via world_state;
+    # the existing hunger loop reads it and applies the effect — no scripted reaction.
+    plague_until: int = 0
