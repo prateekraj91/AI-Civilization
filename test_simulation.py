@@ -17,6 +17,7 @@ import random
 import tempfile
 
 import conversation
+import heuristic
 import llm
 import main
 import world
@@ -320,6 +321,90 @@ def test_strategy_caching_reduces_llm_calls() -> None:
     assert strat_calls < per_turn_baseline, (strat_calls, per_turn_baseline)
     print(f"PASS test_strategy_caching_reduces_llm_calls "
           f"({strat_calls} calls vs {per_turn_baseline} per-turn baseline)")
+
+
+# --- V2 M0.1: heuristic (zero-LLM) cognition --------------------------------
+# The pseudo-actions the loop routes to the conversation/alliance layers, on top of
+# world.VALID_ACTIONS, make up the full vocabulary a mind may legitimately emit.
+_SOCIAL_PREFIXES = ("talk_to_", "steal_from_", "ally_with_", "betray_alliance_")
+
+
+def _is_valid_action(action: str) -> bool:
+    return action in world.VALID_ACTIONS or action.startswith(_SOCIAL_PREFIXES)
+
+
+def test_heuristic_returns_valid_action_for_hungry_fed_threatened() -> None:
+    """The heuristic mind returns a valid action for each key perception regime."""
+    # Hungry (>= HEURISTIC_HUNGER) with food adjacent → step onto it.
+    _fresh_world()
+    a = _agent("Sam", "neutral", (4, 4), hunger=4)
+    world_state["food"].append((5, 4))  # due east
+    act = heuristic.decide_action(a, world_state)[0]
+    assert _is_valid_action(act) and act == "move_east", act
+
+    # Fed and alone → a valid, non-idle action (a curious agent explores by moving).
+    _fresh_world()
+    b = _agent("Sam", "curious and adventurous", (4, 4), hunger=1)
+    act = heuristic.decide_action(b, world_state)[0]
+    assert _is_valid_action(act) and act.startswith("move_"), act
+
+    # Threatened (starving) with food on the map but not adjacent → head toward it.
+    _fresh_world()
+    c = _agent("Sam", "neutral", (1, 1), hunger=9)
+    world_state["food"].append((1, 8))  # far south
+    act = heuristic.decide_action(c, world_state)[0]
+    assert _is_valid_action(act) and act == "move_south", act
+
+    # Hungry with NO food anywhere known → explore to search, never idle.
+    _fresh_world()
+    d = _agent("Sam", "cautious and territorial", (9, 9), hunger=6)
+    act = heuristic.decide_action(d, world_state)[0]
+    assert _is_valid_action(act) and act.startswith("move_"), act
+    print("PASS test_heuristic_returns_valid_action_for_hungry_fed_threatened")
+
+
+def test_heuristic_moves_toward_adjacent_food() -> None:
+    """A hungry heuristic agent reliably moves toward adjacent food in any direction."""
+    for (fx, fy), expected in [((4, 3), "move_north"), ((4, 5), "move_south"),
+                               ((5, 4), "move_east"), ((3, 4), "move_west")]:
+        _fresh_world()
+        a = _agent("Sam", "neutral", (4, 4), hunger=5)
+        world_state["food"].append((fx, fy))
+        act = heuristic.decide_action(a, world_state)[0]
+        assert act == expected, (expected, act)
+    print("PASS test_heuristic_moves_toward_adjacent_food")
+
+
+def test_heuristic_run_makes_zero_llm_calls() -> None:
+    """An all-heuristic simulation completes and makes ZERO LLM calls of any kind."""
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run_simulation(15, cognition="heuristic")
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats["strategy"] == 0, stats
+    assert stats["decision"] == 0, stats
+    print("PASS test_heuristic_run_makes_zero_llm_calls")
+
+
+def test_cognition_defaults_to_llm_and_path_unregressed() -> None:
+    """Default cognition is 'llm' and a default run still drives the LLM strategy path."""
+    assert Agent(name="x", personality="y").cognition == "llm"
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run_simulation(15)  # no cognition arg → V1 default
+        strat_calls = llm.get_call_stats()["strategy"]
+    finally:
+        llm.PROVIDER = saved
+    assert strat_calls > 0, strat_calls
+    print(f"PASS test_cognition_defaults_to_llm_and_path_unregressed ({strat_calls} calls)")
 
 
 def test_full_simulation_runs_clean() -> None:
@@ -1383,6 +1468,10 @@ def main_runner() -> None:
         test_survival_overrides_strategy,
         test_strategy_validation_fallback,
         test_strategy_caching_reduces_llm_calls,
+        test_heuristic_returns_valid_action_for_hungry_fed_threatened,
+        test_heuristic_moves_toward_adjacent_food,
+        test_heuristic_run_makes_zero_llm_calls,
+        test_cognition_defaults_to_llm_and_path_unregressed,
         test_full_simulation_runs_clean,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,

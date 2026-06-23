@@ -88,3 +88,14 @@ class Agent:
     # turn (simulating a plague); 0 means healthy. God mode sets it via world_state;
     # the existing hunger loop reads it and applies the effect — no scripted reaction.
     plague_until: int = 0
+
+    # cognition: which MIND drives this agent's strategy choice (V2 milestone M0.1).
+    #   "llm"       -> ask the model layer for a high-level strategy (the V1 default,
+    #                  so existing behaviour is unchanged).
+    #   "heuristic" -> derive the strategy from pure-Python rules (heuristic.py),
+    #                  making ZERO model calls.
+    # Either way the strategy is the SAME shape the executor (strategy.choose_action)
+    # runs, so the rest of the loop is identical and cannot tell the minds apart.
+    # This is a clean per-agent switch only — there is NO tier/promotion system here
+    # (that is M0.2); an agent's cognition does not change on its own.
+    cognition: str = "llm"

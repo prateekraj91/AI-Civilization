@@ -34,6 +34,7 @@ import time
 import alliance
 import conversation
 import god_mode
+import heuristic
 import population
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -220,12 +221,24 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     strat = strategies.get(agent.name)
     refresh_due = strat is None or (turn - strat.issued_turn) >= STRATEGY_INTERVAL
     incoming = conversation.pending_incoming(agent, turn)
-    observation = observe(agent, world_state) if (refresh_due or VERBOSE_MODE) else ""
+    # M0.1: the heuristic mind reads structured perception itself (world.scan), so the
+    # human-readable observation string is only built when the LLM mind needs it (or
+    # for the verbose log) — never for a refreshing heuristic agent.
+    is_heuristic = getattr(agent, "cognition", "llm") == "heuristic"
+    need_obs = VERBOSE_MODE or (refresh_due and not is_heuristic)
+    observation = observe(agent, world_state) if need_obs else ""
 
     refreshed = False
     if refresh_due:
-        data = get_strategy(build_strategy_prompt(agent, observation, incoming=incoming,
-                                                  state=world_state))
+        # The SINGLE cognition switch (M0.1): an agent flagged "heuristic" derives its
+        # strategy from pure Python (zero LLM calls); otherwise the model layer is
+        # asked, exactly as in V1. Both return the same strategy dict shape, so the
+        # Strategy construction and everything below are mind-agnostic.
+        if is_heuristic:
+            data = heuristic.decide_strategy(agent, world_state)
+        else:
+            data = get_strategy(build_strategy_prompt(agent, observation, incoming=incoming,
+                                                      state=world_state))
         strat = Strategy(kind=data["strategy"], target=data.get("target", ""),
                          message=data.get("message", ""), reaction=data.get("reaction", ""),
                          issued_turn=turn)
@@ -418,6 +431,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="drop into the interactive God menu every N turns (default from "
              "AICIV_GOD_EVERY, else off). Ignored when --god-script is given.")
     p.add_argument(
+        "--cognition", choices=("llm", "heuristic"), default="llm",
+        help="which MIND drives the agents (V2 M0.1). 'llm' (default) asks the model "
+             "layer for strategies, exactly as in V1. 'heuristic' uses a pure-Python "
+             "survival policy that makes ZERO model calls — fast enough to run many "
+             "agents. A clean per-agent switch, not a tier system.")
+    p.add_argument(
         "--render", choices=("plain", "rich"), default="plain",
         help="output style. 'plain' (default) is the unchanged turn-by-turn text "
              "print. 'rich' shows a live in-place dashboard (grid + per-agent status "
@@ -437,7 +456,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = None,
                    god_every: int = 0, renderer: "Any" = None,
-                   turn_delay: float = 0.0) -> None:
+                   turn_delay: float = 0.0,
+                   agent_specs: "list | None" = None,
+                   cognition: str = "llm") -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -458,8 +479,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # --- Setup ----------------------------------------------------------
     reset_call_stats()
     create_world()
-    for name, personality, goals, (x, y) in AGENT_SPECS:
-        place_agent(Agent(name=name, personality=personality, goals=goals), x, y)
+    # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
+    # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
+    # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
+    # cast; absent it, the V1 trio is unchanged.
+    specs = agent_specs if agent_specs is not None else AGENT_SPECS
+    for name, personality, goals, (x, y) in specs:
+        place_agent(Agent(name=name, personality=personality, goals=goals,
+                          cognition=cognition), x, y)
     spawn_food(INITIAL_FOOD, cluster=FOOD_CLUSTERED)
 
     strategies: dict[str, Strategy] = {}
@@ -607,7 +634,8 @@ def main(argv: list[str] | None = None) -> None:
             if seed is not None:
                 print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
-                           renderer=renderer, turn_delay=args.speed)
+                           renderer=renderer, turn_delay=args.speed,
+                           cognition=args.cognition)
         finally:
             sys.stdout = original
             log_file.close()
@@ -618,7 +646,8 @@ def main(argv: list[str] | None = None) -> None:
         renderer = _make_renderer(args.render, sink=None)
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
-                           renderer=renderer, turn_delay=args.speed)
+                           renderer=renderer, turn_delay=args.speed,
+                           cognition=args.cognition)
 
 
 if __name__ == "__main__":
