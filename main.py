@@ -36,6 +36,7 @@ import conversation
 import god_mode
 import heuristic
 import population
+from cognition import update_tiers
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
 from strategy import (
@@ -75,6 +76,15 @@ NUM_TURNS = 50
 # Phase 4: how often (in turns) to refresh an agent's strategy via the LLM.
 # Between refreshes the cached strategy is executed in Python — no inference.
 STRATEGY_INTERVAL = 5
+
+# V2 M0.2: how many agents may run the expensive LLM ("focal") mind AT ONCE. The
+# tiering system (cognition.update_tiers) keeps the most interesting `budget`
+# agents focal and the rest on the zero-LLM heuristic mind, so inference cost
+# scales with this number, NOT with population. Kept small; with the V1 trio
+# (3 agents) it is >= the cast so EVERYONE is focal and the run is byte-identical
+# to v1 — the tiering only bites once agents > budget. `--focal-budget` overrides;
+# `--focal-budget 0` makes everyone heuristic (the M0.1 zero-LLM run).
+DEFAULT_FOCAL_BUDGET = 8
 
 # Day 15 God mode: pause into the interactive God menu every N turns. Default 0
 # (OFF) so normal/automated runs never block on input(); set AICIV_GOD_EVERY=10 to
@@ -432,10 +442,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "AICIV_GOD_EVERY, else off). Ignored when --god-script is given.")
     p.add_argument(
         "--cognition", choices=("llm", "heuristic"), default="llm",
-        help="which MIND drives the agents (V2 M0.1). 'llm' (default) asks the model "
-             "layer for strategies, exactly as in V1. 'heuristic' uses a pure-Python "
-             "survival policy that makes ZERO model calls — fast enough to run many "
-             "agents. A clean per-agent switch, not a tier system.")
+        help="the BASELINE mind agents start with (V2 M0.1). 'llm' (default) asks the "
+             "model layer for strategies, exactly as in V1. 'heuristic' uses a pure-"
+             "Python survival policy that makes ZERO model calls. Under M0.2 tiering "
+             "this is just the starting tier — the per-turn focal budget governs who "
+             "actually runs the LLM mind (see --focal-budget).")
+    p.add_argument(
+        "--focal-budget", type=int, default=None, metavar="N",
+        help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
+             f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
+             "--cognition heuristic). Each turn the most socially/strategically "
+             "interesting N living agents are promoted to 'focal' (LLM) and the rest "
+             "run the zero-LLM heuristic mind, so inference cost scales with DRAMA, not "
+             "population. N >= the cast => everyone focal => byte-identical to v1; N=0 "
+             "=> everyone heuristic (the M0.1 zero-LLM run).")
     p.add_argument(
         "--render", choices=("plain", "rich"), default="plain",
         help="output style. 'plain' (default) is the unchanged turn-by-turn text "
@@ -458,7 +478,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    god_every: int = 0, renderer: "Any" = None,
                    turn_delay: float = 0.0,
                    agent_specs: "list | None" = None,
-                   cognition: str = "llm") -> None:
+                   cognition: str = "llm",
+                   focal_budget: "int | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -473,6 +494,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     The renderer ONLY READS world_state — it cannot affect the simulation, so a run is
     byte-identical with or without it (the plain text is merely routed elsewhere). When
     `renderer is None` the path is exactly the pre-Day-18 plain behaviour.
+
+    V2 M0.2 (tiered cognition): when `focal_budget` is not None, each turn begins by
+    re-assigning the focal (LLM) set via cognition.update_tiers — the most interesting
+    `focal_budget` living agents run the LLM mind, the rest the heuristic mind, with
+    hysteresis so the set doesn't thrash. `focal_budget is None` (the default for direct
+    callers/tests) DISABLES tiering, leaving every agent on its setup `cognition` — so
+    pure-v1 and pure-M0.1 runs are untouched. When `focal_budget >= len(living)` the
+    update promotes everyone and logs nothing, keeping a small cast byte-identical to v1.
     """
     god_script = god_script or {}
 
@@ -492,6 +521,10 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
     counters: dict[str, int] = {"agent_turns": 0}
+    # M0.2: per-run hysteresis memory for the tiering system — {name: consecutive
+    # turns spent focal}. Lives here (like `strategies`) so it is naturally fresh per
+    # run and never pollutes world_state. Untouched when focal_budget is None.
+    focal_tenure: dict[str, int] = {}
 
     if VERBOSE_MODE:
         print(f"AI Civilization — personality-driven simulation (provider: {PROVIDER})")
@@ -510,6 +543,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     with live_cm, sink_cm:
       for turn in range(1, num_turns + 1):
         world_state["turn"] = turn
+
+        # M0.2: re-tier BEFORE anyone acts, so each agent's `cognition` reflects how
+        # interesting it is RIGHT NOW (the events from last turn are in the window).
+        # Disabled (no-op) when focal_budget is None; a no-transition no-op when the
+        # budget covers the whole cast (keeps a small run byte-identical to v1).
+        if focal_budget is not None:
+            update_tiers(world_state, turn, focal_budget, focal_tenure)
 
         if VERBOSE_MODE:
             print("=" * 56)
@@ -620,6 +660,12 @@ def main(argv: list[str] | None = None) -> None:
     god_script = parse_god_script(args.god_script)
     god_every = args.god_every if args.god_every is not None else GOD_EVERY
 
+    # M0.2: resolve the focal budget. An explicit --focal-budget always wins; absent
+    # it, default to DEFAULT_FOCAL_BUDGET, except a `--cognition heuristic` request
+    # defaults to 0 focal slots so it stays the M0.1 zero-LLM run a user expects.
+    focal_budget = (args.focal_budget if args.focal_budget is not None
+                    else (0 if args.cognition == "heuristic" else DEFAULT_FOCAL_BUDGET))
+
     # --log mirrors stdout to a file via a Tee for the whole run, then restores it.
     if args.log:
         os.makedirs(os.path.dirname(args.log) or ".", exist_ok=True)
@@ -635,7 +681,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
-                           cognition=args.cognition)
+                           cognition=args.cognition, focal_budget=focal_budget)
         finally:
             sys.stdout = original
             log_file.close()
@@ -647,7 +693,7 @@ def main(argv: list[str] | None = None) -> None:
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
-                           cognition=args.cognition)
+                           cognition=args.cognition, focal_budget=focal_budget)
 
 
 if __name__ == "__main__":

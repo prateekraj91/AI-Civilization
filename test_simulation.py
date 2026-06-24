@@ -419,6 +419,144 @@ def test_full_simulation_runs_clean() -> None:
     print("PASS test_full_simulation_runs_clean")
 
 
+# --- Tiered cognition (M0.2) ----------------------------------------------
+def _budget_population(n: int) -> list[Agent]:
+    """Place `n` heuristic agents on distinct cells of a fresh world for tiering tests."""
+    _fresh_world()
+    agents = []
+    for i in range(n):
+        a = Agent(name=f"A{i:02d}", personality="curious and adventurous",
+                  cognition="heuristic", hunger=1)
+        place_agent(a, i % world_state["size"], i // world_state["size"])
+        agents.append(a)
+    return agents
+
+
+def test_tiering_never_exceeds_budget() -> None:
+    """update_tiers promotes at most `budget` agents to 'llm', every turn, for any N."""
+    import cognition
+    budget = 4
+    _budget_population(12)
+    tenure: dict[str, int] = {}
+    for turn in range(1, 16):
+        world_state["turn"] = turn
+        cognition.update_tiers(world_state, turn, budget, tenure)
+        focal = [a for a in world_state["agents"] if a.alive and a.cognition == "llm"]
+        assert len(focal) <= budget, (turn, len(focal))
+    print("PASS test_tiering_never_exceeds_budget")
+
+
+def test_interestingness_ranks_conflict_above_lone_wanderer() -> None:
+    """An agent in a recent conflict scores higher than a settled lone wanderer."""
+    import cognition
+    _fresh_world()
+    world_state["turn"] = 5
+    conflict = _agent("Kira", "independent and competitive", (1, 1))
+    wanderer = _agent("Solo", "curious and adventurous", (8, 8))
+    wanderer.memory.append("Wandered around.")  # not a blank-slate newcomer
+    world_state["events"].append("turn 5: Mallory stole food from Kira")
+    s_conflict = cognition.interestingness(conflict, world_state)[0]
+    s_wander = cognition.interestingness(wanderer, world_state)[0]
+    assert s_conflict > s_wander, (s_conflict, s_wander)
+    print("PASS test_interestingness_ranks_conflict_above_lone_wanderer")
+
+
+def test_promotion_and_demotion_log_events() -> None:
+    """A theft promotes its victim to focal (logged); a rival's drama later demotes it."""
+    import cognition
+    budget = 1
+    _fresh_world()
+    star = _agent("Star", "friendly and outgoing", (5, 5))  # victimised first
+    other = _agent("Other", "curious and adventurous", (0, 0))
+    star.cognition = other.cognition = "heuristic"  # baseline, so a promotion is visible
+    tenure: dict[str, int] = {}
+
+    # A fresh theft against Star (the thief Mallory is not in the cast, so only the
+    # living victim is credited) -> Star is the most interesting -> promoted + logged.
+    world_state["turn"] = 2
+    world_state["events"].append("turn 2: Mallory stole food from Star")
+    cognition.update_tiers(world_state, 2, budget, tenure)
+    assert star.cognition == "llm", star.cognition
+    assert any("Star promoted to focal" in e for e in world_state["events"])
+
+    # Quiet turns let Star's tenure accrue past MIN_TENURE so it is no longer protected.
+    for turn in range(3, 7):
+        world_state["turn"] = turn
+        cognition.update_tiers(world_state, turn, budget, tenure)
+    assert star.cognition == "llm"  # still focal — nobody more interesting yet
+
+    # Later, past Star's min tenure, the drama moves to Other: it gets robbed and
+    # becomes the more interesting one, so the single focal slot shifts to it.
+    world_state["turn"] = 7
+    world_state["events"].append("turn 7: Mallory stole food from Other")
+    cognition.update_tiers(world_state, 7, budget, tenure)
+    assert other.cognition == "llm" and star.cognition == "heuristic", \
+        (star.cognition, other.cognition)
+    assert any("Star demoted to heuristic" in e for e in world_state["events"])
+    print("PASS test_promotion_and_demotion_log_events")
+
+
+def test_hysteresis_prevents_single_turn_flipflop() -> None:
+    """A one-turn blip can't flap a focal agent: a promotion holds for MIN_TENURE turns."""
+    import cognition
+    budget = 1
+    _fresh_world()
+    star = _agent("Star", "friendly and outgoing", (5, 5))
+    rival = _agent("Rival", "curious and adventurous", (0, 0))  # quietly competing
+    star.cognition = rival.cognition = "heuristic"  # baseline, so a promotion is visible
+    tenure: dict[str, int] = {}
+
+    world_state["turn"] = 1
+    world_state["events"].append("turn 1: Mallory stole food from Star")
+    cognition.update_tiers(world_state, 1, budget, tenure)
+    assert star.cognition == "llm"
+    assert 0 < tenure["Star"] < cognition.MIN_TENURE  # inside its protected tenure
+
+    # Immediately next turn, with the drama already gone, Star must NOT be demoted —
+    # the minimum tenure holds it focal so the set doesn't thrash turn-to-turn.
+    world_state["turn"] = 2
+    world_state["events"].clear()  # the blip is over; nothing interesting remains
+    cognition.update_tiers(world_state, 2, budget, tenure)
+    assert star.cognition == "llm", "hysteresis failed: focal agent flipped after one turn"
+    assert not any("demoted" in e for e in world_state["events"])
+    print("PASS test_hysteresis_prevents_single_turn_flipflop")
+
+
+def test_tiering_disabled_leaves_cognition_untouched() -> None:
+    """focal_budget=None disables tiering: a heuristic run stays zero-LLM (M0.1 intact)."""
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run_simulation(15, cognition="heuristic")  # no focal_budget -> no tiering
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats["strategy"] == 0 and stats["decision"] == 0, stats
+    print("PASS test_tiering_disabled_leaves_cognition_untouched")
+
+
+def test_budget_covering_cast_is_byte_identical_to_v1() -> None:
+    """3 agents with a budget >= cast == the no-tiering path, byte-for-byte (v1 intact)."""
+    def run(budget):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(20, focal_budget=budget)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        no_tier, tiered = run(None), run(8)
+    finally:
+        llm.PROVIDER = saved
+    assert no_tier == tiered, "budget>=cast diverged from the no-tiering path"
+    assert "promoted to focal" not in tiered, "a covered cast must log no transitions"
+    print("PASS test_budget_covering_cast_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -1473,6 +1611,12 @@ def main_runner() -> None:
         test_heuristic_run_makes_zero_llm_calls,
         test_cognition_defaults_to_llm_and_path_unregressed,
         test_full_simulation_runs_clean,
+        test_tiering_never_exceeds_budget,
+        test_interestingness_ranks_conflict_above_lone_wanderer,
+        test_promotion_and_demotion_log_events,
+        test_hysteresis_prevents_single_turn_flipflop,
+        test_tiering_disabled_leaves_cognition_untouched,
+        test_budget_covering_cast_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,
