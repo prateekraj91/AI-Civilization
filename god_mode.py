@@ -74,6 +74,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("drop_treasure x y [value]", f"drop a high-value item (default value {TREASURE_VALUE})"),
     ("trigger_plague [name]", f"sicken a random/named agent for {PLAGUE_TURNS} turns (faster hunger)"),
     ("introduce_stranger name personality...", "add a blank-slate stranger; others grow wary via memory"),
+    ("grant_knowledge name item", "teach an agent a knowledge item (M1.1); it then spreads by contact"),
     ("status", "print the current world state"),
     ("help", "show this command list"),
     ("resume / <blank line>", "leave God mode and continue the simulation"),
@@ -203,6 +204,24 @@ def introduce_stranger(state: dict[str, Any], name: str,
     return _log(state, f"stranger {newcomer.name} introduced")
 
 
+def grant_knowledge(state: dict[str, Any], name: str, item: str) -> str:
+    """Teach a living agent a knowledge ITEM (M1.1) — a write-only world mutation.
+
+    Adds `item` to the named agent's `knowledge` set and records a memory of it. From
+    here the item is just propagating STATE: the existing knowledge.diffuse pass (run
+    by the engine each turn) spreads it to in-contact agents on its own — god mode does
+    NOT script that, exactly as a dropped food tile lets the agents react themselves.
+    Stays inside the boundary: touches only world_state (no strategy/trust/knowledge
+    import — the grant is a one-line state write).
+    """
+    victim = next((a for a in state["agents"] if a.alive and a.name == name), None)
+    if victim is None:
+        return _log(state, f"grant_knowledge ignored — no living agent named {name!r}")
+    victim.knowledge.add(item)
+    world.record_memory(victim, f"Knows '{item}'")
+    return _log(state, f"granted '{item}' to {victim.name}")
+
+
 # --- Inspection + CLI ------------------------------------------------------
 def status(state: dict[str, Any]) -> str:
     """A human-readable snapshot of the world (no mutation)."""
@@ -261,6 +280,11 @@ def run_command(line: str, state: dict[str, Any], out: Any = print) -> str:
             else:
                 pers = " ".join(args[1:]) if len(args) > 1 else "an unknown newcomer"
                 res = introduce_stranger(state, args[0], pers)
+        elif cmd == "grant_knowledge":
+            if len(args) < 2:
+                res = "usage: grant_knowledge <name> <item>"
+            else:
+                res = grant_knowledge(state, args[0], args[1])
         elif cmd == "status":
             res = status(state)
         elif cmd in ("help", "?"):

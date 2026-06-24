@@ -73,6 +73,11 @@ _EVENT_WEIGHTS: list[tuple[str, float, str]] = [
     ("talked to", 3.0, "talk"),              # "X talked to Y: \"...\""
     ("received from", 3.0, "talk"),          # "X received from Y: \"...\" -> reply"
     ("reply", 3.0, "talk"),                  # "X heard Y reply ..." / "X replied to Y ..."
+    # M1.1: a teaching/learning moment is a MINOR interestingness signal — below talk
+    # (3) so it never out-shouts the social drama, but enough that an agent at the live
+    # edge of a knowledge cascade can tip into focal. Both names in "X taught 'i' to Y"
+    # are credited. Set deliberately low; remove this one line to disable the coupling.
+    ("taught", 2.0, "knowledge"),            # "X taught 'item' to Y"
 ]
 
 # Under-threat signals, read straight off the agent (no event needed).

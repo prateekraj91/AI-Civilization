@@ -654,6 +654,130 @@ def test_occupancy_index_matches_truth_after_moves_and_deaths() -> None:
     print("PASS test_occupancy_index_matches_truth_after_moves_and_deaths")
 
 
+# --- Knowledge as propagating state (M1.1) --------------------------------
+def test_knowledge_transmits_only_between_in_contact_agents() -> None:
+    """A knower teaches an ADJACENT non-knower, but never a distant one (contact graph)."""
+    import knowledge
+    _fresh_world()
+    teacher = _agent("Teacher", "friendly and outgoing", (5, 5))
+    near = _agent("Near", "curious and adventurous", (5, 4))   # adjacent (north)
+    far = _agent("Far", "curious and adventurous", (0, 0))     # far away, never in contact
+    teacher.knowledge.add("fire")
+    random.seed(1)
+    # Run several diffuse passes; nobody moves, so contact is fixed.
+    for turn in range(1, 30):
+        world_state["turn"] = turn
+        knowledge.diffuse(world_state, turn)
+    assert "fire" in near.knowledge, "adjacent agent should have learned through contact"
+    assert "fire" not in far.knowledge, "a never-contacted agent must never learn"
+    assert any("Teacher taught 'fire' to Near" in e for e in world_state["events"])
+    print("PASS test_knowledge_transmits_only_between_in_contact_agents")
+
+
+def test_adoption_probability_rises_with_trust() -> None:
+    """Higher trust in the teacher yields a higher adoption probability (same learner)."""
+    import knowledge
+    _fresh_world()
+    teacher = _agent("T", "friendly and outgoing", (5, 5))
+    learner = _agent("L", "curious and adventurous", (5, 4))
+    teacher.knowledge.add("fire")
+
+    def p_at(trust):
+        learner.relationships["T"] = {"trust": trust, "interactions": 1, "grudge": trust < 0}
+        return knowledge.adoption_probability(learner, teacher, world_state)
+
+    low, neutral, high = p_at(-5), p_at(0), p_at(5)
+    assert low < neutral < high, (low, neutral, high)
+    # And personality resists: a cautious learner adopts less than a curious one at equal trust.
+    cautious = _agent("C", "cautious and territorial", (5, 6))
+    cautious.relationships["T"] = {"trust": 0, "interactions": 1, "grudge": False}
+    assert knowledge.adoption_probability(cautious, teacher, world_state) < neutral
+    print("PASS test_adoption_probability_rises_with_trust")
+
+
+def test_isolated_agent_never_learns() -> None:
+    """An agent that is never adjacent to a knower never acquires the item."""
+    import knowledge
+    _fresh_world()
+    a = _agent("A", "curious and adventurous", (1, 1))
+    b = _agent("B", "curious and adventurous", (1, 2))   # a/b in contact
+    loner = _agent("Loner", "curious and adventurous", (9, 9))
+    a.knowledge.add("fire")
+    random.seed(2)
+    for turn in range(1, 40):
+        world_state["turn"] = turn
+        knowledge.diffuse(world_state, turn)
+    assert "fire" in b.knowledge, "the in-contact agent should learn"
+    assert "fire" not in loner.knowledge, "the isolated agent must never learn"
+    print("PASS test_isolated_agent_never_learns")
+
+
+def test_diffusion_adds_zero_llm_calls() -> None:
+    """Knowledge diffusion is pure state — it makes no model calls of any kind."""
+    import knowledge
+    _fresh_world()
+    for i in range(6):
+        ag = _agent(f"K{i}", "curious and adventurous", (i, 0))
+        if i == 0:
+            ag.knowledge.add("fire")
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        random.seed(3)
+        for turn in range(1, 25):
+            world_state["turn"] = turn
+            knowledge.diffuse(world_state, turn)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    print("PASS test_diffusion_adds_zero_llm_calls")
+
+
+def test_empty_knowledge_run_is_byte_identical_to_v1() -> None:
+    """No seeded knowledge -> diffusion no-op (no events, no RNG) -> v1 unregressed."""
+    import knowledge
+    def run(seed_knowledge):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(20, focal_budget=8, knowledge_seed=seed_knowledge)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base, empty = run(None), run([])
+    finally:
+        llm.PROVIDER = saved
+    assert base == empty, "an empty knowledge seed changed the run"
+    assert "taught" not in base, "no-op diffusion should log nothing"
+
+    # A no-op diffuse must also draw ZERO rng (or it would desync the v1 stream).
+    _fresh_world()
+    _agent("A", "curious and adventurous", (1, 1))
+    _agent("B", "curious and adventurous", (1, 2))
+    state0 = random.getstate()
+    knowledge.diffuse(world_state, 1)
+    assert random.getstate() == state0, "no-knowledge diffuse consumed RNG"
+    print("PASS test_empty_knowledge_run_is_byte_identical_to_v1")
+
+
+def test_god_grant_knowledge_is_write_only_and_logs() -> None:
+    """god_mode grant_knowledge adds the item + a [GOD] log, touching only world_state."""
+    _fresh_world()
+    import god_mode
+    a = _agent("Kira", "independent and competitive", (5, 5))
+    world_state["turn"] = 9
+    res = god_mode.run_command("grant_knowledge Kira fire", world_state, out=lambda *_: None)
+    assert "fire" in a.knowledge
+    assert any("[GOD] granted 'fire' to Kira" in e for e in world_state["events"]), res
+    # An unknown agent is a logged no-op, never a crash.
+    god_mode.run_command("grant_knowledge Ghost fire", world_state, out=lambda *_: None)
+    print("PASS test_god_grant_knowledge_is_write_only_and_logs")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -1718,6 +1842,12 @@ def main_runner() -> None:
         test_cost_vs_n_stays_bounded_by_budget_at_scale,
         test_scale_renderer_view_is_read_only,
         test_occupancy_index_matches_truth_after_moves_and_deaths,
+        test_knowledge_transmits_only_between_in_contact_agents,
+        test_adoption_probability_rises_with_trust,
+        test_isolated_agent_never_learns,
+        test_diffusion_adds_zero_llm_calls,
+        test_empty_knowledge_run_is_byte_identical_to_v1,
+        test_god_grant_knowledge_is_write_only_and_logs,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

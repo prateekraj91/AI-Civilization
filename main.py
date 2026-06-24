@@ -36,6 +36,7 @@ import alliance
 import conversation
 import god_mode
 import heuristic
+import knowledge
 import population
 from cognition import update_tiers
 from agents import Agent
@@ -541,6 +542,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              f"auto-scaled to keep agent density ~{SCALE_DENSITY} agents/cell for a "
              "large --agents cast).")
     p.add_argument(
+        "--seed-knowledge", action="append", default=None, metavar="ITEM[:N]",
+        help="V2 M1.1: seed a knowledge ITEM into the first N agents at setup (N "
+             "default 1), then watch it SPREAD through contact (knowledge.diffuse, "
+             "zero LLM cost). Repeatable. Example: --seed-knowledge fire seeds 'fire' "
+             "into one agent. With no --seed-knowledge the run is byte-identical to v1.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -574,7 +581,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    cognition: str = "llm",
                    focal_budget: "int | None" = None,
                    grid_size: "int | None" = None,
-                   food_cfg: "dict | None" = None) -> None:
+                   food_cfg: "dict | None" = None,
+                   knowledge_seed: "list | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -602,6 +610,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     `food_cfg` ({"initial", "per_turn", "cap", "cluster"}) drives a population-scaled
     food economy (None -> the v1 INITIAL_FOOD + maybe_respawn_food constants). Both
     None is the exact pre-M0.3 path, so the default run is byte-for-byte unchanged.
+
+    V2 M1.1 (knowledge): `knowledge_seed` is a list of (item, count) pairs — each item
+    is granted to the first `count` agents at setup, after which it spreads ONLY through
+    contact via knowledge.diffuse (called once per turn). None / empty seeds nothing, so
+    diffusion self-gates to a no-op and the run is byte-identical to v1.
     """
     god_script = god_script or {}
 
@@ -622,6 +635,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         spawn_food(food_cfg["initial"], cluster=food_cfg["cluster"])
     else:
         spawn_food(INITIAL_FOOD, cluster=FOOD_CLUSTERED)
+
+    # M1.1: seed knowledge into the first `count` agents per (item, count). From here it
+    # only spreads through contact (knowledge.diffuse). No seed -> diffusion is a no-op
+    # and the run stays byte-identical to v1.
+    if knowledge_seed:
+        for item, count in knowledge_seed:
+            for agent in world_state["agents"][:count]:
+                knowledge.grant(world_state, agent, item, turn=0)
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -675,6 +696,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             print()
             print(f"Food remaining: {len(world_state['food'])}")
             print()
+
+        # M1.1: spread knowledge one hop along this turn's contact network (pure-Python
+        # state diffusion, ZERO LLM calls). A no-op drawing no RNG when no agent knows
+        # anything, so a v1 run with no seeded knowledge is byte-identical.
+        knowledge.diffuse(world_state, turn)
 
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
@@ -782,6 +808,15 @@ def main(argv: list[str] | None = None) -> None:
         agent_specs = None
         food_cfg = None
 
+    # M1.1: parse --seed-knowledge entries "ITEM" or "ITEM:N" into (item, count) pairs.
+    # No flag -> None -> nothing seeded -> diffusion is a no-op -> v1 byte-identical.
+    knowledge_seed = None
+    if args.seed_knowledge:
+        knowledge_seed = []
+        for entry in args.seed_knowledge:
+            item, _, count = entry.partition(":")
+            knowledge_seed.append((item, int(count) if count else 1))
+
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
     # 'heuristic' for a large cast (the focal budget promotes the interesting few).
     cognition = args.cognition if args.cognition is not None else ("heuristic" if large else "llm")
@@ -813,7 +848,8 @@ def main(argv: list[str] | None = None) -> None:
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
-                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg)
+                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
+                           knowledge_seed=knowledge_seed)
         finally:
             sys.stdout = original
             log_file.close()
@@ -826,7 +862,8 @@ def main(argv: list[str] | None = None) -> None:
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
-                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg)
+                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
+                           knowledge_seed=knowledge_seed)
 
 
 if __name__ == "__main__":

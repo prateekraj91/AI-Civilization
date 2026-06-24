@@ -89,6 +89,17 @@ class Agent:
     # the existing hunger loop reads it and applies the effect — no scripted reaction.
     plague_until: int = 0
 
+    # knowledge: the named facts/skills this agent KNOWS (V2 milestone M1.1) — e.g.
+    # {"fire", "food_location_north"}. This is the first piece of CULTURE: state that
+    # exists beyond any single agent and spreads between them. It propagates purely
+    # through the existing contact network (knowledge.diffuse): when a knower and a
+    # non-knower are adjacent, the item may be adopted with a probability shaped by
+    # trust + personality — NO LLM call per learner. Empty by default, so an agent with
+    # no seeded knowledge behaves exactly as in v1 (diffusion self-gates to a no-op when
+    # nobody knows anything). Discovery/invention is OUT of scope here (that is M1.2);
+    # M1.1 is purely about correct, cheap SPREADING of already-known items.
+    knowledge: set = field(default_factory=set)
+
     # cognition: which MIND drives this agent's strategy choice (V2 milestone M0.1).
     #   "llm"       -> ask the model layer for a high-level strategy (the V1 default,
     #                  so existing behaviour is unchanged).
