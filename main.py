@@ -26,6 +26,7 @@ religion, crafting, combat, trading, conversations, God Mode.
 
 import argparse
 import contextlib
+import math
 import os
 import random
 import sys
@@ -131,6 +132,71 @@ AGENT_SPECS = [
     ("Kira", "independent and competitive", {"survive": 7, "wealth": 8, "friendship": 1}, (4, 6)),
 ]
 
+# --- V2 M0.3: large-cast world geometry -----------------------------------
+# Scaling to 100-300 agents needs a world sized to match, or 200 agents on a 10x10
+# grid are all dead by turn 5 from pure contention. These ratios reproduce the M0.1
+# 50-agent economy (which sustained ~60% survival) at any N: keep the agent DENSITY
+# fixed (so the absolute grid grows with population) and scale food supply with the
+# population's demand. They are defaults a large run can override (--grid-size); the
+# default 3-agent run never touches this path, so v1 is byte-for-byte unchanged.
+#
+# Survival at scale is a GEOMETRY/behaviour lever, not a property of the mind: the
+# heuristic forages about as well as the food it can reach allows. Loosen density or
+# raise the food ratios to lift survival; tighten them to force lethal competition.
+SCALE_DENSITY = 0.125        # target agents-per-cell (grid = sqrt(N / density))
+SCALE_INITIAL_FOOD = 0.9     # food cells at t=0, as a multiple of N
+SCALE_FOOD_PER_TURN = 0.16   # food added per turn, as a multiple of N (~demand at EAT_RELIEF=7)
+SCALE_FOOD_CAP = 1.6         # never respawn above this multiple of N standing food cells
+
+# Personalities cycled across a procedurally generated large cast, so behaviour is
+# mixed (foragers, campers, socialisers) the way the named trio is — an all-one-trait
+# crowd forages badly and skews survival.
+SCALE_PERSONALITIES = (
+    "curious and adventurous",
+    "cautious and territorial",
+    "friendly and outgoing",
+    "independent and competitive",
+)
+
+
+# A large cast should never be put on a grid smaller than the v1 default.
+GRID_FLOOR = 10
+
+
+def scaled_grid_size(n: int) -> int:
+    """Grid edge length that keeps agent density at SCALE_DENSITY for `n` agents."""
+    return max(GRID_FLOOR, math.ceil(math.sqrt(n / SCALE_DENSITY)))
+
+
+def build_scaled_specs(n: int, grid: int) -> list[tuple]:
+    """Procedurally build `n` agent specs on distinct random cells of a `grid` world.
+
+    Returns the same (name, personality, goals, (x, y)) spec tuples AGENT_SPECS uses,
+    so run_simulation places them through the identical path. Positions are drawn from
+    the seeded global `random` (main() seeds before calling this), so a seeded large
+    run is reproducible. Personalities cycle SCALE_PERSONALITIES for a mixed crowd.
+    """
+    cells = [(x, y) for x in range(grid) for y in range(grid)]
+    random.shuffle(cells)
+    goals = {"survive": 8, "wealth": 3, "friendship": 4}
+    specs: list[tuple] = []
+    for i in range(n):
+        x, y = cells[i]
+        specs.append((f"A{i:03d}", SCALE_PERSONALITIES[i % len(SCALE_PERSONALITIES)],
+                      dict(goals), (x, y)))
+    return specs
+
+
+def scaled_food_cfg(n: int) -> dict:
+    """Food economy (initial / per-turn / cap, scattered) sized to `n` agents."""
+    return {
+        "initial": round(SCALE_INITIAL_FOOD * n),
+        "per_turn": max(1, round(SCALE_FOOD_PER_TURN * n)),
+        "cap": round(SCALE_FOOD_CAP * n),
+        "cluster": False,  # scatter so food is reachable everywhere, not a central pile
+    }
+
+
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
 _IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked",
                           "stole", "Trust in", "allied", "ALLIANCE", "BETRAYED",
@@ -165,6 +231,20 @@ def maybe_respawn_food(turn: int) -> None:
         return
     if turn % FOOD_RESPAWN_EVERY == 0 and len(world_state["food"]) < FOOD_RESPAWN_CAP:
         spawn_food(FOOD_RESPAWN_AMOUNT, cluster=FOOD_CLUSTERED)
+
+
+def _scaled_respawn_food(turn: int, cfg: dict) -> None:
+    """M0.3 large-cast food drip: add cfg['per_turn'] food each turn up to cfg['cap'].
+
+    The scaled analogue of maybe_respawn_food for a big population — it tops the map
+    up EVERY turn (not every Nth) at a rate matched to N agents' demand, so a large
+    cast isn't starved by the v1 trio's deliberately scarce trickle. Honours the same
+    god-drought suppression. Only used when run_simulation is given a food_cfg.
+    """
+    if turn <= world_state.get("drought_until", 0):
+        return
+    if len(world_state["food"]) < cfg["cap"]:
+        spawn_food(cfg["per_turn"], cluster=cfg["cluster"])
 
 
 def living_agents() -> list[Agent]:
@@ -441,12 +521,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="drop into the interactive God menu every N turns (default from "
              "AICIV_GOD_EVERY, else off). Ignored when --god-script is given.")
     p.add_argument(
-        "--cognition", choices=("llm", "heuristic"), default="llm",
-        help="the BASELINE mind agents start with (V2 M0.1). 'llm' (default) asks the "
-             "model layer for strategies, exactly as in V1. 'heuristic' uses a pure-"
-             "Python survival policy that makes ZERO model calls. Under M0.2 tiering "
-             "this is just the starting tier — the per-turn focal budget governs who "
-             "actually runs the LLM mind (see --focal-budget).")
+        "--cognition", choices=("llm", "heuristic"), default=None,
+        help="the BASELINE mind agents start with (V2 M0.1). Default 'llm' for the "
+             "trio (exactly as V1), 'heuristic' for a large --agents cast (the focal "
+             "budget then promotes the interesting few). 'heuristic' uses a pure-Python "
+             "survival policy that makes ZERO model calls. Under M0.2 tiering this is "
+             "just the starting tier — the per-turn focal budget governs who actually "
+             "runs the LLM mind (see --focal-budget).")
+    p.add_argument(
+        "--agents", type=int, default=None, metavar="N",
+        help="V2 M0.3 scale: run N procedurally-generated agents (mixed personalities) "
+             "instead of the default 3-agent trio. The world auto-scales to match "
+             "(grid size and food economy sized to N; see --grid-size to override), and "
+             "the cast defaults to the heuristic mind with the focal budget on top. "
+             "Built for 100-300; small N still uses the named trio.")
+    p.add_argument(
+        "--grid-size", type=int, default=None, metavar="S",
+        help="force the world to an S x S grid (default: 10 for the trio, or "
+             f"auto-scaled to keep agent density ~{SCALE_DENSITY} agents/cell for a "
+             "large --agents cast).")
     p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
@@ -479,7 +572,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    turn_delay: float = 0.0,
                    agent_specs: "list | None" = None,
                    cognition: str = "llm",
-                   focal_budget: "int | None" = None) -> None:
+                   focal_budget: "int | None" = None,
+                   grid_size: "int | None" = None,
+                   food_cfg: "dict | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -502,12 +597,18 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     callers/tests) DISABLES tiering, leaving every agent on its setup `cognition` — so
     pure-v1 and pure-M0.1 runs are untouched. When `focal_budget >= len(living)` the
     update promotes everyone and logs nothing, keeping a small cast byte-identical to v1.
+
+    V2 M0.3 (scale): `grid_size` sizes the world (None -> the v1 10x10 default) and
+    `food_cfg` ({"initial", "per_turn", "cap", "cluster"}) drives a population-scaled
+    food economy (None -> the v1 INITIAL_FOOD + maybe_respawn_food constants). Both
+    None is the exact pre-M0.3 path, so the default run is byte-for-byte unchanged.
     """
     god_script = god_script or {}
 
     # --- Setup ----------------------------------------------------------
     reset_call_stats()
-    create_world()
+    # M0.3: a large cast needs a bigger world; grid_size None keeps the v1 10x10.
+    create_world(size=grid_size) if grid_size is not None else create_world()
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -516,7 +617,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     for name, personality, goals, (x, y) in specs:
         place_agent(Agent(name=name, personality=personality, goals=goals,
                           cognition=cognition), x, y)
-    spawn_food(INITIAL_FOOD, cluster=FOOD_CLUSTERED)
+    # M0.3: food_cfg drives a population-scaled economy; None keeps the v1 constants.
+    if food_cfg is not None:
+        spawn_food(food_cfg["initial"], cluster=food_cfg["cluster"])
+    else:
+        spawn_food(INITIAL_FOOD, cluster=FOOD_CLUSTERED)
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -571,7 +676,10 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             print(f"Food remaining: {len(world_state['food'])}")
             print()
 
-        maybe_respawn_food(turn)
+        if food_cfg is not None:
+            _scaled_respawn_food(turn, food_cfg)
+        else:
+            maybe_respawn_food(turn)
 
         # Day 14: bring in any blank-slate newcomer whose respawn has come due. New
         # agents enter at turn's end and first act NEXT turn, so mid-turn iteration
@@ -660,11 +768,34 @@ def main(argv: list[str] | None = None) -> None:
     god_script = parse_god_script(args.god_script)
     god_every = args.god_every if args.god_every is not None else GOD_EVERY
 
-    # M0.2: resolve the focal budget. An explicit --focal-budget always wins; absent
-    # it, default to DEFAULT_FOCAL_BUDGET, except a `--cognition heuristic` request
-    # defaults to 0 focal slots so it stays the M0.1 zero-LLM run a user expects.
-    focal_budget = (args.focal_budget if args.focal_budget is not None
-                    else (0 if args.cognition == "heuristic" else DEFAULT_FOCAL_BUDGET))
+    # M0.3: a large --agents cast switches on the scaled world. `large` gates the new
+    # path so the default trio run is byte-for-byte unchanged (agent_specs/grid/food
+    # all stay None below). The cast is built AFTER seeding so a seeded scale run is
+    # reproducible (placement positions come from the seeded RNG).
+    large = args.agents is not None and args.agents > len(AGENT_SPECS)
+    if large:
+        grid_size = args.grid_size if args.grid_size is not None else scaled_grid_size(args.agents)
+        agent_specs = build_scaled_specs(args.agents, grid_size)
+        food_cfg = scaled_food_cfg(args.agents)
+    else:
+        grid_size = args.grid_size   # may still override the trio's grid; else None
+        agent_specs = None
+        food_cfg = None
+
+    # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
+    # 'heuristic' for a large cast (the focal budget promotes the interesting few).
+    cognition = args.cognition if args.cognition is not None else ("heuristic" if large else "llm")
+
+    # M0.2: resolve the focal budget. An explicit --focal-budget always wins; absent it,
+    # default to DEFAULT_FOCAL_BUDGET — except a small `--cognition heuristic` run keeps
+    # 0 focal slots (the M0.1 zero-LLM run a user expects). A large heuristic cast still
+    # gets the budget, since tiering on top is the whole point of scaling.
+    if args.focal_budget is not None:
+        focal_budget = args.focal_budget
+    elif cognition == "heuristic" and not large:
+        focal_budget = 0
+    else:
+        focal_budget = DEFAULT_FOCAL_BUDGET
 
     # --log mirrors stdout to a file via a Tee for the whole run, then restores it.
     if args.log:
@@ -681,7 +812,8 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"[run] seed={seed} turns={num_turns} provider={PROVIDER}")
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
-                           cognition=args.cognition, focal_budget=focal_budget)
+                           cognition=cognition, focal_budget=focal_budget,
+                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg)
         finally:
             sys.stdout = original
             log_file.close()
@@ -693,7 +825,8 @@ def main(argv: list[str] | None = None) -> None:
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
                            renderer=renderer, turn_delay=args.speed,
-                           cognition=args.cognition, focal_budget=focal_budget)
+                           cognition=cognition, focal_budget=focal_budget,
+                           agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg)
 
 
 if __name__ == "__main__":

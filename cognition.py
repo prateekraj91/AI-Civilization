@@ -111,9 +111,16 @@ def _event_turn(event: str) -> int | None:
         return None
 
 
+# Word tokens in an event line (agent names are whole-word tokens like "Kira",
+# "A042"). Splitting once per event and intersecting with the living-names set is
+# far cheaper at scale than a per-name regex (which recompiled \bname\b for every
+# (event, name) pair — a top-3 cost in the 200-agent profile).
+_WORD = re.compile(r"[A-Za-z0-9_]+")
+
+
 def _names_in(event: str, names: set[str]) -> set[str]:
-    """Which of `names` appear (as whole words) in an event string."""
-    return {n for n in names if re.search(rf"\b{re.escape(n)}\b", event)}
+    """Which of `names` appear (as whole-word tokens) in an event string."""
+    return names & set(_WORD.findall(event))
 
 
 def _recent_event_scores(state: dict[str, Any], names: set[str],
@@ -189,15 +196,24 @@ def interestingness(agent: Any, state: dict[str, Any],
 
 
 def _nearby_count(agent: Any, state: dict[str, Any]) -> int:
-    """Living OTHER agents within PROX_RADIUS (Manhattan) — cheap O(population)."""
+    """Living OTHER agents within PROX_RADIUS (Manhattan).
+
+    M0.3: queries the occupancy index over the small local diamond of cells around
+    the agent — O(PROX_RADIUS^2) (~13 cells at r=2), independent of population —
+    instead of scanning all N agents (which made this O(N^2) per turn at scale).
+    """
+    occ = world.living_agents_by_position(state)
+    if not occ:
+        return 0
     ax, ay = agent.position
     n = 0
-    for other in state["agents"]:
-        if other is agent or not other.alive:
-            continue
-        ox, oy = other.position
-        if abs(ox - ax) + abs(oy - ay) <= PROX_RADIUS:
-            n += 1
+    for dx in range(-PROX_RADIUS, PROX_RADIUS + 1):
+        span = PROX_RADIUS - abs(dx)
+        for dy in range(-span, span + 1):
+            if dx == 0 and dy == 0:
+                continue
+            if (ax + dx, ay + dy) in occ:
+                n += 1
     return n
 
 

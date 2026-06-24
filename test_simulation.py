@@ -557,6 +557,103 @@ def test_budget_covering_cast_is_byte_identical_to_v1() -> None:
     print("PASS test_budget_covering_cast_is_byte_identical_to_v1")
 
 
+# --- Scale (M0.3) ----------------------------------------------------------
+def _scale_population(n: int) -> list[Agent]:
+    """Place `n` heuristic agents on a density-scaled grid (M0.3 large-cast setup)."""
+    grid = main.scaled_grid_size(n)
+    create_world(size=grid)
+    for name, personality, goals, (x, y) in main.build_scaled_specs(n, grid):
+        place_agent(Agent(name=name, personality=personality, goals=goals,
+                          cognition="heuristic"), x, y)
+    spawn_food(main.scaled_food_cfg(n)["initial"])
+    return list(world_state["agents"])
+
+
+def _run_scaled_loop(n: int, budget: int, turns: int) -> dict:
+    """Drive the real per-turn loop at `n` agents; return focal cap + LLM-call stats."""
+    import cognition
+    food_cfg = main.scaled_food_cfg(n)
+    _scale_population(n)
+    llm.reset_call_stats()
+    strategies: dict = {}
+    survived: dict[str, int] = {}
+    counters: dict[str, int] = {"agent_turns": 0}
+    tenure: dict[str, int] = {}
+    max_focal = 0
+    with contextlib.redirect_stdout(io.StringIO()):
+        for turn in range(1, turns + 1):
+            world_state["turn"] = turn
+            cognition.update_tiers(world_state, turn, budget, tenure)
+            living = [a for a in world_state["agents"] if a.alive]
+            max_focal = max(max_focal, sum(1 for a in living if a.cognition == "llm"))
+            for agent in living:
+                main.run_agent_turn(agent, turn, strategies, survived, counters)
+            main._scaled_respawn_food(turn, food_cfg)
+    return {"max_focal": max_focal, "strategy_calls": llm.get_call_stats()["strategy"]}
+
+
+def test_large_cast_run_completes_without_error() -> None:
+    """A 120-agent run via the real CLI path completes and stays cheap on LLM calls."""
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.main(["--agents", "120", "--turns", "15", "--seed", "1"])
+        calls = llm.get_call_stats()["strategy"]
+    finally:
+        llm.PROVIDER = saved
+    # With a focal budget of 8 over 15 turns, LLM calls must stay near the budget —
+    # nowhere near the 120-agents-every-turn an untiered run would cost.
+    assert calls <= main.DEFAULT_FOCAL_BUDGET * 15, calls
+    assert calls < 120, calls
+    print(f"PASS test_large_cast_run_completes_without_error ({calls} LLM calls)")
+
+
+def test_cost_vs_n_stays_bounded_by_budget_at_scale() -> None:
+    """At a fixed budget, LLM calls do NOT scale with N (re-confirmed at higher range)."""
+    budget, turns = 5, 12
+    small = _run_scaled_loop(40, budget, turns)
+    big = _run_scaled_loop(120, budget, turns)
+    assert small["max_focal"] <= budget and big["max_focal"] <= budget, (small, big)
+    # Tripling the population must not meaningfully grow LLM traffic.
+    assert big["strategy_calls"] <= small["strategy_calls"] * 1.5 + budget, (small, big)
+    print("PASS test_cost_vs_n_stays_bounded_by_budget_at_scale "
+          f"(N=40:{small['strategy_calls']}  N=120:{big['strategy_calls']} calls)")
+
+
+def test_scale_renderer_view_is_read_only() -> None:
+    """The large-cast heatmap view renders and mutates nothing (boundary holds at scale)."""
+    import copy
+    from renderer import render_frame
+    from renderer.text_renderer import _use_heatmap
+    _scale_population(80)
+    world_state["turn"] = 3
+    assert _use_heatmap(world_state), "heatmap view should trigger for 80 agents"
+    snap = copy.deepcopy({k: world_state[k] for k in world_state
+                          if k not in ("agents", "occupancy")})
+    positions = [(a.name, a.position, a.alive) for a in world_state["agents"]]
+    frame = render_frame(world_state)
+    after = {k: world_state[k] for k in world_state if k not in ("agents", "occupancy")}
+    assert frame is not None
+    assert after == snap, "scale render mutated world_state"
+    assert positions == [(a.name, a.position, a.alive) for a in world_state["agents"]]
+    print("PASS test_scale_renderer_view_is_read_only")
+
+
+def test_occupancy_index_matches_truth_after_moves_and_deaths() -> None:
+    """The M0.3 position index stays a faithful mirror of agents+positions."""
+    _fresh_world()
+    a = _agent("A", "neutral", (5, 5))
+    b = _agent("B", "neutral", (2, 2))
+    move_agent(a, 1, 0)          # A: (5,5) -> (6,5)
+    mark_dead(b)                 # B leaves the index
+    truth = {ag.position: ag for ag in world_state["agents"] if ag.alive}
+    assert world_state["occupancy"] == truth, (world_state["occupancy"], truth)
+    assert world.agent_at(6, 5) is a and world.agent_at(2, 2) is None
+    print("PASS test_occupancy_index_matches_truth_after_moves_and_deaths")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -1617,6 +1714,10 @@ def main_runner() -> None:
         test_hysteresis_prevents_single_turn_flipflop,
         test_tiering_disabled_leaves_cognition_untouched,
         test_budget_covering_cast_is_byte_identical_to_v1,
+        test_large_cast_run_completes_without_error,
+        test_cost_vs_n_stays_bounded_by_budget_at_scale,
+        test_scale_renderer_view_is_read_only,
+        test_occupancy_index_matches_truth_after_moves_and_deaths,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

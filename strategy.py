@@ -137,8 +137,23 @@ def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
 
 def _nearest(pos: tuple[int, int],
              targets: list[tuple[int, int]]) -> tuple[int, int] | None:
-    """Closest target position to `pos` by Manhattan distance, or None."""
-    return min(targets, key=lambda t: _manhattan(pos, t)) if targets else None
+    """Closest target position to `pos` by Manhattan distance, or None.
+
+    M0.3: an inlined first-minimum-wins loop rather than `min(key=lambda ...)`. This
+    is called once per hungry/social agent per turn over the whole food (or agent)
+    list, so at 200-300 agents it was a top runtime cost; folding the distance inline
+    drops ~1M lambda + helper calls per scaled run. Tie-break is unchanged — the FIRST
+    target achieving the minimum wins (strict `<`), so output is byte-identical."""
+    if not targets:
+        return None
+    px, py = pos
+    best = None
+    best_d = -1
+    for tx, ty in targets:
+        d = abs(px - tx) + abs(py - ty)
+        if best is None or d < best_d:
+            best, best_d = (tx, ty), d
+    return best
 
 
 def _other_agent_positions(agent: Any, state: dict[str, Any]) -> list[tuple[int, int]]:

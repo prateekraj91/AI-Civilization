@@ -125,6 +125,13 @@ world_state: dict[str, Any] = {
     # `drought_until` is the last turn through which food respawn is suppressed.
     "treasures": [],         # list[dict]: high-value items dropped by God mode
     "drought_until": 0,      # int: respawn suppressed while turn <= this value
+    # M0.3 scaling: an incremental {(x, y): agent} index of where each LIVING agent
+    # stands, maintained at the only three places a position/liveness changes
+    # (place_agent, move_agent, mark_dead). It makes "who is on this cell?" an O(1)
+    # lookup instead of an O(N) rebuild of the whole agent list — the single biggest
+    # per-turn cost at 200+ agents, where scan()/collision checks ask it constantly.
+    # It is a derived view of agents[]+positions, never an independent truth.
+    "occupancy": {},         # dict[tuple[int, int], Agent]: living agent by cell
 }
 
 
@@ -151,6 +158,13 @@ def living_agents_by_position(
     lookup convenience, not the source of truth for collisions.
     """
     state = world_state if state is None else state
+    occ = state.get("occupancy")
+    if occ is not None:
+        # The maintained index IS the answer at O(1) — see world_state["occupancy"].
+        # Returned live (callers only ever .get() from it, never mutate it).
+        return occ
+    # Fallback for a bare/custom state dict with no maintained index: rebuild from
+    # truth, preserving the original O(N) behaviour exactly.
     return {
         agent.position: agent
         for agent in state["agents"]
@@ -212,6 +226,7 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state["respawn_count"] = 0
     world_state["treasures"].clear()
     world_state["drought_until"] = 0
+    world_state.setdefault("occupancy", {}).clear()  # M0.3: reset the position index
     return world_state["grid"]
 
 
@@ -227,6 +242,7 @@ def place_agent(agent: Any, x: int, y: int) -> tuple[int, int]:
     if agent not in world_state["agents"]:
         add_agent(agent)
     world_state["grid"][y][x] = AGENT
+    world_state["occupancy"][(x, y)] = agent  # M0.3: keep the position index in sync
     return agent.position
 
 
@@ -464,10 +480,12 @@ def move_agent(agent: Any, dx: int, dy: int) -> bool:
     # Vacate the old cell. Food is tracked in world_state["food"]; if uneaten
     # food remains here, the cell reverts to FOOD, else EMPTY.
     world_state["grid"][y][x] = FOOD if (x, y) in world_state["food"] else EMPTY
+    world_state["occupancy"].pop((x, y), None)  # M0.3: index follows the move
 
     # Occupy the new cell.
     agent.position = (nx, ny)
     world_state["grid"][ny][nx] = AGENT
+    world_state["occupancy"][(nx, ny)] = agent
     return True
 
 
@@ -588,6 +606,10 @@ def mark_dead(agent: Any) -> None:
     agent.alive = False
     x, y = agent.position
     world_state["grid"][y][x] = FOOD if (x, y) in world_state["food"] else EMPTY
+    # M0.3: a dead agent no longer occupies space — drop it from the position index
+    # (but only if it still holds the cell; a later arrival may already own it).
+    if world_state["occupancy"].get((x, y)) is agent:
+        world_state["occupancy"].pop((x, y), None)
 
 
 def render(state: dict[str, Any] | None = None) -> str:

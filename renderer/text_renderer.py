@@ -69,6 +69,18 @@ _FOOD_SYMBOL = "*"
 _TREASURE_SYMBOL = "$"
 _EMPTY_SYMBOL = "·"
 
+# M0.3: above this many agents (or this grid edge) the per-letter grid stops being
+# legible / fitting a terminal, so render_frame switches to the density heatmap. The
+# small-cast per-letter dashboard is unchanged below the threshold.
+_HEATMAP_AGENT_THRESHOLD = 40
+_HEATMAP_GRID_THRESHOLD = 24
+# The heatmap is downsampled to at most this many cells per side, so a 50x50 world
+# still fits a terminal; each heat cell aggregates a block of the real grid.
+_HEATMAP_MAX_CELLS = 24
+# Ramp from empty -> dense; more agents in a block picks a later (hotter) glyph+colour.
+_HEAT_RAMP = ((0, "·", "grey23"), (1, "░", "cyan"), (2, "▒", "green"),
+              (4, "▓", "yellow"), (7, "█", "orange3"), (12, "█", "bright_red"))
+
 
 def agent_color(name: str) -> str:
     """A stable colour for `name`, deterministic across processes and seeds.
@@ -152,6 +164,93 @@ def _build_grid(state: dict[str, Any]) -> Table:
             row.append(cell)
         grid.add_row(*row)
     return grid
+
+
+def _heat_glyph(count: int) -> tuple[str, str]:
+    """Pick the (glyph, colour) for a heat cell holding `count` agents (READ only)."""
+    glyph, color = _HEAT_RAMP[0][1], _HEAT_RAMP[0][2]
+    for threshold, g, c in _HEAT_RAMP:
+        if count >= threshold:
+            glyph, color = g, c
+    return glyph, color
+
+
+def _build_heatmap(state: dict[str, Any]) -> Table:
+    """A downsampled agent-density heatmap for a large cast (pure READ of `state`).
+
+    The per-letter grid is illegible past a few dozen agents, so the world is binned
+    into at most _HEATMAP_MAX_CELLS^2 blocks; each block's glyph/colour ramps with how
+    many living agents fall in it (food shows as green '*' only where a block is empty
+    of agents). Built from live agent positions + the food list — never the grid array
+    — so it matches the authoritative state, exactly like _build_grid().
+    """
+    size = state["size"]
+    step = max(1, -(-size // _HEATMAP_MAX_CELLS))  # integer ceil, no math import
+    blocks = -(-size // step)
+
+    counts = [[0] * blocks for _ in range(blocks)]
+    for a in state["agents"]:
+        if getattr(a, "alive", True):
+            ax, ay = a.position
+            counts[ay // step][ax // step] += 1
+    food_blocks: set[tuple[int, int]] = set()
+    for fx, fy in state["food"]:
+        food_blocks.add((fx // step, fy // step))
+
+    grid = Table.grid(padding=(0, 0))
+    for _ in range(blocks):
+        grid.add_column(justify="center")
+    for by in range(blocks):
+        row: list[Text] = []
+        for bx in range(blocks):
+            n = counts[by][bx]
+            if n:
+                glyph, color = _heat_glyph(n)
+                row.append(Text(glyph, style=f"bold {color}"))
+            elif (bx, by) in food_blocks:
+                row.append(Text(_FOOD_SYMBOL, style="green"))
+            else:
+                row.append(Text(_EMPTY_SYMBOL, style="grey23"))
+        grid.add_row(*row)
+    return grid
+
+
+def _focal_summary(state: dict[str, Any], limit: int = 8) -> tuple[int, list[str]]:
+    """(count, sample names) of agents currently on the focal/LLM tier (READ only).
+
+    Reads each agent's `cognition` field — a plain state read, not decision logic.
+    """
+    focal = [a.name for a in state["agents"]
+             if getattr(a, "alive", True) and getattr(a, "cognition", "llm") == "llm"]
+    return len(focal), sorted(focal)[:limit]
+
+
+def _build_scale_side_panel(state: dict[str, Any]) -> Panel:
+    """Population / focal-set / food digest for the heatmap view (pure READ).
+
+    Replaces the per-agent panel (which can't list 200 rows) with aggregate counts:
+    living vs total, the focal (LLM) tier size + a sample, sick count, and food.
+    """
+    agents = state["agents"]
+    total = len(agents)
+    living = sum(1 for a in agents if getattr(a, "alive", True))
+    sick = sum(1 for a in agents if getattr(a, "alive", True) and world.is_sick(a, state))
+    focal_n, focal_names = _focal_summary(state)
+
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="left", style="grey62", no_wrap=True)
+    table.add_column(justify="left", no_wrap=True)
+    table.add_row("population", Text(f"{living} alive / {total} total", style="bold cyan"))
+    if sick:
+        table.add_row("sick", Text(str(sick), style="bold magenta"))
+    table.add_row("focal (LLM)", Text(f"{focal_n}", style="bold spring_green2"))
+    if focal_names:
+        sample = ", ".join(focal_names)
+        if focal_n > len(focal_names):
+            sample += f", +{focal_n - len(focal_names)} more"
+        table.add_row("", Text(sample, style="grey70"))
+    table.add_row("food on map", Text(str(len(state.get("food", []))), style="green"))
+    return Panel(table, title="POPULATION", border_style="blue")
 
 
 def _build_agents_panel(state: dict[str, Any]) -> Panel:
@@ -249,23 +348,40 @@ def _build_events_panel(state: dict[str, Any], limit: int = 12) -> Panel:
     return Panel(body, title="EVENTS", border_style="magenta")
 
 
+def _use_heatmap(state: dict[str, Any]) -> bool:
+    """Whether the large-cast heatmap view fits better than the per-letter grid.
+
+    Triggered by EITHER a big population (the per-letter initials become an
+    unreadable smear) OR a large grid (won't fit a terminal). Small casts keep the
+    original per-agent dashboard, so nothing about the v1/M0.1/M0.2 view changes.
+    """
+    living = sum(1 for a in state["agents"] if getattr(a, "alive", True))
+    total = len(state["agents"])
+    return (max(living, total) > _HEATMAP_AGENT_THRESHOLD
+            or state.get("size", 0) > _HEATMAP_GRID_THRESHOLD)
+
+
 def render_frame(state: dict[str, Any]) -> Layout:
     """Build the full dashboard renderable from a `state` snapshot (PURE READ).
 
-    Grid on the left; agents + events stacked on the right. Returns a rich
-    renderable and mutates NOTHING — this is the function the boundary test drives
-    to assert world_state is unchanged after a render.
+    Auto-selects the view by scale (M0.3): a small cast gets the per-letter grid +
+    per-agent panel; a large cast (or large grid) gets a density heatmap + aggregate
+    population/focal panel. Either way it returns a rich renderable and mutates
+    NOTHING — the boundary test drives this to assert world_state is unchanged after
+    a render, at small AND large scale.
     """
     turn = state.get("turn", 0)
     food_n = len(state.get("food", []))
     living = sum(1 for a in state["agents"] if getattr(a, "alive", True))
+    heatmap = _use_heatmap(state)
 
     grid_panel = Panel(
-        _build_grid(state),
-        title=f"World — turn {turn}",
+        _build_heatmap(state) if heatmap else _build_grid(state),
+        title=f"World — turn {turn}" + ("  (density)" if heatmap else ""),
         subtitle=f"food {food_n}   living {living}",
         border_style="green",
     )
+    side_top = _build_scale_side_panel(state) if heatmap else _build_agents_panel(state)
 
     layout = Layout()
     layout.split_row(
@@ -273,7 +389,7 @@ def render_frame(state: dict[str, Any]) -> Layout:
         Layout(name="side", ratio=1),
     )
     layout["side"].split_column(
-        Layout(_build_agents_panel(state), name="agents", ratio=1),
+        Layout(side_top, name="agents", ratio=1),
         Layout(_build_events_panel(state), name="events", ratio=1),
     )
     return layout
