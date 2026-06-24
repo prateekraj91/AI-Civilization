@@ -43,7 +43,47 @@ import random
 from typing import Any
 
 import world
-from strategy import get_personality
+from strategy import SURVIVAL_HUNGER, get_personality
+
+# --- Tech tree (M1.2: discovery) -------------------------------------------
+# A tiny prerequisite tree, declared as DATA (not branching code): {item -> the
+# items that must be known first}. fire is a base discovery (no prereq); it branches
+# into tools and cooking; tools unlocks farming. Discovery walks this map, so adding
+# an item is a one-line data change, never new control flow. Kept deliberately small
+# and generic — M1.2 is about the INVENTION mechanic, not a real tech tree.
+#
+# This is the canonical tree. It is only ACTIVE in a run that opts in (run_simulation's
+# `tech_tree` arg / the --tech-tree CLI flag); the default trio run gets no tree, so
+# `discover` is a no-op that draws zero RNG and v1 stays byte-identical.
+TECH_TREE: dict[str, frozenset[str]] = {
+    "fire": frozenset(),                 # base: discoverable by anyone
+    "tools": frozenset({"fire"}),        # needs fire
+    "cooking": frozenset({"fire"}),      # needs fire (a sibling branch of tools)
+    "farming": frozenset({"tools"}),     # needs tools (and so, transitively, fire)
+}
+
+# --- Discovery model (M1.2) ------------------------------------------------
+# Base per-agent-per-turn chance of inventing an item whose prereqs are all known,
+# BEFORE personality/situation shaping. Small on purpose: discovery must be a rare
+# situational roll, never a timer, so the turn it first fires VARIES by run.
+DISCOVERY_BASE = 0.02
+
+# Personality shapes the inventor: the curious tinker most; the cautious least. (The
+# independent tinker a fair bit — a loner experimenting alone — the friendly less, as
+# they spend their spare capacity socialising.) Multiplies the base chance.
+DISCOVERY_PERSONALITY: dict[str, float] = {
+    "curiosity": 2.0,
+    "independence": 1.0,
+    "friendliness": 0.8,
+    "caution": 0.6,
+}
+
+# Situation: only an agent with spare capacity tinkers — a fed agent invents, a hungry
+# one is busy surviving and a starving one not at all. Hunger scales the chance down
+# to zero at this cutoff, so discovery rides the SAME scarcity pressure the rest of the
+# sim runs on (idle/fed -> invent; starving -> never). Tied to SURVIVAL_HUNGER so it
+# lines up with where the executor's survival override already takes over.
+DISCOVERY_HUNGER_CUTOFF = SURVIVAL_HUNGER
 
 # --- Adoption model --------------------------------------------------------
 # Base per-contact-per-turn chance a non-knower adopts an item from an adjacent
@@ -145,6 +185,63 @@ def diffuse(state: dict[str, Any], turn: int,
             state["events"].append(f"turn {turn}: {teacher_name} taught '{item}' to {lname}")
             transmissions.append((teacher_name, item, lname))
     return transmissions
+
+
+def discovery_probability(agent: Any, item: str, state: dict[str, Any]) -> float:
+    """Chance `agent` INVENTS `item` this turn, assuming its prereqs are already met.
+
+    Shaped by (a) personality — the curious tinker most, the cautious least — and
+    (b) situation: a fed agent has spare capacity to experiment, a starving one does
+    not, so the chance scales linearly down to zero at DISCOVERY_HUNGER_CUTOFF. Pure
+    read; no LLM, no mutation. NOT a function of the turn number — there is no timer.
+    """
+    pers = get_personality(agent)
+    mult = DISCOVERY_PERSONALITY.get(pers.dominant, 1.0)
+    situation = max(0.0, 1.0 - agent.hunger / DISCOVERY_HUNGER_CUTOFF)
+    return DISCOVERY_BASE * mult * situation
+
+
+def discover(state: dict[str, Any], turn: int,
+             tree: "dict[str, frozenset[str]] | None" = None,
+             rng: "random.Random | None" = None) -> list[tuple[str, str]]:
+    """Let agents INVENT items they don't know whose prerequisites they DO know (M1.2).
+
+    For every living agent and every undiscovered item in `tree` whose prereqs the
+    agent already knows, roll `discovery_probability`. A success adds the item to that
+    agent's knowledge (from where M1.1 `diffuse` spreads it — no new spread code here)
+    and logs "turn 34: A052 discovered 'fire'". Prereq checks read a turn-start
+    SNAPSHOT, so an agent can't chain fire->tools->farming in a single turn; each item
+    is at most one fresh invention per agent per turn.
+
+    Discovery is probabilistic and situational, NEVER a timer: the turn it first fires
+    depends on who is fed, curious, and lucky, so it varies by run. Returns the list of
+    (agent, item) discovered. A no-op drawing ZERO rng when `tree` is empty/None — so a
+    run with no tech tree is byte-identical to v1.
+
+    Cost: O(agents x tree size), ZERO LLM calls.
+    """
+    if not tree:
+        return []
+    draw = (rng or random).random
+
+    living = [a for a in state["agents"] if a.alive]
+    # Snapshot knowledge so this turn's inventions don't unlock downstream items until
+    # the next turn (no within-turn fire->tools->farming cascade) and order can't matter.
+    snapshot = {a.name: frozenset(a.knowledge) for a in living}
+    discoveries: list[tuple[str, str]] = []
+
+    for agent in living:  # world_state["agents"] order is stable
+        known = snapshot[agent.name]
+        for item in sorted(tree):  # sorted -> hash-seed-independent rng order
+            if item in known or not tree[item] <= known:
+                continue  # already known, or prereqs not met -> cannot invent (gated)
+            p = discovery_probability(agent, item, state)
+            if p > 0.0 and draw() < p:  # starving agents (p == 0) don't even roll
+                agent.knowledge.add(item)
+                world.record_memory(agent, f"Discovered '{item}'")
+                state["events"].append(f"turn {turn}: {agent.name} discovered '{item}'")
+                discoveries.append((agent.name, item))
+    return discoveries
 
 
 def grant(state: dict[str, Any], agent: Any, item: str, turn: int) -> None:

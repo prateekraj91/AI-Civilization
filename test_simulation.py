@@ -778,6 +778,133 @@ def test_god_grant_knowledge_is_write_only_and_logs() -> None:
     print("PASS test_god_grant_knowledge_is_write_only_and_logs")
 
 
+# --- Discovery / invention (M1.2) -----------------------------------------
+def test_discovery_respects_prerequisites() -> None:
+    """An agent can only invent items whose prereqs it already knows (chain enforced)."""
+    import knowledge
+    _fresh_world()
+    a = _agent("Solo", "curious and adventurous", (2, 2), hunger=0)
+    a.knowledge.clear()
+    saved = knowledge.DISCOVERY_BASE
+    knowledge.DISCOVERY_BASE = 1.0  # force the roll so only the GATE decides the outcome
+    try:
+        rng = random.Random(0)
+        knowledge.discover(world_state, 1, knowledge.TECH_TREE, rng=rng)
+        assert a.knowledge == {"fire"}, a.knowledge       # only the no-prereq base item
+        knowledge.discover(world_state, 2, knowledge.TECH_TREE, rng=rng)
+        assert {"tools", "cooking"} <= a.knowledge        # fire unlocks its branches
+        assert "farming" not in a.knowledge               # but NOT farming yet (needs tools)
+        knowledge.discover(world_state, 3, knowledge.TECH_TREE, rng=rng)
+        assert "farming" in a.knowledge                   # tools known -> farming inventable
+    finally:
+        knowledge.DISCOVERY_BASE = saved
+    assert any("Solo discovered 'fire'" in e for e in world_state["events"])
+    print("PASS test_discovery_respects_prerequisites")
+
+
+def test_no_downstream_item_without_its_prerequisite() -> None:
+    """With the base item unreachable, no downstream item is ever invented."""
+    import knowledge
+    _fresh_world()
+    b = _agent("NoFire", "curious and adventurous", (2, 2), hunger=0)
+    b.knowledge.clear()
+    tree_without_fire = {k: v for k, v in knowledge.TECH_TREE.items() if k != "fire"}
+    rng = random.Random(1)
+    for turn in range(1, 150):
+        knowledge.discover(world_state, turn, tree_without_fire, rng=rng)
+    assert not b.knowledge, b.knowledge
+    print("PASS test_no_downstream_item_without_its_prerequisite")
+
+
+def test_discovery_is_probabilistic_not_a_timer() -> None:
+    """Given prereqs, a discovery is a roll: not guaranteed in one turn, near-sure over many."""
+    import knowledge
+    # Single-turn success rate is small (a roll, not a timer): measure it empirically.
+    successes = 0
+    trials = 300
+    for s in range(trials):
+        _fresh_world()
+        a = _agent("Inv", "curious and adventurous", (2, 2), hunger=0)
+        a.knowledge = {"fire"}                      # prereqs for tools are met
+        knowledge.discover(world_state, 1, {"tools": frozenset({"fire"})},
+                           rng=random.Random(s))
+        successes += "tools" in a.knowledge
+    rate = successes / trials
+    assert 0.0 < rate < 0.30, rate                  # happens, but far from every turn
+    # Over many turns it becomes near-certain — so it DOES fire, just not on a schedule.
+    _fresh_world()
+    a = _agent("Inv", "curious and adventurous", (2, 2), hunger=0)
+    a.knowledge = {"fire"}
+    rng = random.Random(7)
+    for turn in range(1, 200):
+        knowledge.discover(world_state, turn, {"tools": frozenset({"fire"})}, rng=rng)
+    assert "tools" in a.knowledge
+    print(f"PASS test_discovery_is_probabilistic_not_a_timer (1-turn rate {rate:.1%})")
+
+
+def test_starving_agent_does_not_invent() -> None:
+    """Situation gates discovery: a starving agent's invention probability is zero."""
+    import knowledge
+    _fresh_world()
+    starving = _agent("Hungry", "curious and adventurous", (2, 2),
+                      hunger=knowledge.DISCOVERY_HUNGER_CUTOFF + 2)
+    starving.knowledge = {"fire"}
+    assert knowledge.discovery_probability(starving, "tools", world_state) == 0.0
+    rng = random.Random(3)
+    for turn in range(1, 100):
+        knowledge.discover(world_state, turn, knowledge.TECH_TREE, rng=rng)
+    assert "tools" not in starving.knowledge
+    print("PASS test_starving_agent_does_not_invent")
+
+
+def test_discovery_adds_zero_llm_calls() -> None:
+    """Discovery is pure state — it makes no model calls of any kind."""
+    import knowledge
+    _fresh_world()
+    for i in range(6):
+        ag = _agent(f"D{i}", "curious and adventurous", (i, 0), hunger=0)
+        ag.knowledge = {"fire"}
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        rng = random.Random(3)
+        for turn in range(1, 25):
+            knowledge.discover(world_state, turn, knowledge.TECH_TREE, rng=rng)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    print("PASS test_discovery_adds_zero_llm_calls")
+
+
+def test_empty_tech_tree_run_is_byte_identical_to_v1() -> None:
+    """No tech tree -> discovery no-op (no events, no RNG) -> v1 unregressed."""
+    import knowledge
+    def run(tree):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(20, focal_budget=8, tech_tree=tree)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, empty = run(None), run({})
+    finally:
+        llm.PROVIDER = saved
+    assert base == empty, "an empty tech tree changed the run"
+    assert "discovered" not in base, "no-op discovery should log nothing"
+
+    # A no-op discover must draw ZERO rng (or it would desync the v1 stream).
+    _fresh_world()
+    _agent("A", "curious and adventurous", (1, 1), hunger=0)
+    state0 = random.getstate()
+    knowledge.discover(world_state, 1, None)
+    assert random.getstate() == state0, "no-tree discover consumed RNG"
+    print("PASS test_empty_tech_tree_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -1848,6 +1975,12 @@ def main_runner() -> None:
         test_diffusion_adds_zero_llm_calls,
         test_empty_knowledge_run_is_byte_identical_to_v1,
         test_god_grant_knowledge_is_write_only_and_logs,
+        test_discovery_respects_prerequisites,
+        test_no_downstream_item_without_its_prerequisite,
+        test_discovery_is_probabilistic_not_a_timer,
+        test_starving_agent_does_not_invent,
+        test_discovery_adds_zero_llm_calls,
+        test_empty_tech_tree_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

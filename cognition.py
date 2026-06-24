@@ -78,6 +78,11 @@ _EVENT_WEIGHTS: list[tuple[str, float, str]] = [
     # edge of a knowledge cascade can tip into focal. Both names in "X taught 'i' to Y"
     # are credited. Set deliberately low; remove this one line to disable the coupling.
     ("taught", 2.0, "knowledge"),            # "X taught 'item' to Y"
+    # M1.2: making a DISCOVERY briefly makes an inventor worth a closer look — a touch
+    # above a routine teaching (it is rarer) but still below the social drama, so a
+    # cascade of inventions never starves the focal set of betrayals/thefts. Remove this
+    # one line to fully decouple discovery from the focal budget.
+    ("discovered", 2.5, "discovery"),        # "X discovered 'item'"
 ]
 
 # Under-threat signals, read straight off the agent (no event needed).

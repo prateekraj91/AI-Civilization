@@ -548,6 +548,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "zero LLM cost). Repeatable. Example: --seed-knowledge fire seeds 'fire' "
              "into one agent. With no --seed-knowledge the run is byte-identical to v1.")
     p.add_argument(
+        "--tech-tree", action="store_true",
+        help="V2 M1.2: enable unscripted DISCOVERY. Each turn fed/curious agents may "
+             "probabilistically invent items whose prerequisites they know "
+             "(fire -> tools/cooking -> farming); a discovery then spreads via M1.1. "
+             "Zero LLM cost. Off by default, so the run stays byte-identical to v1.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -582,7 +588,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    focal_budget: "int | None" = None,
                    grid_size: "int | None" = None,
                    food_cfg: "dict | None" = None,
-                   knowledge_seed: "list | None" = None) -> None:
+                   knowledge_seed: "list | None" = None,
+                   tech_tree: "dict | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -615,6 +622,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     is granted to the first `count` agents at setup, after which it spreads ONLY through
     contact via knowledge.diffuse (called once per turn). None / empty seeds nothing, so
     diffusion self-gates to a no-op and the run is byte-identical to v1.
+
+    V2 M1.2 (discovery): `tech_tree` ({item -> frozenset(prereqs)}) enables unscripted
+    invention — each turn knowledge.discover lets fed/curious agents probabilistically
+    invent items whose prereqs they know; the new item then spreads via the same
+    diffusion. None / empty -> no discovery (zero RNG) -> v1 byte-identical.
     """
     god_script = god_script or {}
 
@@ -696,6 +708,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             print()
             print(f"Food remaining: {len(world_state['food'])}")
             print()
+
+        # M1.2: agents may INVENT items whose prereqs they know (pure state math, ZERO
+        # LLM calls) — runs first so a fresh discovery can begin spreading immediately.
+        # No-op drawing no RNG when tech_tree is empty/None.
+        knowledge.discover(world_state, turn, tech_tree)
 
         # M1.1: spread knowledge one hop along this turn's contact network (pure-Python
         # state diffusion, ZERO LLM calls). A no-op drawing no RNG when no agent knows
@@ -817,6 +834,10 @@ def main(argv: list[str] | None = None) -> None:
             item, _, count = entry.partition(":")
             knowledge_seed.append((item, int(count) if count else 1))
 
+    # M1.2: --tech-tree turns on unscripted discovery using the canonical TECH_TREE.
+    # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
+    tech_tree = knowledge.TECH_TREE if args.tech_tree else None
+
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
     # 'heuristic' for a large cast (the focal budget promotes the interesting few).
     cognition = args.cognition if args.cognition is not None else ("heuristic" if large else "llm")
@@ -849,7 +870,7 @@ def main(argv: list[str] | None = None) -> None:
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
-                           knowledge_seed=knowledge_seed)
+                           knowledge_seed=knowledge_seed, tech_tree=tech_tree)
         finally:
             sys.stdout = original
             log_file.close()
@@ -863,7 +884,7 @@ def main(argv: list[str] | None = None) -> None:
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
-                           knowledge_seed=knowledge_seed)
+                           knowledge_seed=knowledge_seed, tech_tree=tech_tree)
 
 
 if __name__ == "__main__":
