@@ -1336,6 +1336,220 @@ def test_storage_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_storage_off_run_is_byte_identical_to_v1")
 
 
+# --- Trade, money & proprietary knowledge (M2.3) --------------------------
+def test_emergent_price_varies_with_conditions_not_fixed() -> None:
+    """The SAME good/skill prices DIFFERENTLY by rarity, skill-gap, hunger, surplus."""
+    import economy
+    _fresh_world()
+    # Knowledge: same skill 'hunting' costs more when rare and when the buyer lacks a producer
+    # skill; cheaper (or nothing) when common or the buyer already produces.
+    unskilled = _agent("U", "cautious and territorial", (1, 1), hunger=0)
+    farmer = _agent("F", "cautious and territorial", (2, 2), hunger=0)
+    farmer.knowledge.add("farming")
+    dear = economy.knowledge_price("hunting", unskilled, rarity=1.0)
+    cheap = economy.knowledge_price("hunting", unskilled, rarity=0.2)
+    skilled_buyer = economy.knowledge_price("hunting", farmer, rarity=1.0)
+    assert dear > cheap, "a rare skill must cost more than a common one"
+    assert dear > skilled_buyer, "an unskilled buyer values a producer skill more than a skilled one"
+    # Common enough -> no deal at all (price None), proving it isn't a fixed ratio.
+    assert economy.knowledge_price("hunting", farmer, rarity=0.01) is None
+    # Food: same food prices up with buyer hunger and with seller scarcity.
+    seller_full = _agent("Sf", "cautious and territorial", (4, 4), hunger=0)
+    seller_full.stockpile = 20.0
+    seller_low = _agent("Sl", "cautious and territorial", (6, 6), hunger=0)
+    seller_low.stockpile = 12.0
+    hungry = _agent("H", "cautious and territorial", (8, 8), hunger=9)
+    mild = _agent("M", "cautious and territorial", (0, 9), hunger=3)
+    assert economy.food_price(hungry, seller_full) > economy.food_price(mild, seller_full), \
+        "a hungrier buyer should face a higher price"
+    assert economy.food_price(hungry, seller_low) > economy.food_price(hungry, seller_full), \
+        "a scarcer seller should command a higher price"
+    print("PASS test_emergent_price_varies_with_conditions_not_fixed")
+
+
+def test_trade_is_mutually_beneficial_and_voluntary() -> None:
+    """Every executed trade leaves BOTH sides better off by their own valuation."""
+    import economy
+    _fresh_world()
+    create_world(size=8)
+    world_state["economy_on"] = True
+    # A guarded skill sale: competitive hunter sells hunting to an unskilled, moneyed buyer.
+    seller = _agent("Sell", "independent and competitive", (3, 3), hunger=2)
+    seller.knowledge.add("hunting")
+    seller.stockpile = 2.0
+    buyer = _agent("Buy", "cautious and territorial", (4, 3), hunger=0)
+    buyer.money = 20.0
+    rarity = economy.local_rarity("hunting", buyer, world_state, exclude=(seller,))
+    value = economy.knowledge_value("hunting", buyer, rarity)
+    reservation = economy.knowledge_reservation("hunting", rarity)
+    price = economy.knowledge_price("hunting", buyer, rarity)
+    b_money0, s_total0 = buyer.money, seller.money + seller.stockpile
+    economy.trade(world_state, 1)
+    assert "hunting" in buyer.knowledge, "the trade should have executed"
+    # Voluntary + mutually beneficial: price sits strictly between the two valuations.
+    assert reservation <= price <= value, f"price {price} outside [{reservation}, {value}]"
+    assert buyer.money < b_money0, "buyer paid"
+    assert seller.money + seller.stockpile > s_total0, "seller was paid"
+    # Neither party worse off by its own valuation: buyer gained value>=price; seller gained price>=reservation.
+    assert value - price >= 0 and price - reservation >= 0
+    print("PASS test_trade_is_mutually_beneficial_and_voluntary")
+
+
+def test_guarded_knowledge_does_not_free_diffuse_but_sells() -> None:
+    """A competitive holder's skill is withheld from M1.1 diffusion yet moves by sale."""
+    import economy
+    import knowledge as kn
+    # 1) Guarded: a competitive farmer next to a learner — farming never free-diffuses.
+    _fresh_world()
+    create_world(size=8)
+    world_state["economy_on"] = True
+    holder = _agent("Guard", "independent and competitive", (2, 2), hunger=0)
+    holder.knowledge.add("farming")
+    learner = _agent("Learn", "curious and adventurous", (3, 2), hunger=0)
+    learner.money = 20.0
+    rng = random.Random(0)
+    for turn in range(1, 50):
+        world_state["turn"] = turn
+        kn.diffuse(world_state, turn, rng=rng)
+    assert "farming" not in learner.knowledge, "a guarded skill must not diffuse free"
+    # 2) ...but it SELLS: the same pair, run the trade pass, and the skill moves for payment.
+    economy.trade(world_state, 50)
+    assert "farming" in learner.knowledge, "a guarded skill should move by sale"
+    assert learner.money < 20.0, "the buyer paid for it"
+    print("PASS test_guarded_knowledge_does_not_free_diffuse_but_sells")
+
+
+def test_friendly_knowledge_still_free_diffuses() -> None:
+    """A friendly holder still TEACHES free — M1.1 diffusion intact (guarding is per-personality)."""
+    import knowledge as kn
+    _fresh_world()
+    create_world(size=8)
+    world_state["economy_on"] = True   # economy on, but a friendly holder does not guard
+    holder = _agent("Kind", "friendly and outgoing", (2, 2), hunger=0)
+    holder.knowledge.add("farming")
+    learner = _agent("Pupil", "curious and adventurous", (3, 2), hunger=0)
+    rng = random.Random(0)
+    learned = False
+    for turn in range(1, 50):
+        world_state["turn"] = turn
+        kn.diffuse(world_state, turn, rng=rng)
+        if "farming" in learner.knowledge:
+            learned = True
+            break
+    assert learned, "a friendly holder's skill must still diffuse free"
+    print("PASS test_friendly_knowledge_still_free_diffuses")
+
+
+def test_hunting_produces_food_only_for_knowers() -> None:
+    """Hunting grows food into the world for a knower; a non-knower produces nothing."""
+    import knowledge as kn
+    _fresh_world()
+    create_world(size=12)
+    knower = _agent("Hunter", "curious and adventurous", (5, 5), hunger=0)
+    knower.knowledge.add("hunting")
+    nonknower = _agent("Plain", "curious and adventurous", (9, 9), hunger=0)
+    food_before = len(world_state["food"])
+    rng = random.Random(0)
+    for turn in range(1, 40):
+        kn.hunt(world_state, turn, rng=rng)
+    produced = len(world_state["food"]) - food_before
+    assert produced > 0, "a fed hunter should produce food"
+    # Only the hunter ever took game; the non-knower produced nothing.
+    assert any("Took game" in m for m in knower.memory), "the knower should have hunted"
+    assert not any("Took game" in m for m in nonknower.memory), "a non-knower never hunts"
+    print("PASS test_hunting_produces_food_only_for_knowers")
+
+
+def test_surplus_to_money_to_purchase_roundtrips() -> None:
+    """Food surplus past the cap mints money; money then buys knowledge (food-backed loop)."""
+    import economy
+    import storage
+    _fresh_world()
+    create_world(size=8)
+    world_state["storage_on"] = True
+    world_state["economy_on"] = True
+    # A full-larder farmer mints money from its past-cap surplus.
+    rich = _agent("Rich", "independent and competitive", (3, 3), hunger=0)
+    rich.settlement = "S001"
+    rich.knowledge.add("farming")
+    rich.stockpile = storage.STORAGE_CAP
+    world.place_food(3, 3)
+    for turn in range(1, 11):
+        rich.hunger = 0
+        economy.mint(world_state, turn)
+    assert rich.money > 0, "surplus past the cap should mint money"
+    # That money buys a skill the farmer lacks from a guarding hunter.
+    seller = _agent("Hunt", "independent and competitive", (4, 3), hunger=2)
+    seller.settlement = "S001"
+    seller.knowledge.add("hunting")
+    seller.stockpile = 2.0
+    money_before = rich.money
+    economy.trade(world_state, 11)
+    assert "hunting" in rich.knowledge, "money should buy the skill"
+    assert rich.money < money_before, "the buyer spent money"
+    assert seller.money > 0, "the seller earned money"
+    # Money is food-backed: it redeems to survive starvation via the buffer.
+    rich.stockpile = 0.0
+    rich.hunger = 9
+    rich.money = storage.BUFFER_COST + 1.0
+    assert storage.draw_down(rich), "money should redeem as food to survive"
+    assert rich.hunger < 10 and rich.money < storage.BUFFER_COST + 1.0
+    print("PASS test_surplus_to_money_to_purchase_roundtrips")
+
+
+def test_trade_and_mint_zero_llm_and_no_rng() -> None:
+    """economy.mint and economy.trade make no model calls and draw no RNG."""
+    import economy
+    import storage
+    _fresh_world()
+    create_world(size=8)
+    world_state["storage_on"] = True
+    world_state["economy_on"] = True
+    a = _agent("A", "independent and competitive", (3, 3), hunger=0)
+    a.settlement = "S001"
+    a.knowledge.add("hunting")
+    a.stockpile = storage.STORAGE_CAP
+    world.place_food(3, 3)
+    b = _agent("B", "cautious and territorial", (4, 3), hunger=0)
+    b.money = 20.0
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        st0 = random.getstate()
+        for turn in range(1, 20):
+            a.hunger = 0
+            economy.mint(world_state, turn)
+            economy.trade(world_state, turn)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert random.getstate() == st0, "the economy consumed RNG (would desync v1)"
+    print("PASS test_trade_and_mint_zero_llm_and_no_rng")
+
+
+def test_economy_off_run_is_byte_identical_to_v1() -> None:
+    """economy_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(13)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(20, focal_budget=8)
+            else:
+                main.run_simulation(20, focal_budget=8, economy_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "economy_on=False changed the default run output"
+    print("PASS test_economy_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -2431,6 +2645,14 @@ def main_runner() -> None:
         test_starving_member_with_savings_survives_one_without_dies,
         test_storage_accumulate_zero_llm_and_no_rng,
         test_storage_off_run_is_byte_identical_to_v1,
+        test_emergent_price_varies_with_conditions_not_fixed,
+        test_trade_is_mutually_beneficial_and_voluntary,
+        test_guarded_knowledge_does_not_free_diffuse_but_sells,
+        test_friendly_knowledge_still_free_diffuses,
+        test_hunting_produces_food_only_for_knowers,
+        test_surplus_to_money_to_purchase_roundtrips,
+        test_trade_and_mint_zero_llm_and_no_rng,
+        test_economy_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

@@ -34,6 +34,7 @@ import time
 
 import alliance
 import conversation
+import economy
 import god_mode
 import heuristic
 import knowledge
@@ -396,6 +397,13 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
         # default (storage-off) summary is byte-identical to v1. Pure read of agent state.
         if world_state.get("storage_on"):
             print(f"Stockpile:       {agent.stockpile:.1f} / {storage.STORAGE_CAP:.0f}")
+        # M2.3: read-only money/skills overlay — printed ONLY when the economy is on, so a
+        # default run's summary is byte-identical to v1. Pure read of agent state.
+        if world_state.get("economy_on"):
+            skills = ", ".join(sorted(s for s in agent.knowledge
+                                      if s in economy.PRODUCER_SKILLS)) or "(none)"
+            print(f"Money:           {agent.money:.1f}")
+            print(f"Producer skills: {skills}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -593,6 +601,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "to do anything (only the settled store); pair with --settlements --tech-tree "
              "(or --seed-knowledge farming). Zero LLM/RNG. Off by default -> v1 identical.")
     p.add_argument(
+        "--economy", action="store_true",
+        help="V2 M2.3: enable the ECONOMY — TRADE, food-backed MONEY, and proprietary "
+             "knowledge (closes Phase 2). Settled agents mint money from food surplus past "
+             "the storage cap, then TRADE food/knowledge <-> money with nearby agents at an "
+             "EMERGENT price (buyer hunger up, seller surplus down, rarer skills dearer); "
+             "competitive agents GUARD skills and sell them while friendly agents still teach "
+             "free (M1.1). Pairs with --tech-tree (hunting is a second producer skill); "
+             "implies --settlements + --storage. Zero LLM/RNG. Off by default -> v1 identical. "
+             "(Wage-labor and minted/fiat money are out of scope, deferred to Phase 3.)")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -630,7 +648,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    knowledge_seed: "list | None" = None,
                    tech_tree: "dict | None" = None,
                    settlements: bool = False,
-                   storage_on: bool = False) -> None:
+                   storage_on: bool = False,
+                   economy_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -680,6 +699,10 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # see it. Surplus accumulation is gated separately at its call site below. With this
     # False (the default) neither read fires, so the run is byte-identical to v1.
     world_state["storage_on"] = storage_on
+    # M2.3: same for the economy (money minting + trade pass + proprietary-knowledge guarding
+    # in diffuse + money-redemption in the survival buffer). False (default) -> none fire ->
+    # the run is byte-identical to v1.
+    world_state["economy_on"] = economy_on
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -770,6 +793,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # is a fed farmer, so a v1 / no-farming run is byte-identical.
         knowledge.farm(world_state, turn)
 
+        # M2.3 specialization: fed HUNTERS produce food too, by a different mechanic/location
+        # (roaming game on a wider ring). Like farm() it is gated purely on KNOWING 'hunting'
+        # and is a no-op drawing no RNG when nobody is a fed hunter — so a v1 / no-hunting run
+        # stays byte-identical. Always called (not economy-gated): it is a knowledge effect.
+        knowledge.hunt(world_state, turn)
+
         # M2.1: nomads become SETTLERS where reliable food makes staying worthwhile —
         # settlements EMERGE from the food economy (zero LLM, zero RNG, a deterministic
         # threshold on sustained presence). Runs AFTER farm() so this turn's freshly
@@ -785,6 +814,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
         if storage_on:
             storage.accumulate(world_state, turn)
+
+        # M2.3: the economy. mint() turns food surplus past the storage cap into FOOD-BACKED
+        # money; trade() then runs one pass of voluntary, mutually-beneficial exchange
+        # (food/knowledge <-> money) at emergent prices across adjacent agents. Both AFTER
+        # accumulate so this turn's stockpiles/overflow are current. Zero LLM/RNG; gated on
+        # the opt-in flag, so a default run never calls them (byte-identical to v1).
+        if economy_on:
+            economy.mint(world_state, turn)
+            economy.trade(world_state, turn)
 
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
@@ -905,6 +943,11 @@ def main(argv: list[str] | None = None) -> None:
     # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
     tech_tree = knowledge.TECH_TREE if args.tech_tree else None
 
+    # M2.3: the economy builds ON settlement + storage, so --economy implies both (a trader
+    # must be a settled agent with a stockpile to mint from). Each can still be enabled alone.
+    settlements_on = args.settlements or args.economy
+    storage_on = args.storage or args.economy
+
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
     # 'heuristic' for a large cast (the focal budget promotes the interesting few).
     cognition = args.cognition if args.cognition is not None else ("heuristic" if large else "llm")
@@ -938,8 +981,8 @@ def main(argv: list[str] | None = None) -> None:
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
-                           settlements=args.settlements,
-                           storage_on=args.storage)
+                           settlements=settlements_on,
+                           storage_on=storage_on, economy_on=args.economy)
         finally:
             sys.stdout = original
             log_file.close()
@@ -954,8 +997,8 @@ def main(argv: list[str] | None = None) -> None:
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
-                           settlements=args.settlements,
-                           storage_on=args.storage)
+                           settlements=settlements_on,
+                           storage_on=storage_on, economy_on=args.economy)
 
 
 if __name__ == "__main__":

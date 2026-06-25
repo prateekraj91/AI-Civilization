@@ -161,6 +161,13 @@ world_state: dict[str, Any] = {
     # ACCUMULATION is gated separately at the call site (run_simulation only calls
     # storage.accumulate when storage is on), so this is purely the read-side switch.
     "storage_on": False,     # bool: M2.2 storage/surplus system enabled for this run
+    # V2 M2.3 economy: a single flag mirroring the run's opt-in `economy` setting. Money
+    # minting (economy.mint), the trade pass (economy.trade), proprietary-knowledge guarding
+    # (knowledge.diffuse skips guarded items), and the money side of the survival buffer
+    # (storage.draw_down redeeming money as food) all gate on it. With economy OFF (default)
+    # none fire and the run stays byte-identical to v1. Hunting production is NOT gated here —
+    # like farming it is gated purely on KNOWING the skill, so it composes the same way.
+    "economy_on": False,     # bool: M2.3 trade/money economy enabled for this run
 }
 
 
@@ -301,6 +308,8 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # M2.2: the storage flag is per-simulation too — reset OFF so a fresh run is v1 unless
     # the caller (run_simulation) explicitly turns storage on for that run.
     world_state["storage_on"] = False
+    # M2.3: same for the economy (trade/money) flag.
+    world_state["economy_on"] = False
     return world_state["grid"]
 
 

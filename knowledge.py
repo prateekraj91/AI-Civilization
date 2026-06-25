@@ -60,7 +60,36 @@ TECH_TREE: dict[str, frozenset[str]] = {
     "tools": frozenset({"fire"}),        # needs fire
     "cooking": frozenset({"fire"}),      # needs fire (a sibling branch of tools)
     "farming": frozenset({"tools"}),     # needs tools (and so, transitively, fire)
+    # M2.3 specialization: hunting is a SECOND producer skill, a SIBLING of farming off the
+    # same `tools` prereq. It produces food into world_state too (see `hunt`) but by a
+    # different mechanic/location (roaming game on a wider ring, not a tended adjacent plot),
+    # so a population can hold two DISTINCT producer skills — the specialization that gives
+    # knowledge-trade something real to exchange (a farmer lacks hunting and vice-versa).
+    "hunting": frozenset({"tools"}),     # needs tools — the farming-sibling producer skill
 }
+
+# --- Proprietary knowledge (M2.3) ------------------------------------------
+# PROPRIETARY: the skills that carry trade value and so CAN be guarded — i.e. withheld from
+# free M1.1 diffusion and released only for payment (sold via economy.trade). It is the whole
+# tech vocabulary; WHETHER a holder actually guards a given item is decided per-agent by
+# `guards`, purely from personality — never assigned. (Free diffusion is unchanged for every
+# non-guarding holder; trade is an ADDITIONAL path, only for what a guard won't give away.)
+PROPRIETARY: frozenset[str] = frozenset(TECH_TREE)
+
+
+def guards(agent: Any, item: str) -> bool:
+    """Whether `agent` WITHHOLDS `item` from free diffusion to sell it instead (M2.3).
+
+    EMERGES from personality, not an assignment: an independent/competitive agent GUARDS its
+    valuable skills (treats know-how as property to be sold); a friendly/curious/cautious
+    agent does not — it still TEACHES the item free through the unchanged M1.1 diffusion. So
+    the SAME skill leaks free from a generous holder while a competitive holder tries to sell
+    it. Only PROPRIETARY items can be guarded (a non-skill fact has no trade value to guard).
+    Pure read of personality + the item set; no LLM, no mutation.
+    """
+    if item not in PROPRIETARY:
+        return False
+    return get_personality(agent).dominant == "independence"
 
 # --- Discovery model (M1.2) ------------------------------------------------
 # Base per-agent-per-turn chance of inventing an item whose prereqs are all known,
@@ -171,6 +200,10 @@ def diffuse(state: dict[str, Any], turn: int,
     if not has_any_knowledge(state):
         return []
     draw = (rng or random).random
+    # M2.3: when the economy is on, a teacher's GUARDED items (see `guards`) are withheld from
+    # free diffusion — they move only by sale (economy.trade). With the economy off nobody
+    # guards, so this is a no-op and M1.1 diffusion is byte-identical to before.
+    economy_on = state.get("economy_on", False)
 
     living = [a for a in state["agents"] if a.alive]
     by_name = {a.name: a for a in living}
@@ -191,6 +224,8 @@ def diffuse(state: dict[str, Any], turn: int,
             for item in sorted(t_known):
                 if item in l_known or item in already:
                     continue
+                if economy_on and guards(teacher, item):
+                    continue  # M2.3: a guarded skill is sold, not taught free
                 if draw() < adoption_probability(learner, teacher, state):
                     already[item] = teacher.name
 
@@ -313,6 +348,75 @@ def farm(state: dict[str, Any], turn: int,
                 world.record_memory(agent, "Tended crops")
                 produced.append((agent.name, cell))
     return produced
+
+
+# --- Hunting production (M2.3 specialization) ------------------------------
+# Hunting is the SECOND producer skill — a sibling to farming that also grows the food
+# supply, but by a DISTINCT mechanic so the two specializations are genuinely different (and
+# so knowledge of each is worth trading to someone who only has the other). Where a farmer
+# tends a plot on the cell right beside it (radius 1), a hunter takes roaming GAME from a
+# wider ring around it (HUNT_RADIUS_MIN..HUNT_RADIUS_MAX) — food appears further out, not
+# underfoot. Same three-way gating as farming so it is a consequence, never a cheat: must
+# KNOW hunting, must be fed enough to hunt (a starving hunter forages), and hunters STABILISE
+# (rest once the world already holds enough food per agent) rather than flooding the map.
+HUNT_YIELD = 0.5                  # per fed-hunter-per-turn chance of taking one food tile
+HUNT_HUNGER_CUTOFF = SURVIVAL_HUNGER   # a hunter hungrier than this is busy surviving
+HUNT_FOOD_PER_CAPITA = 2.0        # hunters rest once the world holds this much food/agent
+HUNT_RADIUS_MIN = 2               # game appears no closer than this (beyond the farm plot)
+HUNT_RADIUS_MAX = 3               # ...and no further than this (the hunter's range)
+
+
+def _empty_cell_in_ring(agent: Any, state: dict[str, Any],
+                        rmin: int, rmax: int) -> "tuple[int, int] | None":
+    """First empty ground cell at Chebyshev distance rmin..rmax from `agent`, or None (M2.3).
+
+    Where a hunter drops game: in bounds, unoccupied, not already food, and OUT in the field
+    (distance >= rmin) rather than adjacent like a farm plot. Deterministic scan order (rings
+    out, then row-major within a ring) -> reproducible placement, no RNG of its own.
+    """
+    x, y = agent.position
+    size = state["size"]
+    food = state["food"]
+    occ = state.get("occupancy", {})
+    for r in range(rmin, rmax + 1):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if max(abs(dx), abs(dy)) != r:
+                    continue  # only the ring at exactly distance r
+                nx, ny = x + dx, y + dy
+                if (0 <= nx < size and 0 <= ny < size
+                        and (nx, ny) not in occ and (nx, ny) not in food):
+                    return (nx, ny)
+    return None
+
+
+def hunt(state: dict[str, Any], turn: int,
+         rng: "random.Random | None" = None) -> list[tuple[str, tuple[int, int]]]:
+    """Let agents who KNOW 'hunting' PRODUCE food into world_state (M2.3, farming's sibling).
+
+    Each fed hunter (knows 'hunting' AND hunger < HUNT_HUNGER_CUTOFF) has a HUNT_YIELD chance
+    of taking one food tile from the ring of roaming game around it — a second, independent
+    supply channel alongside farming. Returns the (hunter, cell) takes. A no-op drawing ZERO
+    rng when nobody is a fed hunter — so a run with no hunting knowledge (incl. every v1 run)
+    is byte-identical, exactly like `farm`. Cost: O(agents); ZERO LLM calls.
+    """
+    hunters = [a for a in state["agents"]
+               if a.alive and "hunting" in a.knowledge and a.hunger < HUNT_HUNGER_CUTOFF]
+    if not hunters:
+        return []  # v1 / no fed hunters -> no-op, zero rng
+    living = sum(1 for a in state["agents"] if a.alive)
+    if len(state["food"]) >= HUNT_FOOD_PER_CAPITA * living:
+        return []  # stabiliser: enough food already, hunters rest (no runaway supply)
+    draw = (rng or random).random
+    taken: list[tuple[str, tuple[int, int]]] = []
+    for agent in hunters:  # world_state["agents"] order is stable
+        if draw() < HUNT_YIELD:
+            cell = _empty_cell_in_ring(agent, state, HUNT_RADIUS_MIN, HUNT_RADIUS_MAX)
+            if cell is not None:
+                world.place_food(cell[0], cell[1], state)
+                world.record_memory(agent, "Took game while hunting")
+                taken.append((agent.name, cell))
+    return taken
 
 
 def grant(state: dict[str, Any], agent: Any, item: str, turn: int) -> None:

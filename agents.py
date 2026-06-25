@@ -137,3 +137,15 @@ class Agent:
     # member that would otherwise starve draws this down to weather a food shock (a drought
     # that kills its savings-less neighbours), wiring wealth straight into survival.
     stockpile: float = 0.0
+
+    # money: this agent's emergent, FOOD-BACKED currency (V2 milestone M2.3 — trade closes
+    # the economy). 0.0 by default, so a nomad/v1 agent is unchanged. Money is a CLAIM ON
+    # FOOD, never minted by an authority and never fiat (decreed/minted currency is deferred
+    # to Phase 3): it is created ONLY when a settled agent's food surplus runs PAST the M2.2
+    # storage cap (economy.mint) — food it produced but cannot store — and it has value only
+    # because it is redeemable as food (storage.draw_down spends it to survive) and because
+    # other agents accept it in trade. It is the unit of account that lets agents TRADE
+    # food/knowledge across their differences without a double coincidence of wants
+    # (economy.trade); a buyer pays money, a seller banks it. Wealth in money, like stockpile,
+    # EMERGES from who an agent is (a hoarding producer mints the most) — never assigned.
+    money: float = 0.0

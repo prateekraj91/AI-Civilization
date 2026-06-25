@@ -189,14 +189,24 @@ def draw_down(agent: Any) -> bool:
     """Spend one stored meal to pull `agent` back from starvation (the survival buffer).
 
     Called from the existing starvation step (main.run_agent_turn) when a member would
-    otherwise die with no reachable food. If it holds at least BUFFER_COST stored units it
-    consumes them, drops its hunger by BUFFER_RELIEF (off the brink), and returns True —
-    it SURVIVES on its savings. With thin savings (< one meal) it cannot and returns False
-    — it starves. This is the whole of "wealth buffers survival": the rich weather a
-    drought, the poor do not. Pure state-math, ZERO RNG.
+    otherwise die with no reachable food. If it can cover BUFFER_COST it consumes that,
+    drops its hunger by BUFFER_RELIEF (off the brink), and returns True — it SURVIVES on its
+    savings. With thin savings it cannot and returns False — it starves. This is the whole of
+    "wealth buffers survival": the rich weather a drought, the poor do not. ZERO RNG.
+
+    M2.3: when the economy is on, MONEY is a food-claim and so is redeemable here too — the
+    meal is paid from stored food first, then from money. So an agent that converted its
+    surplus to money (or earned money by selling food/knowledge) can still eat in a famine.
+    With the economy off, money is ignored and this behaves exactly as in M2.2 (byte-identical).
     """
-    if agent.stockpile < BUFFER_COST:
+    economy_on = world.world_state.get("economy_on", False)
+    funds = agent.stockpile + (agent.money if economy_on else 0.0)
+    if funds < BUFFER_COST:
         return False
-    agent.stockpile -= BUFFER_COST
+    # Spend stored food first, then redeem money (only when the economy backs it).
+    from_food = min(agent.stockpile, BUFFER_COST)
+    agent.stockpile -= from_food
+    if economy_on:
+        agent.money -= (BUFFER_COST - from_food)
     agent.hunger = max(0, agent.hunger - BUFFER_RELIEF)
     return True
