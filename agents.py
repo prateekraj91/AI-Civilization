@@ -110,3 +110,30 @@ class Agent:
     # This is a clean per-agent switch only — there is NO tier/promotion system here
     # (that is M0.2); an agent's cognition does not change on its own.
     cognition: str = "llm"
+
+    # settlement: the id of the SETTLEMENT this agent belongs to, or None for a nomad
+    # (V2 milestone M2.1 — the first durable civilizational artifact). None by default,
+    # so a nomad behaves exactly as in Phase 1. Set by settlement.update when the agent
+    # joins a forming/existing settlement that grew around reliable (farmed) food; once
+    # set it gives the agent a gentle "home-pull" toward its settlement centre in
+    # strategy.choose_action (survival still overrides — a starving member forages out).
+    settlement: "str | None" = None
+
+    # settle_streak: consecutive turns this agent has been NEAR reliable food (M2.1).
+    # Pure bookkeeping read only by settlement.update: a settlement forms when enough
+    # agents have SUSTAINED a streak together near the same food, which is what makes
+    # settling a CONSEQUENCE of the food economy (transient scattered food never keeps a
+    # cluster's streak high for long; a maintained farm plot does). 0 = not near food now.
+    settle_streak: int = 0
+
+    # stockpile: this agent's PERSONAL stored-food reserve (V2 milestone M2.2 — storable
+    # SURPLUS, the moment the sim grows WEALTH). 0.0 by default, so a nomad/v1 agent is
+    # unchanged. Only a SETTLED agent banks into it (settlement is what makes real storage
+    # possible — see storage.accumulate); the amount it accumulates EMERGES from traits it
+    # already has — its personality (a hoarding independent/competitive agent banks more, a
+    # sharing friendly one less) and its farming KNOWLEDGE (a producer accumulates faster) —
+    # so wealth ends up VARYING across agents as a consequence of WHO they are, never an
+    # assigned "richness" stat. Bounded by storage.STORAGE_CAP. It is a SURVIVAL BUFFER: a
+    # member that would otherwise starve draws this down to weather a food shock (a drought
+    # that kills its savings-less neighbours), wiring wealth straight into survival.
+    stockpile: float = 0.0

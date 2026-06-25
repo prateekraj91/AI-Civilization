@@ -38,6 +38,8 @@ import god_mode
 import heuristic
 import knowledge
 import population
+import settlement
+import storage
 from cognition import update_tiers
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -292,6 +294,21 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
                 print(f"  --- {agent.name} ate at the brink (hunger now {agent.hunger}) ---")
                 print(f"    {result}\n")
             return "eat"
+        # M2.2 survival buffer: no reachable food, but a SETTLED agent with savings draws
+        # its stockpile down to live instead of starving — wealth weathers a food shock
+        # (a drought) that kills its savings-less neighbours. Gated on the storage system
+        # being on, so a v1/storage-off run never reaches here and stays byte-identical.
+        if world_state.get("storage_on") and storage.draw_down(agent):
+            survived[agent.name] = turn
+            counters["agent_turns"] += 1
+            record_memory(agent, f"Survived on stored food (stockpile now {agent.stockpile:.1f})")
+            world_state["events"].append(
+                f"turn {turn}: {agent.name} drew on savings to survive starvation "
+                f"(stockpile now {agent.stockpile:.1f})")
+            if VERBOSE_MODE:
+                print(f"  --- {agent.name} drew on its stockpile to survive "
+                      f"(hunger now {agent.hunger}, stockpile {agent.stockpile:.1f}) ---\n")
+            return "buffer"
         # Day 14: death is now an event the society registers — a DEATH line in
         # events[], a memory of it on every survivor, and a queued respawn.
         survivors = population.announce_death(agent, turn, world_state, cause="starved")
@@ -375,6 +392,10 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
         print(f"Goals:           {format_goals(agent.goals)}")
         print(f"Status:          {'ALIVE' if agent.alive else 'DEAD'}")
         print(f"Turns survived:  {survived.get(agent.name, 0)} / {num_turns}")
+        # M2.2: read-only wealth overlay — printed ONLY when the storage system is on, so a
+        # default (storage-off) summary is byte-identical to v1. Pure read of agent state.
+        if world_state.get("storage_on"):
+            print(f"Stockpile:       {agent.stockpile:.1f} / {storage.STORAGE_CAP:.0f}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -554,6 +575,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "(fire -> tools/cooking -> farming); a discovery then spreads via M1.1. "
              "Zero LLM cost. Off by default, so the run stays byte-identical to v1.")
     p.add_argument(
+        "--settlements", action="store_true",
+        help="V2 M2.1: enable SETTLEMENTS. Nomads become settlers where reliable "
+             "(farmed) food makes staying worthwhile — a persistent settlement EMERGES "
+             "when enough agents sustain themselves near the same food, and its members "
+             "gain a gentle home-pull (survival still overrides). Zero LLM/RNG cost. Off "
+             "by default, so the run stays byte-identical to v1. Pair with --tech-tree or "
+             "--seed-knowledge farming so reliable food actually exists.")
+    p.add_argument(
+        "--storage", action="store_true",
+        help="V2 M2.2: enable STORAGE & SURPLUS. Settled, well-fed members bank surplus "
+             "food into a PERSONAL stockpile whose size EMERGES from personality (a "
+             "competitive agent hoards, a friendly one banks less) and farming knowledge "
+             "(a producer accumulates faster) — so wealth inequality emerges. The "
+             "stockpile is a SURVIVAL BUFFER: a member that would otherwise starve draws "
+             "on it, so the wealthy weather a drought the poor don't. Needs settlements "
+             "to do anything (only the settled store); pair with --settlements --tech-tree "
+             "(or --seed-knowledge farming). Zero LLM/RNG. Off by default -> v1 identical.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -589,7 +628,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    grid_size: "int | None" = None,
                    food_cfg: "dict | None" = None,
                    knowledge_seed: "list | None" = None,
-                   tech_tree: "dict | None" = None) -> None:
+                   tech_tree: "dict | None" = None,
+                   settlements: bool = False,
+                   storage_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -634,6 +675,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     reset_call_stats()
     # M0.3: a large cast needs a bigger world; grid_size None keeps the v1 10x10.
     create_world(size=grid_size) if grid_size is not None else create_world()
+    # M2.2: record the storage opt-in on world_state so the read-side switches (the
+    # survival-buffer draw-down in run_agent_turn and the wealth overlay in the summary)
+    # see it. Surplus accumulation is gated separately at its call site below. With this
+    # False (the default) neither read fires, so the run is byte-identical to v1.
+    world_state["storage_on"] = storage_on
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -723,6 +769,22 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # changing the food economy survival rides on. No-op drawing no RNG when nobody
         # is a fed farmer, so a v1 / no-farming run is byte-identical.
         knowledge.farm(world_state, turn)
+
+        # M2.1: nomads become SETTLERS where reliable food makes staying worthwhile —
+        # settlements EMERGE from the food economy (zero LLM, zero RNG, a deterministic
+        # threshold on sustained presence). Runs AFTER farm() so this turn's freshly
+        # grown food already counts. Gated on the opt-in `settlements` flag, so a default
+        # run never calls it and stays byte-identical to v1.
+        if settlements:
+            settlement.update(world_state, turn)
+
+        # M2.2: settled, well-fed members beside surplus food BANK it into a personal
+        # stockpile — wealth that emerges from personality + farming knowledge and later
+        # buffers survival. Runs AFTER settlement.update so this turn's new members can
+        # bank, and AFTER farm() so the surplus they store already exists. Zero LLM/RNG;
+        # gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
+        if storage_on:
+            storage.accumulate(world_state, turn)
 
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
@@ -875,7 +937,9 @@ def main(argv: list[str] | None = None) -> None:
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
-                           knowledge_seed=knowledge_seed, tech_tree=tech_tree)
+                           knowledge_seed=knowledge_seed, tech_tree=tech_tree,
+                           settlements=args.settlements,
+                           storage_on=args.storage)
         finally:
             sys.stdout = original
             log_file.close()
@@ -889,7 +953,9 @@ def main(argv: list[str] | None = None) -> None:
                            renderer=renderer, turn_delay=args.speed,
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
-                           knowledge_seed=knowledge_seed, tech_tree=tech_tree)
+                           knowledge_seed=knowledge_seed, tech_tree=tech_tree,
+                           settlements=args.settlements,
+                           storage_on=args.storage)
 
 
 if __name__ == "__main__":

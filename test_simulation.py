@@ -1029,6 +1029,313 @@ def test_farming_adds_zero_llm_calls_and_empty_is_v1() -> None:
     print("PASS test_farming_adds_zero_llm_calls_and_empty_is_v1")
 
 
+# --- Settlement (M2.1) ----------------------------------------------------
+def _sustain_at_plot(state, plot, agents, turns, *, restock=True):
+    """Run settlement.update for `turns`, keeping `plot` stocked (a reliable source)."""
+    import settlement
+    for turn in range(1, turns + 1):
+        if restock:
+            for p in plot:
+                world.place_food(*p)
+        state["turn"] = turn
+        settlement.update(state, turn)
+
+
+def test_settlement_forms_with_enough_sustained_settlers_near_reliable_food() -> None:
+    """A settlement forms only with >= MIN_SETTLERS sustained near reliable food."""
+    import settlement
+    import world as _world
+    _fresh_world()
+    create_world(size=16)
+    plot = [(2, 2), (3, 2), (2, 3), (3, 3)]
+    founders = [_agent(f"F{i}", "cautious and territorial", p, hunger=0)
+                for i, p in enumerate([(2, 2), (3, 2), (2, 3)])]
+    # Just BELOW the sustain window: not yet reliable -> no settlement.
+    _sustain_at_plot(world_state, plot, founders, settlement.SUSTAIN_TURNS - 1)
+    assert not world_state["settlements"], "must not form before the sustain window elapses"
+    assert all(f.settlement is None for f in founders)
+    # One more turn crosses SUSTAIN_TURNS -> the cluster founds a settlement.
+    _sustain_at_plot(world_state, plot, founders, 1)
+    assert len(world_state["settlements"]) == 1, "a sustained cluster should found one settlement"
+    sid = founders[0].settlement
+    assert sid is not None and all(f.settlement == sid for f in founders)
+    rec = world_state["settlements"][sid]
+    assert rec["members"] == {"F0", "F1", "F2"} and rec["center"] and rec["founded"]
+    print("PASS test_settlement_forms_with_enough_sustained_settlers_near_reliable_food")
+
+
+def test_too_few_settlers_never_found_a_settlement() -> None:
+    """Below MIN_SETTLERS, sustained presence at reliable food still founds nothing."""
+    import settlement
+    _fresh_world()
+    create_world(size=16)
+    plot = [(2, 2), (3, 2)]
+    few = [_agent(f"P{i}", "cautious and territorial", p, hunger=0)
+           for i, p in enumerate([(2, 2), (3, 2)])]   # only 2 < MIN_SETTLERS (3)
+    _sustain_at_plot(world_state, plot, few, settlement.SUSTAIN_TURNS + 5)
+    assert not world_state["settlements"], "two settlers must never found a settlement"
+    assert all(a.settlement is None for a in few)
+    print("PASS test_too_few_settlers_never_found_a_settlement")
+
+
+def test_no_reliable_food_no_settlement() -> None:
+    """A clustered group with NO sustained food never settles (streaks never build)."""
+    import settlement
+    _fresh_world()
+    create_world(size=16)
+    # Three clustered agents, but no food is ever placed -> streaks stay 0.
+    group = [_agent(f"G{i}", "cautious and territorial", p, hunger=0)
+             for i, p in enumerate([(5, 5), (6, 5), (5, 6)])]
+    _sustain_at_plot(world_state, [], group, settlement.SUSTAIN_TURNS + 10, restock=False)
+    assert not world_state["settlements"], "no reliable food must yield no settlement"
+    assert all(a.settle_streak == 0 for a in group)
+    print("PASS test_no_reliable_food_no_settlement")
+
+
+def test_isolated_nomad_never_joins() -> None:
+    """An agent near reliable food joins; an isolated nomad far from any centre never does."""
+    import settlement
+    _fresh_world()
+    create_world(size=20)
+    plot = [(3, 3), (4, 3), (3, 4), (4, 4)]
+    founders = [_agent(f"F{i}", "cautious and territorial", p, hunger=0)
+                for i, p in enumerate([(3, 3), (4, 3), (3, 4)])]
+    loner = _agent("Loner", "independent and competitive", (18, 18), hunger=0)
+    _sustain_at_plot(world_state, plot, founders, settlement.SUSTAIN_TURNS + 2)
+    assert founders[0].settlement is not None, "the clustered founders should settle"
+    assert loner.settlement is None, "an isolated nomad must never join"
+    # A late arrival that gathers at the reliable food DOES join.
+    joiner = _agent("Joiner", "cautious and territorial", (4, 5), hunger=0)  # on plot edge
+    _sustain_at_plot(world_state, plot, founders + [joiner], 1)
+    assert joiner.settlement == founders[0].settlement, "a gatherer at the food should join"
+    assert loner.settlement is None, "the isolated nomad still never joins"
+    print("PASS test_isolated_nomad_never_joins")
+
+
+def test_settled_agent_pulled_home_when_fed_not_when_starving() -> None:
+    """A fed member drifts toward its centre; a starving member forages outward instead."""
+    import settlement
+    from strategy import SURVIVAL_HUNGER
+    _fresh_world()
+    create_world(size=16)
+    a = _agent("Cit", "curious and adventurous", (12, 12), hunger=0)  # far from home (3,3)
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (3, 3),
+                                          "members": {"Cit"}, "founded": 1}
+    a.settlement = "S001"
+    # Fed + beyond HOME_RADIUS -> pulled home (toward (3,3) is north/west).
+    action, note = choose_action(a, Strategy(kind="explore", target="east", issued_turn=1),
+                                 world_state)
+    assert action in ("move_north", "move_west"), f"fed member should head home, got {action}"
+    assert "home-pull" in note
+    # Now starving with food to the EAST (away from home) -> survival overrides home-pull.
+    world.place_food(13, 12)
+    a.hunger = SURVIVAL_HUNGER + 2
+    action, note = choose_action(a, Strategy(kind="explore", target="east", issued_turn=1),
+                                 world_state)
+    assert action == "move_east", f"starving member must forage outward, got {action}"
+    assert "home-pull" not in note
+    print("PASS test_settled_agent_pulled_home_when_fed_not_when_starving")
+
+
+def test_nomad_movement_unaffected_by_settlement_system() -> None:
+    """An agent with settlement=None behaves exactly as in Phase 1 (no home-pull)."""
+    _fresh_world()
+    create_world(size=16)
+    a = _agent("Nomad", "curious and adventurous", (12, 12), hunger=0)
+    assert a.settlement is None
+    strat = Strategy(kind="explore", target="east", issued_turn=1)
+    action, note = choose_action(a, strat, world_state)
+    assert "home-pull" not in note, "a nomad must never be pulled home"
+    assert action.startswith("move_"), "a fed curious nomad still explores"
+    print("PASS test_nomad_movement_unaffected_by_settlement_system")
+
+
+def test_settlement_update_zero_llm_and_no_rng() -> None:
+    """settlement.update makes no model calls and draws no RNG (deterministic threshold)."""
+    import settlement
+    _fresh_world()
+    create_world(size=16)
+    plot = [(2, 2), (3, 2), (2, 3)]
+    [_agent(f"F{i}", "cautious and territorial", p, hunger=0)
+     for i, p in enumerate([(2, 2), (3, 2), (2, 3)])]
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        st0 = random.getstate()
+        _sustain_at_plot(world_state, plot, [], settlement.SUSTAIN_TURNS + 3)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert random.getstate() == st0, "settlement.update consumed RNG"
+    assert world_state["settlements"], "the sustained cluster should still have settled"
+    print("PASS test_settlement_update_zero_llm_and_no_rng")
+
+
+def test_settlements_off_run_is_byte_identical_to_v1() -> None:
+    """settlements=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(99)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(20, focal_budget=8)
+            else:
+                main.run_simulation(20, focal_budget=8, settlements=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "settlements=False changed the run output"
+    print("PASS test_settlements_off_run_is_byte_identical_to_v1")
+
+
+# --- Storage & surplus (M2.2) ---------------------------------------------
+def test_surplus_banks_only_above_need_and_only_when_settled() -> None:
+    """Banking the M2.2 rules: SETTLED + WELL-FED + beside food; nomad/hungry/far bank 0."""
+    import storage
+    _fresh_world()
+    create_world(size=12)
+    # A settled, well-fed agent standing on food -> banks surplus.
+    settled = _agent("Settled", "independent and competitive", (5, 5), hunger=0)
+    settled.settlement = "S001"
+    world.place_food(5, 5)
+    # A NOMAD in the same situation (settlement None) -> stores nothing (rule 1).
+    nomad = _agent("Nomad", "independent and competitive", (2, 2), hunger=0)
+    world.place_food(2, 2)
+    # A settled but HUNGRY agent -> stores nothing (need not yet met; no surplus).
+    hungry = _agent("Hungry", "independent and competitive", (8, 8),
+                    hunger=storage.STORE_HUNGER_MAX + 1)
+    hungry.settlement = "S001"
+    world.place_food(8, 8)
+    # A settled, well-fed agent with NO food in reach -> nothing to gather, banks 0.
+    far = _agent("Far", "independent and competitive", (11, 0), hunger=0)
+    far.settlement = "S001"
+    storage.accumulate(world_state, 1)
+    assert settled.stockpile > 0, "a settled, well-fed agent beside food should bank surplus"
+    assert nomad.stockpile == 0.0, "a nomad must not store (storing requires settlement)"
+    assert hungry.stockpile == 0.0, "no banking above immediate hunger need"
+    assert far.stockpile == 0.0, "no reachable food -> no surplus to bank"
+    print("PASS test_surplus_banks_only_above_need_and_only_when_settled")
+
+
+def test_stockpile_never_exceeds_cap() -> None:
+    """A hoarder banks indefinitely but its stockpile is bounded by STORAGE_CAP."""
+    import storage
+    _fresh_world()
+    create_world(size=10)
+    hoarder = _agent("Hoard", "independent and competitive", (5, 5), hunger=0)
+    hoarder.settlement = "S001"
+    world.place_food(5, 5)
+    for turn in range(1, 400):
+        hoarder.hunger = 0  # stays well-fed beside its food, banking every turn
+        storage.accumulate(world_state, turn)
+    assert hoarder.stockpile <= storage.STORAGE_CAP, "stockpile must never exceed the cap"
+    assert hoarder.stockpile == storage.STORAGE_CAP, "a relentless hoarder should fill the cap"
+    print("PASS test_stockpile_never_exceeds_cap")
+
+
+def test_wealth_tracks_personality_and_knowledge_not_assigned() -> None:
+    """Accumulation EMERGES from traits: a competitive farmer out-banks a friendly non-farmer."""
+    import storage
+    _fresh_world()
+    create_world(size=12)
+    # Same world conditions; the ONLY differences are personality + farming knowledge.
+    rich = _agent("Rich", "independent and competitive", (3, 3), hunger=0)
+    rich.settlement = "S001"
+    rich.knowledge.add("farming")
+    poor = _agent("Poor", "friendly and outgoing", (8, 8), hunger=0)
+    poor.settlement = "S001"
+    world.place_food(3, 3)
+    world.place_food(8, 8)
+    # The emergent rate already orders them, before a single turn is banked.
+    assert storage.banking_rate(rich) > storage.banking_rate(poor)
+    for turn in range(1, 25):
+        rich.hunger = 0
+        poor.hunger = 0
+        storage.accumulate(world_state, turn)
+    assert rich.stockpile > poor.stockpile, "the competitive farmer should be richer"
+    # Neither was ever assigned a wealth number — both started at 0.0.
+    print("PASS test_wealth_tracks_personality_and_knowledge_not_assigned")
+
+
+def test_starving_member_with_savings_survives_one_without_dies() -> None:
+    """The survival buffer: at the brink with no food, savings live and no savings die."""
+    import storage
+    _fresh_world()
+    create_world(size=10)
+    world_state["storage_on"] = True
+    # Both settled, both one tick from starvation, NO food anywhere on the map.
+    saver = _agent("Saver", "cautious and territorial", (0, 0), hunger=9)
+    saver.settlement = "S001"
+    saver.stockpile = storage.BUFFER_COST + 1.0   # holds more than one stored meal
+    broke = _agent("Broke", "cautious and territorial", (9, 9), hunger=9)
+    broke.settlement = "S001"
+    broke.stockpile = storage.BUFFER_COST - 1.0   # cannot afford even one meal
+    strategies, survived, counters = {}, {}, {"agent_turns": 0}
+    try:
+        # update_hunger pushes 9 -> 10 (starving); the buffer step then decides each fate.
+        main.run_agent_turn(saver, 1, strategies, survived, counters)
+        main.run_agent_turn(broke, 1, strategies, survived, counters)
+        assert saver.alive, "an agent with savings should draw them down and survive"
+        assert saver.stockpile < storage.BUFFER_COST + 1.0, "it must have spent stored food"
+        assert saver.hunger < 10, "drawing down should pull it off the brink"
+        assert not broke.alive, "an agent without enough savings must starve"
+    finally:
+        world_state["storage_on"] = False
+    print("PASS test_starving_member_with_savings_survives_one_without_dies")
+
+
+def test_storage_accumulate_zero_llm_and_no_rng() -> None:
+    """storage.accumulate makes no model calls and draws no RNG (deterministic state math)."""
+    import storage
+    _fresh_world()
+    create_world(size=10)
+    a = _agent("S", "independent and competitive", (5, 5), hunger=0)
+    a.settlement = "S001"
+    world.place_food(5, 5)
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        st0 = random.getstate()
+        for turn in range(1, 30):
+            a.hunger = 0
+            storage.accumulate(world_state, turn)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert random.getstate() == st0, "storage.accumulate consumed RNG"
+    assert a.stockpile > 0, "the settled agent should still have accumulated"
+    print("PASS test_storage_accumulate_zero_llm_and_no_rng")
+
+
+def test_storage_off_run_is_byte_identical_to_v1() -> None:
+    """storage_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(20, focal_budget=8)
+            else:
+                main.run_simulation(20, focal_budget=8, storage_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "storage_on=False changed the default run output"
+    print("PASS test_storage_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -2110,6 +2417,20 @@ def main_runner() -> None:
         test_farming_knower_produces_food_unknown_does_not,
         test_farming_population_outlasts_no_farming_control,
         test_farming_adds_zero_llm_calls_and_empty_is_v1,
+        test_settlement_forms_with_enough_sustained_settlers_near_reliable_food,
+        test_too_few_settlers_never_found_a_settlement,
+        test_no_reliable_food_no_settlement,
+        test_isolated_nomad_never_joins,
+        test_settled_agent_pulled_home_when_fed_not_when_starving,
+        test_nomad_movement_unaffected_by_settlement_system,
+        test_settlement_update_zero_llm_and_no_rng,
+        test_settlements_off_run_is_byte_identical_to_v1,
+        test_surplus_banks_only_above_need_and_only_when_settled,
+        test_stockpile_never_exceeds_cap,
+        test_wealth_tracks_personality_and_knowledge_not_assigned,
+        test_starving_member_with_savings_survives_one_without_dies,
+        test_storage_accumulate_zero_llm_and_no_rng,
+        test_storage_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

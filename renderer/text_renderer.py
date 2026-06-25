@@ -67,6 +67,7 @@ _PALETTE = (
 # Grid symbols (presentation only; the engine's own world.render() uses ASCII).
 _FOOD_SYMBOL = "*"
 _TREASURE_SYMBOL = "$"
+_SETTLEMENT_SYMBOL = "#"   # M2.1: a settlement centre (read-only overlay)
 _EMPTY_SYMBOL = "·"
 
 # M0.3: above this many agents (or this grid edge) the per-letter grid stops being
@@ -139,6 +140,9 @@ def _build_grid(state: dict[str, Any]) -> Table:
     size = state["size"]
     food = set(state["food"])
     treasures = {t["pos"] for t in state.get("treasures", [])}
+    # M2.1: settlement centres, a read-only overlay drawn UNDER food/treasure/agents
+    # (a place persists even when momentarily empty of food or people). Pure read.
+    settlements = {s["center"] for s in state.get("settlements", {}).values()}
     occupants = {
         a.position: a
         for a in state["agents"]
@@ -159,6 +163,8 @@ def _build_grid(state: dict[str, Any]) -> Table:
                 cell = Text(_TREASURE_SYMBOL, style="bold yellow")
             elif (x, y) in food:
                 cell = Text(_FOOD_SYMBOL, style="green")
+            elif (x, y) in settlements:
+                cell = Text(_SETTLEMENT_SYMBOL, style="bold magenta")
             else:
                 cell = Text(_EMPTY_SYMBOL, style="grey30")
             row.append(cell)

@@ -145,6 +145,22 @@ world_state: dict[str, Any] = {
     # per-turn cost at 200+ agents, where scan()/collision checks ask it constantly.
     # It is a derived view of agents[]+positions, never an independent truth.
     "occupancy": {},         # dict[tuple[int, int], Agent]: living agent by cell
+    # V2 M2.1 settlement: the first DURABLE civilizational artifact. Each settlement is
+    # a persistent record {"id", "center": (x, y), "members": set[name], "founded": turn}
+    # that EMERGES (settlement.update) when enough agents sustain themselves near reliable
+    # (farmed) food, and then carries forward across turns for later eras to build on
+    # (storage, trade, towns, governance). Empty for any run with the system off / no
+    # reliable food, which keeps the default run byte-identical to v1. Keyed by id for
+    # O(1) membership/center lookup (the home-pull and renderer both read it).
+    "settlements": {},       # dict[str, dict]: id -> settlement record (persistent)
+    "settlement_seq": 0,     # int: monotonic counter so each settlement id is unique
+    # V2 M2.2 storage: a single flag mirroring the run's opt-in `storage` setting. The
+    # survival-buffer draw-down (storage.draw_down, read in the starvation step) and the
+    # read-only wealth overlay in the end-of-run summary both gate on it, so with storage
+    # OFF (the default) neither fires and the run stays byte-identical to v1. Surplus
+    # ACCUMULATION is gated separately at the call site (run_simulation only calls
+    # storage.accumulate when storage is on), so this is purely the read-side switch.
+    "storage_on": False,     # bool: M2.2 storage/surplus system enabled for this run
 }
 
 
@@ -278,6 +294,13 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state["treasures"].clear()
     world_state["drought_until"] = 0
     world_state.setdefault("occupancy", {}).clear()  # M0.3: reset the position index
+    # M2.1: settlements are per-simulation, so they must not leak across runs (a stale
+    # settlement would falsely home-pull a fresh cast). Cleared like every other state.
+    world_state.setdefault("settlements", {}).clear()
+    world_state["settlement_seq"] = 0
+    # M2.2: the storage flag is per-simulation too — reset OFF so a fresh run is v1 unless
+    # the caller (run_simulation) explicitly turns storage on for that run.
+    world_state["storage_on"] = False
     return world_state["grid"]
 
 
@@ -680,15 +703,21 @@ def mark_dead(agent: Any) -> None:
 def render(state: dict[str, Any] | None = None) -> str:
     """Return an ASCII snapshot of the world for logging (Day 6).
 
-    Legend: '.' empty, '*' food, '$' treasure (Day 15), and each living agent's
-    first initial on its cell. Built from the food/treasure lists and live agent
-    positions (not the grid array) so the picture always matches the authoritative
-    state.
+    Legend: '.' empty, '*' food, '$' treasure (Day 15), '#' a settlement centre
+    (M2.1, read-only overlay), and each living agent's first initial on its cell.
+    Built from the food/treasure/settlement records and live agent positions (not the
+    grid array) so the picture always matches the authoritative state. The settlement
+    overlay is a PURE READ of world_state["settlements"]; it draws nothing for a run
+    with no settlements, so the default v1 picture is unchanged.
     """
     state = world_state if state is None else state
     size = state["size"]
     cells = [["." for _ in range(size)] for _ in range(size)]
 
+    # M2.1: settlement centres first (lowest priority — food/treasure/agents overwrite).
+    for s in state.get("settlements", {}).values():
+        sx, sy = s["center"]
+        cells[sy][sx] = "#"
     for fx, fy in state["food"]:
         cells[fy][fx] = "*"
     for t in state["treasures"]:

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import alliance
+import settlement
 import trust
 import world
 from personality import Personality
@@ -133,6 +134,11 @@ def get_personality(agent: Any) -> Personality:
 # --- Geometry / navigation helpers ----------------------------------------
 def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _chebyshev(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """King-move distance — the radius the M2.1 home-pull measures against."""
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
 def _nearest(pos: tuple[int, int],
@@ -402,6 +408,23 @@ def choose_action(agent: Any, strat: Strategy | None,
                         and not alliance.are_allied(agent, other)
                         and _will_ally(agent, other, pers)):
                     return f"ally_with_{name}", f"propose alliance to {name}"
+
+    # 3b. Home-pull (M2.1): a SETTLED, fed agent drifts back toward its settlement
+    # centre once it has wandered beyond settlement.HOME_RADIUS, instead of roaming
+    # freely — this is what makes a settlement a PLACE its members stay near. It sits
+    # AFTER the survival override and the eat-underfoot check above, so a starving
+    # member still forages outward (survival always wins) and an agent on food still
+    # eats; and after alliance accept/propose, so a member already beside a willing
+    # partner can still seal a bond. It is INERT for a nomad (settlement is None) and
+    # when the system is off (settlements never form), so a v1 run is byte-identical.
+    sid = getattr(agent, "settlement", None)
+    if sid is not None:
+        record = state.get("settlements", {}).get(sid)
+        if record is not None:
+            center = record["center"]
+            if _chebyshev(pos, center) > settlement.HOME_RADIUS:
+                return (_navigate(s, _dirs_toward(pos, center)),
+                        "home-pull: drift toward settlement")
 
     # 4. Cautious agents conserve near a food cache when not yet hungry.
     if pers.dominant == "caution" and agent.hunger < pers.comfort and _near_food(pos, state):
