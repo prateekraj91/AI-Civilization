@@ -352,6 +352,11 @@ def choose_action(agent: Any, strat: Strategy | None,
 
     # 2. Survival override — ignore strategy when close to starving.
     if agent.hunger >= SURVIVAL_HUNGER:
+        # M1.3 tools: a tool-user FORAGES adjacent food in place (reach) rather than
+        # spending a turn stepping onto it — a real edge under survival pressure. Gated
+        # on knowing 'tools', so a v1 agent (empty knowledge) behaves exactly as before.
+        if "tools" in getattr(agent, "knowledge", ()) and _adjacent_food_dir(s) is not None:
+            return "eat", "survival: forage adjacent food (tools)"
         # 2a. Prefer free, unowned food adjacent to us.
         d = _adjacent_food_dir(s)
         if d:

@@ -99,8 +99,8 @@ def demo_a_diffusion_curve() -> None:
     print("=" * 70)
     agents = _build(100, grid=main.scaled_grid_size(100), seed=11, isolate_last=True)
     loner = agents[-1]
-    knowledge.grant(world_state, agents[0], "fire", turn=0)   # ONE seed knower
-    curve = _run(agents, turns=40, budget=8, sample_item="fire", isolate=loner, seed=11)
+    knowledge.grant(world_state, agents[0], "song", turn=0)   # ONE seed knower
+    curve = _run(agents, turns=40, budget=8, sample_item="song", isolate=loner, seed=11)
 
     print("  turn | knowers | % of living")
     print("  " + "-" * 32)
@@ -115,7 +115,7 @@ def demo_a_diffusion_curve() -> None:
     assert last[1] > 10, f"knowledge barely spread ({last[1]} knowers) — diffusion too weak"
     assert last[1] > 2 * early[1], "spread should be GRADUAL (still climbing late, not instant)"
     assert last[1] < last[2], "everyone knows it — should not saturate to 100% on a contact graph"
-    assert "fire" not in loner.knowledge, "the isolated agent must never learn it"
+    assert "song" not in loner.knowledge, "the isolated agent must never learn it"
     peak_pct = 100 * last[1] / max(last[2], 1)
     print(f"\n  1 -> {last[1]} knowers ({peak_pct:.0f}% of living) over 40 turns; the walled-off "
           f"loner {loner.name} never learned it; spread is gradual, not instant.  PASS\n")
@@ -128,7 +128,7 @@ def _adoption_rate(personality: str, trust: int, trials: int = 4000) -> float:
     learner = Agent(name="L", personality=personality)
     world.place_agent(teacher, 2, 2)
     world.place_agent(learner, 2, 3)
-    teacher.knowledge.add("fire")
+    teacher.knowledge.add("song")
     if trust:
         learner.relationships["T"] = {"trust": trust, "interactions": 1, "grudge": trust < 0}
     rng = random.Random(99)
@@ -176,7 +176,7 @@ def demo_c_zero_llm_cost() -> None:
     # fully-seeded world through many diffuse() passes and assert NOT ONE model call.
     agents = _build(200, grid=main.scaled_grid_size(200), seed=7)
     for a in agents[:20]:
-        knowledge.grant(world_state, a, "fire", turn=0)
+        knowledge.grant(world_state, a, "song", turn=0)
     llm.reset_call_stats()
     with contextlib.redirect_stdout(io.StringIO()):
         for turn in range(1, 31):
@@ -195,7 +195,7 @@ def demo_c_zero_llm_cost() -> None:
         def go(seed_it):
             agents = _build(n, grid=main.scaled_grid_size(n), seed=7)
             if seed_it:
-                knowledge.grant(world_state, agents[0], "fire", turn=0)
+                knowledge.grant(world_state, agents[0], "song", turn=0)
             llm.reset_call_stats()
             _run(agents, turns=30, budget=8, seed=7)
             return llm.get_call_stats()["strategy"]

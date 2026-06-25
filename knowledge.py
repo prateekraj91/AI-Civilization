@@ -85,6 +85,26 @@ DISCOVERY_PERSONALITY: dict[str, float] = {
 # lines up with where the executor's survival override already takes over.
 DISCOVERY_HUNGER_CUTOFF = SURVIVAL_HUNGER
 
+# --- Farming production (M1.2 item -> M1.3 world effect) --------------------
+# Farming is the headline M1.3 effect: a KNOWER produces food INTO world_state, so a
+# population that knows it can manufacture supply instead of only racing for a fixed,
+# scarce amount — the moment what agents know changes what the world IS. It rides the
+# existing food economy (it just adds food tiles the normal perception/eat loop then
+# uses), never a scripted "farmers win".
+#
+# Gated THREE ways so it is a consequence, not a cheat: (1) the agent must KNOW
+# 'farming'; (2) it must be fed enough to work the land (a starving farmer forages, it
+# does not farm) — so a population still has to survive the early scramble before
+# farming can stabilise it; and (3) farmers STABILISE rather than hoard — once the
+# world already holds FARM_FOOD_PER_CAPITA food per living agent, they rest, so the
+# supply plateaus at a sustainable abundance instead of growing without bound. The net
+# effect: a knowing population maintains a steady, reachable food supply (each tile
+# grown right next to the farmer, where scattered respawn never reaches) and stops
+# starving — survival improves as a CONSEQUENCE of the economy, never a scripted win.
+FARM_YIELD = 0.5                # per fed-farmer-per-turn chance of growing one food tile
+FARM_HUNGER_CUTOFF = SURVIVAL_HUNGER  # a farmer hungrier than this is busy surviving
+FARM_FOOD_PER_CAPITA = 2.0      # farmers rest once the world holds this much food/agent
+
 # --- Adoption model --------------------------------------------------------
 # Base per-contact-per-turn chance a non-knower adopts an item from an adjacent
 # knower, BEFORE trust/personality shaping. Tuned so a single seed knower spreads
@@ -242,6 +262,57 @@ def discover(state: dict[str, Any], turn: int,
                 state["events"].append(f"turn {turn}: {agent.name} discovered '{item}'")
                 discoveries.append((agent.name, item))
     return discoveries
+
+
+def _empty_adjacent_cell(agent: Any, state: dict[str, Any]) -> "tuple[int, int] | None":
+    """First adjacent N/S/E/W cell that is empty ground (no wall/agent/food), or None.
+
+    Where a farmer can put a new food tile: in bounds, unoccupied, not already food.
+    Fixed offset order -> deterministic placement -> reproducible.
+    """
+    x, y = agent.position
+    size = state["size"]
+    food = state["food"]
+    occ = state.get("occupancy", {})
+    for dx, dy in world._ADJ_OFFSETS:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < size and 0 <= ny < size and (nx, ny) not in occ and (nx, ny) not in food:
+            return (nx, ny)
+    return None
+
+
+def farm(state: dict[str, Any], turn: int,
+         rng: "random.Random | None" = None) -> list[tuple[str, tuple[int, int]]]:
+    """Let agents who KNOW 'farming' PRODUCE food into world_state (M1.3 headline).
+
+    Each fed farmer (knows 'farming' AND hunger < FARM_HUNGER_CUTOFF) has a FARM_YIELD
+    chance of growing one food tile on an empty neighbouring cell — adding to the food
+    supply the existing perception/eat loop already uses, so survival improves as a
+    measured CONSEQUENCE of the food economy shifting, not a scripted win. Returns the
+    (farmer, cell) productions. A no-op drawing ZERO rng when nobody is a fed farmer —
+    so a run with no farming knowledge (incl. every v1 run) is byte-identical.
+
+    Cost: O(agents) to find farmers; ZERO LLM calls.
+    """
+    farmers = [a for a in state["agents"]
+               if a.alive and "farming" in a.knowledge and a.hunger < FARM_HUNGER_CUTOFF]
+    if not farmers:
+        return []  # v1 / no fed farmers -> no-op, zero rng
+    # Stabiliser, not hoarder: once the world already holds enough food per living
+    # agent, farmers rest. Bounds the supply at a sustainable abundance (no runaway).
+    living = sum(1 for a in state["agents"] if a.alive)
+    if len(state["food"]) >= FARM_FOOD_PER_CAPITA * living:
+        return []
+    draw = (rng or random).random
+    produced: list[tuple[str, tuple[int, int]]] = []
+    for agent in farmers:  # world_state["agents"] order is stable
+        if draw() < FARM_YIELD:
+            cell = _empty_adjacent_cell(agent, state)
+            if cell is not None:
+                world.place_food(cell[0], cell[1], state)
+                world.record_memory(agent, "Tended crops")
+                produced.append((agent.name, cell))
+    return produced
 
 
 def grant(state: dict[str, Any], agent: Any, item: str, turn: int) -> None:

@@ -719,6 +719,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # anything, so a v1 run with no seeded knowledge is byte-identical.
         knowledge.diffuse(world_state, turn)
 
+        # M1.3: fed farmers PRODUCE food into world_state (the headline tech effect),
+        # changing the food economy survival rides on. No-op drawing no RNG when nobody
+        # is a fed farmer, so a v1 / no-farming run is byte-identical.
+        knowledge.farm(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:

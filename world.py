@@ -90,6 +90,19 @@ EAT_RELIEF = 7         # hunger removed by eating one food (clamped at 0)
                        # fewer turns scrambling and more turns interacting.
                        # (Real scarcity is deferred to Day 11.)
 
+# --- V2 M1.3: technology effects on the hunger/food step ------------------
+# A KNOWN tech changes survival outcomes through the existing eat path — gated on
+# the item being in agent.knowledge (a plain state read; no import, so world stays
+# the lowest layer). An agent that does not know the tech gets no benefit, so a v1
+# agent (empty knowledge) eats exactly as before — byte-identical.
+#   fire  -> cooking: a cooked meal is worth more, so eating relieves FIRE_EAT_BONUS
+#            extra hunger (a fire-knower stretches the same scarce food further).
+#   tools -> reach: a tool-user can FORAGE food from an adjacent tile, not only the
+#            tile underfoot (see execute_action + strategy's survival override).
+# (farming — producing food into the world — lives in knowledge.farm, the food-supply
+#  side, since it adds to world_state rather than changing how an agent eats.)
+FIRE_EAT_BONUS = 4     # extra hunger relief per meal when the eater knows 'fire'
+
 # --- Memory constants (Day 5, raised Day 8) ------------------------------
 MEMORY_LIMIT = 20      # an agent retains only its most recent N memories;
                        # older memories are discarded oldest-first.
@@ -175,6 +188,44 @@ def living_agents_by_position(
 def agent_at(x: int, y: int, state: dict[str, Any] | None = None) -> Any | None:
     """Return the living agent standing at (x, y), or None if the cell is free."""
     return living_agents_by_position(state).get((x, y))
+
+
+# N/S/E/W offsets in a FIXED order, so adjacency walks are deterministic (M1.3).
+_ADJ_OFFSETS = ((0, -1), (0, 1), (1, 0), (-1, 0))
+
+
+def _adjacent_free_food(agent: Any, state: dict[str, Any]) -> tuple[int, int] | None:
+    """First adjacent N/S/E/W tile holding FREE food (no agent on it), or None (M1.3).
+
+    The reach a 'tools'-knower forages with: it eats from a neighbouring tile without
+    stepping onto it. Free-only (skips a tile another agent stands on) so foraging
+    never overlaps the steal mechanic. Deterministic order -> reproducible.
+    """
+    x, y = agent.position
+    food = state["food"]
+    occ = state.get("occupancy", {})
+    for dx, dy in _ADJ_OFFSETS:
+        cell = (x + dx, y + dy)
+        if cell in food and cell not in occ:
+            return cell
+    return None
+
+
+def place_food(x: int, y: int, state: dict[str, Any] | None = None) -> bool:
+    """Add one food tile at (x, y) (M1.3 farming production). Returns True if added.
+
+    The single-cell food adder behind knowledge.farm: keeps the world mutation in the
+    world layer (food list + grid stay in sync, source of truth) so callers never poke
+    the grid directly. A no-op if food is already there; paints the grid FOOD unless a
+    living agent stands on the cell (then the cell reverts to FOOD when it steps off).
+    """
+    state = world_state if state is None else state
+    if (x, y) in state["food"]:
+        return False
+    state["food"].append((x, y))
+    if state["grid"][y][x] != AGENT:
+        state["grid"][y][x] = FOOD
+    return True
 
 
 def treasure_at(pos: tuple[int, int],
@@ -526,11 +577,25 @@ def execute_action(agent: Any, action: str) -> str:
             agent.inventory.append({"treasure": treasure["value"]})
             record_memory(agent, f"Claimed treasure (value {treasure['value']})")
             return f"{agent.name} claimed a treasure (value {treasure['value']})!"
+        # M1.3 fire (cooking): a fire-knower extracts more from the same meal.
+        know = getattr(agent, "knowledge", ())
+        relief = EAT_RELIEF + (FIRE_EAT_BONUS if "fire" in know else 0)
         if agent.position in world_state["food"]:
             world_state["food"].remove(agent.position)
-            agent.hunger = max(0, agent.hunger - EAT_RELIEF)
+            agent.hunger = max(0, agent.hunger - relief)
             record_memory(agent, "Ate food")
             return f"{agent.name} ate food."
+        # M1.3 tools (reach): a tool-user can forage food from an ADJACENT free tile,
+        # not only the one underfoot — a real foraging edge, knowers only.
+        if "tools" in know:
+            cell = _adjacent_free_food(agent, world_state)
+            if cell is not None:
+                world_state["food"].remove(cell)
+                cx, cy = cell
+                world_state["grid"][cy][cx] = EMPTY
+                agent.hunger = max(0, agent.hunger - relief)
+                record_memory(agent, "Foraged nearby food with tools")
+                return f"{agent.name} foraged nearby food with tools."
         record_memory(agent, "Tried to eat but found no food")
         return f"{agent.name} tried to eat but there was no food here."
 

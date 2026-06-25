@@ -905,6 +905,130 @@ def test_empty_tech_tree_run_is_byte_identical_to_v1() -> None:
     print("PASS test_empty_tech_tree_run_is_byte_identical_to_v1")
 
 
+# --- Technology changes the world (M1.3) ----------------------------------
+def test_fire_knower_eats_more_unknown_does_not() -> None:
+    """A known tech changes the knower's outcome; an unknown tech does not (fire)."""
+    _fresh_world()
+    cook = _agent("Cook", "cautious and territorial", (1, 1), hunger=8)
+    raw = _agent("Raw", "cautious and territorial", (5, 5), hunger=8)
+    cook.knowledge.add("fire")
+    world.place_food(1, 1)
+    world.place_food(5, 5)
+    execute_action(cook, "eat")
+    execute_action(raw, "eat")
+    assert raw.hunger == max(0, 8 - world.EAT_RELIEF)                     # unaffected
+    assert cook.hunger == max(0, 8 - world.EAT_RELIEF - world.FIRE_EAT_BONUS)  # cooked: more
+    assert cook.hunger < raw.hunger
+    print("PASS test_fire_knower_eats_more_unknown_does_not")
+
+
+def test_tools_knower_forages_adjacent_unknown_cannot() -> None:
+    """tools lets a knower eat from an adjacent tile; a non-knower can't reach it."""
+    _fresh_world()
+    handy = _agent("Handy", "cautious and territorial", (1, 1), hunger=8)
+    bare = _agent("Bare", "cautious and territorial", (5, 5), hunger=8)
+    handy.knowledge.add("tools")
+    world.place_food(1, 2)   # adjacent to Handy, not underfoot
+    world.place_food(5, 6)   # adjacent to Bare, not underfoot
+    r_handy = execute_action(handy, "eat")
+    r_bare = execute_action(bare, "eat")
+    assert "foraged" in r_handy and handy.hunger < 8 and (1, 2) not in world_state["food"]
+    assert "no food" in r_bare and bare.hunger == 8 and (5, 6) in world_state["food"]
+    print("PASS test_tools_knower_forages_adjacent_unknown_cannot")
+
+
+def test_farming_knower_produces_food_unknown_does_not() -> None:
+    """Only an agent that KNOWS farming produces food into world_state."""
+    import knowledge
+    _fresh_world()
+    farmer = _agent("Farmer", "cautious and territorial", (1, 1), hunger=0)
+    idle = _agent("Idle", "cautious and territorial", (6, 6), hunger=0)
+    farmer.knowledge.add("farming")
+    before = len(world_state["food"])
+    rng = random.Random(0)
+    for turn in range(1, 20):
+        knowledge.farm(world_state, turn, rng=rng)
+    assert len(world_state["food"]) > before, "the knower should have produced food"
+    assert any("Tended crops" in m for m in farmer.memory)
+    assert not any("Tended crops" in m for m in idle.memory), "non-knower must not farm"
+    # produced tiles sit next to the FARMER only.
+    assert all(abs(fx - 1) + abs(fy - 1) <= 1 for fx, fy in world_state["food"])
+    print("PASS test_farming_knower_produces_food_unknown_does_not")
+
+
+def test_farming_population_outlasts_no_farming_control() -> None:
+    """A farming population keeps more food and survives better than a matched control."""
+    import knowledge
+
+    def run(farmers):
+        random.seed(5)
+        grid = main.scaled_grid_size(40)
+        create_world(size=grid)
+        cells = [(x, y) for x in range(grid) for y in range(grid)]
+        random.Random(5).shuffle(cells)
+        agents = []
+        for i in range(40):
+            a = Agent(name=f"A{i:02d}", personality=("curious and adventurous",
+                      "cautious and territorial", "friendly and outgoing",
+                      "independent and competitive")[i % 4], cognition="heuristic")
+            place_agent(a, *cells[i])
+            agents.append(a)
+        if farmers:
+            for a in agents:
+                a.knowledge.add("farming")
+        cfg = main.scaled_food_cfg(40)
+        spawn_food(cfg["initial"])
+        strategies, survived, counters, tenure = {}, {}, {"agent_turns": 0}, {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            for turn in range(1, 45):
+                world_state["turn"] = turn
+                import cognition
+                cognition.update_tiers(world_state, turn, 8, tenure)
+                for a in [x for x in world_state["agents"] if x.alive]:
+                    main.run_agent_turn(a, turn, strategies, survived, counters)
+                knowledge.farm(world_state, turn)
+                main._scaled_respawn_food(turn, cfg)
+        return sum(1 for a in agents if a.alive)
+
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        control = run(False)
+        farming = run(True)
+    finally:
+        llm.PROVIDER = saved
+    assert farming > control, f"farming ({farming}) should beat control ({control})"
+    print(f"PASS test_farming_population_outlasts_no_farming_control "
+          f"(control {control}/40, farming {farming}/40)")
+
+
+def test_farming_adds_zero_llm_calls_and_empty_is_v1() -> None:
+    """Farming production makes no model calls; a no-farmer farm draws no RNG (v1 safe)."""
+    import knowledge
+    _fresh_world()
+    for i in range(5):
+        ag = _agent(f"F{i}", "cautious and territorial", (i, 0), hunger=0)
+        ag.knowledge.add("farming")
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        llm.reset_call_stats()
+        rng = random.Random(1)
+        for turn in range(1, 20):
+            knowledge.farm(world_state, turn, rng=rng)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+
+    _fresh_world()
+    _agent("Lonely", "curious and adventurous", (1, 1), hunger=0)  # knows nothing
+    st0 = random.getstate()
+    knowledge.farm(world_state, 1)
+    assert random.getstate() == st0, "no-farmer farm consumed RNG"
+    print("PASS test_farming_adds_zero_llm_calls_and_empty_is_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -1981,6 +2105,11 @@ def main_runner() -> None:
         test_starving_agent_does_not_invent,
         test_discovery_adds_zero_llm_calls,
         test_empty_tech_tree_run_is_byte_identical_to_v1,
+        test_fire_knower_eats_more_unknown_does_not,
+        test_tools_knower_forages_adjacent_unknown_cannot,
+        test_farming_knower_produces_food_unknown_does_not,
+        test_farming_population_outlasts_no_farming_control,
+        test_farming_adds_zero_llm_calls_and_empty_is_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,
