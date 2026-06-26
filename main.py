@@ -38,6 +38,7 @@ import economy
 import god_mode
 import heuristic
 import knowledge
+import labor
 import population
 import settlement
 import storage
@@ -404,6 +405,17 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                                       if s in economy.PRODUCER_SKILLS)) or "(none)"
             print(f"Money:           {agent.money:.1f}")
             print(f"Producer skills: {skills}")
+        # M3.1: read-only employment overlay — printed ONLY when wage labor is on, so a default
+        # run's summary is byte-identical to v1. Pure read of world_state["employments"].
+        if world_state.get("labor_on"):
+            emps = world_state.get("employments", [])
+            as_boss = [l for l in emps if l["employer"] == agent.name]
+            as_worker = next((l for l in emps if l["worker"] == agent.name), None)
+            if as_boss:
+                workers = ", ".join(sorted(l["worker"] for l in as_boss))
+                print(f"Employs:         {len(as_boss)} ({workers})")
+            elif as_worker is not None:
+                print(f"Employed by:     {as_worker['employer']} at wage {as_worker['wage']:.2f}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -611,6 +623,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "implies --settlements + --storage. Zero LLM/RNG. Off by default -> v1 identical. "
              "(Wage-labor and minted/fiat money are out of scope, deferred to Phase 3.)")
     p.add_argument(
+        "--labor", action="store_true",
+        help="V2 M3.1: enable WAGE LABOR — the first institution (opens Phase 3). Rich settled "
+             "producers EMPLOY poor, unskilled have-nots at a wage that EMERGES from the labor "
+             "market (scarce labor -> high wage; an abundant desperate pool -> near-subsistence "
+             "exploitation); the worker's output accrues to the employer, so inequality "
+             "COMPOUNDS over time. Roles fall out of existing wealth/skill — nothing is assigned. "
+             "Implies --economy (and so --settlements --storage). Zero LLM/RNG. Off by default -> "
+             "v1 identical. (Governance/law/revolt and fiat money are out of scope, Phase 3+.)")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -649,7 +670,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    tech_tree: "dict | None" = None,
                    settlements: bool = False,
                    storage_on: bool = False,
-                   economy_on: bool = False) -> None:
+                   economy_on: bool = False,
+                   labor_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -703,6 +725,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # in diffuse + money-redemption in the survival buffer). False (default) -> none fire ->
     # the run is byte-identical to v1.
     world_state["economy_on"] = economy_on
+    # M3.1: the wage-labor institution flag. False (default) -> labor.update never called and no
+    # employment links form -> byte-identical to v1.
+    world_state["labor_on"] = labor_on
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -824,6 +849,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             economy.mint(world_state, turn)
             economy.trade(world_state, turn)
 
+        # M3.1: wage labor — the first INSTITUTION. Rich producers EMPLOY poor have-nots at an
+        # emergent wage; the worker's output accrues to the employer, who pays the wage, so the
+        # rich-poor gap COMPOUNDS (the intended disequilibrium). Runs AFTER trade/mint so this
+        # turn's wealth/skill state drives who employs whom. Zero LLM/RNG; gated on the opt-in
+        # flag, so a default run never calls it (byte-identical to v1).
+        if labor_on:
+            labor.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -943,10 +976,12 @@ def main(argv: list[str] | None = None) -> None:
     # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
     tech_tree = knowledge.TECH_TREE if args.tech_tree else None
 
-    # M2.3: the economy builds ON settlement + storage, so --economy implies both (a trader
-    # must be a settled agent with a stockpile to mint from). Each can still be enabled alone.
-    settlements_on = args.settlements or args.economy
-    storage_on = args.storage or args.economy
+    # M2.3/M3.1: the economy builds ON settlement + storage; wage labor (M3.1) builds ON the
+    # economy. So --labor implies --economy, and --economy implies --settlements + --storage (a
+    # trader/employer must be a settled agent with a stockpile). Each can still be enabled alone.
+    economy_on = args.economy or args.labor
+    settlements_on = args.settlements or economy_on
+    storage_on = args.storage or economy_on
 
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
     # 'heuristic' for a large cast (the focal budget promotes the interesting few).
@@ -982,7 +1017,8 @@ def main(argv: list[str] | None = None) -> None:
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
-                           storage_on=storage_on, economy_on=args.economy)
+                           storage_on=storage_on, economy_on=economy_on,
+                           labor_on=args.labor)
         finally:
             sys.stdout = original
             log_file.close()
@@ -998,7 +1034,8 @@ def main(argv: list[str] | None = None) -> None:
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
-                           storage_on=storage_on, economy_on=args.economy)
+                           storage_on=storage_on, economy_on=economy_on,
+                           labor_on=args.labor)
 
 
 if __name__ == "__main__":

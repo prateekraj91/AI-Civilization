@@ -1550,6 +1550,260 @@ def test_economy_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_economy_off_run_is_byte_identical_to_v1")
 
 
+# --- Wage labor: the first institution (V2 M3.1, opens Phase 3) ------------
+def test_wage_varies_with_labor_supply_and_desperation_not_fixed() -> None:
+    """The SAME work pays DIFFERENTLY as labor supply + worker desperation change (emergence)."""
+    import labor
+    secure = Agent(name="W", personality="x"); secure.hunger = 0
+    tight = labor.market_tightness(openings=10, workers=1)   # scarce labor -> worker's market
+    slack = labor.market_tightness(openings=1, workers=10)   # abundant labor -> employer's market
+    w_scarce = labor.offered_wage(secure, tight)
+    w_abundant = labor.offered_wage(secure, slack)
+    assert w_scarce > w_abundant, "the same worker must earn MORE when labor is scarce"
+    # Desperation discounts: a starving worker accepts less in the SAME tight market.
+    starving = Agent(name="S", personality="x"); starving.hunger = world.HUNGER_MAX
+    w_desperate = labor.offered_wage(starving, tight)
+    assert w_desperate < w_scarce, "a desperate worker accepts a lower wage for the same market"
+    # NOT a fixed wage: the one job yields at least three distinct prices.
+    assert len({round(w, 4) for w in (w_scarce, w_abundant, w_desperate)}) == 3
+    # Always bounded: employer profits (< output) and worker survives (>= subsistence).
+    for w in (w_scarce, w_abundant, w_desperate):
+        assert labor.SUBSISTENCE_WAGE <= w < labor.LABOR_OUTPUT, w
+    print("PASS test_wage_varies_with_labor_supply_and_desperation_not_fixed")
+
+
+def test_wage_reaches_subsistence_under_glut_and_desperation_never_below() -> None:
+    """Under a labor glut + desperation the wage bottoms at SUBSISTENCE — but never below it."""
+    import labor
+    # Deep employer's market + a starving worker -> leverage ~0 -> exactly subsistence.
+    glut = labor.market_tightness(openings=1, workers=200)
+    starving = Agent(name="S", personality="x"); starving.hunger = world.HUNGER_MAX
+    w_exploit = labor.offered_wage(starving, glut)
+    assert abs(w_exploit - labor.SUBSISTENCE_WAGE) < 1e-9, w_exploit
+    # A glut ALONE (even a fed worker) drives the wage to ~subsistence — exploitation emerges
+    # from supply, not only from hunger.
+    fed = Agent(name="F", personality="x"); fed.hunger = 0
+    assert labor.offered_wage(fed, glut) < labor.SUBSISTENCE_WAGE + 0.05
+    # The SAME work pays well ABOVE subsistence when labor is scarce + the worker secure.
+    scarce = labor.market_tightness(openings=200, workers=1)
+    assert labor.offered_wage(fed, scarce) > 1.5
+    # Never below the survival floor anywhere in the (tightness, desperation) space.
+    for op, wk in ((1, 500), (1, 1), (500, 1)):
+        for h in (0, 5, world.HUNGER_MAX):
+            a = Agent(name="A", personality="x"); a.hunger = h
+            assert labor.offered_wage(a, labor.market_tightness(op, wk)) >= labor.SUBSISTENCE_WAGE
+    print("PASS test_wage_reaches_subsistence_under_glut_and_desperation_never_below")
+
+
+def test_employment_output_flows_to_employer_wage_to_worker() -> None:
+    """Each employed turn: the worker's output accrues to the EMPLOYER; the wage flows to the worker."""
+    import labor
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True
+    world_state["employments"] = []
+    emp = _agent("Boss", "independent and competitive", (3, 3), hunger=0)
+    emp.settlement = "S001"; emp.knowledge.add("farming"); emp.money = 10.0
+    wkr = _agent("Hand", "cautious and territorial", (3, 4), hunger=4)
+    wkr.settlement = "S001"; wkr.money = 0.0
+    wage = 1.5
+    world_state["employments"].append(
+        {"employer": "Boss", "worker": "Hand", "wage": wage, "since": 0})
+    emp_w0, wkr_w0 = emp.money + emp.stockpile, wkr.money + wkr.stockpile
+    labor.update(world_state, 1)
+    # Output (food-claim) accrued to the EMPLOYER's stockpile; the employer paid the wage out.
+    assert emp.stockpile == labor.LABOR_OUTPUT, emp.stockpile
+    assert emp.money == 10.0 - wage, emp.money
+    # Net: employer +(output - wage); worker +(wage - cost of living) — small but POSITIVE, and fed.
+    assert (emp.money + emp.stockpile) - emp_w0 == labor.LABOR_OUTPUT - wage
+    assert (wkr.money + wkr.stockpile) - wkr_w0 == wage - labor.COST_OF_LIVING
+    assert wage - labor.COST_OF_LIVING > 0, "above subsistence here -> the worker gains net"
+    assert wkr.hunger < 4, "the wage fed the worker (relieved hunger) -> employed beats starving"
+    # The relationship PERSISTS into world_state (an institution, not a one-shot trade).
+    assert any(l["worker"] == "Hand" for l in world_state["employments"])
+    print("PASS test_employment_output_flows_to_employer_wage_to_worker")
+
+
+def test_agent_without_capital_never_employs() -> None:
+    """An agent with no capital can never be an employer, even with a skill + a willing worker."""
+    import labor
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True
+    world_state["employments"] = []
+    broke = _agent("Skilled", "independent and competitive", (3, 3), hunger=0)
+    broke.settlement = "S001"; broke.knowledge.add("farming")
+    broke.money = 0.0; broke.stockpile = 0.0          # wealth 0 < EMPLOYER_MIN_CAPITAL
+    _w = _agent("Hand", "cautious and territorial", (3, 4), hunger=5); _w.settlement = "S001"
+    assert not labor.is_employer(broke), "no capital -> not an employer"
+    assert labor.capacity(broke) == 0
+    labor.update(world_state, 1)
+    assert world_state["employments"] == [], "a capital-less agent never hires"
+    print("PASS test_agent_without_capital_never_employs")
+
+
+def test_roles_emerge_from_wealth_and_skill_not_assigned() -> None:
+    """Employer/worker are pure READS of wealth+skill — change the wealth, the role changes."""
+    import labor
+    _fresh_world(); create_world(size=8)
+    rich_skilled = _agent("Rich", "x", (2, 2), hunger=0)
+    rich_skilled.settlement = "S001"; rich_skilled.knowledge.add("farming"); rich_skilled.money = 20.0
+    poor_unskilled = _agent("Poor", "x", (2, 3), hunger=0); poor_unskilled.settlement = "S001"
+    rich_unskilled = _agent("Wealthy", "x", (2, 4), hunger=0)
+    rich_unskilled.settlement = "S001"; rich_unskilled.money = 20.0
+    poor_skilled = _agent("Crafty", "x", (2, 5), hunger=0)
+    poor_skilled.settlement = "S001"; poor_skilled.knowledge.add("hunting")
+    # Rich + skilled -> employer (and not a worker); poor + unskilled -> worker (and not employer).
+    assert labor.is_employer(rich_skilled) and not labor.is_worker(rich_skilled)
+    assert labor.is_worker(poor_unskilled) and not labor.is_employer(poor_unskilled)
+    # Wealthy-but-unskilled: independent means -> not a worker; no skill -> not an employer.
+    assert not labor.is_worker(rich_unskilled) and not labor.is_employer(rich_unskilled)
+    # Poor-but-skilled: owns its means -> never a wage worker; too poor -> can't employ.
+    assert not labor.is_worker(poor_skilled) and not labor.is_employer(poor_skilled)
+    # Emergence, not assignment: strip the employer's capital and the role evaporates — no flag.
+    rich_skilled.money = 0.0
+    assert not labor.is_employer(rich_skilled), "role is a pure read of state, not a set flag"
+    print("PASS test_roles_emerge_from_wealth_and_skill_not_assigned")
+
+
+def test_employment_persists_across_turns_and_is_mutually_entered() -> None:
+    """A formed link is the SAME relationship across turns; the worker is better off employed."""
+    import labor
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True
+    world_state["employments"] = []
+    emp = _agent("Boss", "independent and competitive", (3, 3), hunger=0)
+    emp.settlement = "S001"; emp.knowledge.add("farming"); emp.money = 50.0
+    wkr = _agent("Hand", "cautious and territorial", (3, 4), hunger=6)
+    wkr.settlement = "S001"; wkr.money = 0.0
+    # No link yet: update FORMS one (roles + wage emerge from state), then it persists.
+    labor.update(world_state, 1)
+    assert len(world_state["employments"]) == 1, "an employer + a poor worker should pair"
+    link = world_state["employments"][0]
+    assert link["employer"] == "Boss" and link["worker"] == "Hand" and link["since"] == 1
+    # The SAME link (since turn 1) survives across many turns — not re-created one-shot each turn.
+    for t in range(2, 9):
+        labor.update(world_state, t)
+        assert any(l["worker"] == "Hand" and l["since"] == 1
+                   for l in world_state["employments"]), "the link must persist across turns"
+    # Mutually entered: the worker survived (fed by its wage) and ACCUMULATED net — it gained by
+    # taking the wage (else it would not have). Better off employed than starving.
+    assert wkr.alive and wkr.hunger < world.HUNGER_MAX
+    assert wkr.money + wkr.stockpile > 0.0, "the worker is net better off for being employed"
+    print("PASS test_employment_persists_across_turns_and_is_mutually_entered")
+
+
+def test_worker_quits_when_self_sufficient_and_broke_employer_lets_go() -> None:
+    """Lifecycle: a worker that gains means QUITS; an employer that loses its capital lets go."""
+    import labor
+    # QUIT (upward mobility): the worker gains a producer skill -> self-sufficient -> link ends.
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True
+    emp = _agent("Boss", "x", (3, 3), hunger=0)
+    emp.settlement = "S001"; emp.knowledge.add("farming"); emp.money = 50.0
+    wkr = _agent("Hand", "x", (3, 4), hunger=2); wkr.settlement = "S001"; wkr.money = 0.0
+    world_state["employments"] = [{"employer": "Boss", "worker": "Hand", "wage": 1.2, "since": 0}]
+    wkr.knowledge.add("hunting")           # acquired its own means of production
+    ev = labor.update(world_state, 1)
+    assert all(l["worker"] != "Hand" for l in world_state["employments"]), "self-sufficient -> quits"
+    assert any("quit" in e for e in ev), ev
+    # LET GO: an employer whose capital falls below the threshold can no longer employ.
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True
+    boss = _agent("Boss", "x", (3, 3), hunger=0)
+    boss.settlement = "S001"; boss.knowledge.add("farming"); boss.money = 2.0  # < EMPLOYER_MIN_CAPITAL
+    hand = _agent("Hand", "x", (3, 4), hunger=2); hand.settlement = "S001"; hand.money = 0.0
+    world_state["employments"] = [{"employer": "Boss", "worker": "Hand", "wage": 1.0, "since": 0}]
+    ev = labor.update(world_state, 2)
+    assert all(l["worker"] != "Hand" for l in world_state["employments"]), "broke employer lets go"
+    assert any("let" in e or "laid off" in e for e in ev), ev
+    print("PASS test_worker_quits_when_self_sufficient_and_broke_employer_lets_go")
+
+
+def _wealth_gini(agents) -> float:
+    """Gini of liquid wealth (money + stockpile): 0 = equal, ->1 = unequal."""
+    xs = sorted(a.money + a.stockpile for a in agents)
+    n, s = len(xs), sum(a.money + a.stockpile for a in agents)
+    if n == 0 or s == 0:
+        return 0.0
+    cum = sum((i + 1) * x for i, x in enumerate(xs))
+    return (2 * cum) / (n * s) - (n + 1) / n
+
+
+def test_inequality_compounds_with_wage_labor_on_vs_off() -> None:
+    """HEADLINE: the wealth gap RISES over time with wage labor ON, stays FLAT with it OFF."""
+    import labor
+
+    def build():
+        _fresh_world(); create_world(size=12)
+        world_state["economy_on"] = True; world_state["employments"] = []
+        boss = _agent("Boss", "independent and competitive", (5, 5), hunger=0)
+        boss.settlement = "S001"; boss.knowledge.add("farming"); boss.money = 20.0
+        ws = []
+        for i, pos in enumerate([(4, 5), (6, 5), (5, 4), (5, 6), (4, 4)]):
+            w = _agent(f"W{i}", "cautious and territorial", pos, hunger=7)
+            w.settlement = "S001"; w.money = 4.0   # poor (< WORKER_MAX_WEALTH), desperate
+            ws.append(w)
+        return [boss] + ws
+
+    # ON: run the institution each turn.
+    cast_on = build(); world_state["labor_on"] = True
+    curve_on = [_wealth_gini(cast_on)]
+    for t in range(1, 16):
+        labor.update(world_state, t)
+        curve_on.append(_wealth_gini(cast_on))
+    # OFF: identical cast, never invoke the institution (wealth is static).
+    cast_off = build(); world_state["labor_on"] = False
+    curve_off = [_wealth_gini(cast_off) for _ in range(16)]
+
+    assert curve_on[-1] > curve_on[0] + 0.03, f"inequality must RISE with wage labor on: {curve_on}"
+    assert curve_on[-1] > curve_off[-1] + 0.03, "ON must end more unequal than OFF"
+    assert abs(curve_off[-1] - curve_off[0]) < 1e-9, "with labor off, wealth (and Gini) stay flat"
+    print("PASS test_inequality_compounds_with_wage_labor_on_vs_off")
+
+
+def test_labor_adds_zero_llm_and_no_rng() -> None:
+    """labor.update makes no model calls and draws no RNG (deterministic state math)."""
+    import labor
+    _fresh_world(); create_world(size=8)
+    world_state["economy_on"] = True; world_state["labor_on"] = True; world_state["employments"] = []
+    emp = _agent("Boss", "independent and competitive", (3, 3), hunger=0)
+    emp.settlement = "S001"; emp.knowledge.add("farming"); emp.money = 30.0
+    for i in range(3):
+        w = _agent(f"W{i}", "cautious and territorial", (4, 3 + i), hunger=5)
+        w.settlement = "S001"; w.money = 0.0
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"; llm.reset_call_stats(); st0 = random.getstate()
+        for t in range(1, 20):
+            labor.update(world_state, t)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert random.getstate() == st0, "wage labor consumed RNG (would desync v1)"
+    print("PASS test_labor_adds_zero_llm_and_no_rng")
+
+
+def test_labor_off_run_is_byte_identical_to_v1() -> None:
+    """labor_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(29)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, labor_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "labor_on=False changed the default run output"
+    print("PASS test_labor_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -2653,6 +2907,16 @@ def main_runner() -> None:
         test_surplus_to_money_to_purchase_roundtrips,
         test_trade_and_mint_zero_llm_and_no_rng,
         test_economy_off_run_is_byte_identical_to_v1,
+        test_wage_varies_with_labor_supply_and_desperation_not_fixed,
+        test_wage_reaches_subsistence_under_glut_and_desperation_never_below,
+        test_employment_output_flows_to_employer_wage_to_worker,
+        test_agent_without_capital_never_employs,
+        test_roles_emerge_from_wealth_and_skill_not_assigned,
+        test_employment_persists_across_turns_and_is_mutually_entered,
+        test_worker_quits_when_self_sufficient_and_broke_employer_lets_go,
+        test_inequality_compounds_with_wage_labor_on_vs_off,
+        test_labor_adds_zero_llm_and_no_rng,
+        test_labor_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

@@ -168,6 +168,15 @@ world_state: dict[str, Any] = {
     # none fire and the run stays byte-identical to v1. Hunting production is NOT gated here —
     # like farming it is gated purely on KNOWING the skill, so it composes the same way.
     "economy_on": False,     # bool: M2.3 trade/money economy enabled for this run
+    # V2 M3.1 wage labor — the first INSTITUTION (opens Phase 3). Employment links are
+    # PERSISTENT structures (not one-shot trades): each is {employer, worker, wage, since}
+    # and survives across turns until the relationship ends (worker quits / employer fires).
+    # This persistence is what makes wage labor an institution rather than a market trade.
+    # The roles EMERGE from M2.2 wealth + M2.3 skill state (see labor.py) — never assigned.
+    # Empty + inert unless the run opts in (labor_on); kept here so the institution rides the
+    # single source of truth like every other system and serialises/inspects the same way.
+    "employments": [],       # list[dict]: persistent {employer, worker, wage, since} links
+    "labor_on": False,       # bool: M3.1 wage-labor institution enabled for this run
 }
 
 
@@ -310,6 +319,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state["storage_on"] = False
     # M2.3: same for the economy (trade/money) flag.
     world_state["economy_on"] = False
+    # M3.1: employment links are per-simulation persistent state — clear them so a stale
+    # boss/worker pairing never leaks across runs — and reset the wage-labor flag OFF.
+    world_state.setdefault("employments", []).clear()
+    world_state["labor_on"] = False
     return world_state["grid"]
 
 
