@@ -187,6 +187,17 @@ world_state: dict[str, Any] = {
     # to v1. Keyed by settlement id (the home-pull and renderer both read it).
     "leaders": {},           # dict[str, dict]: settlement id -> leadership record (persistent)
     "leadership_on": False,  # bool: M3.2 legitimate-leadership institution enabled for this run
+    # V2 M3.3 taxation & redistribution — the COLLISION of the M3.1 class engine and the M3.2
+    # legitimacy engine: a legitimate leader taxes its wealthy followers and redistributes to its
+    # poor ones, the first force that BENDS the M3.1 inequality spiral. ONLY a settlement with an
+    # M3.2 leader can tax (power downstream of legitimacy, not wealth); over-taxation costs the
+    # leader trust and self-limits via M3.2's contingency. Unlike leadership this WRITES trust
+    # (through trust.adjust_trust). Inert unless the run opts in (taxation_on), so a default run
+    # never calls taxation.update and stays byte-identical to v1; `tax_rate` is the levy on wealth
+    # above the threshold (read by taxation.update; the consent band lives in taxation.py).
+    "taxation_on": False,    # bool: M3.3 taxation institution enabled for this run
+    "tax_rate": 0.25,        # float: levy on follower wealth above the threshold (mirrors
+                             # taxation.DEFAULT_TAX_RATE; run_simulation sets it from its param)
 }
 
 
@@ -336,6 +347,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # M3.2: leadership records are per-simulation (a stale leader must not leak across runs).
     world_state.setdefault("leaders", {}).clear()
     world_state["leadership_on"] = False
+    # M3.3: taxation is per-simulation — reset the flag OFF and the rate to the documented
+    # default so a fresh run is v1 unless run_simulation opts in and sets the rate for that run.
+    world_state["taxation_on"] = False
+    world_state["tax_rate"] = 0.25
     return world_state["grid"]
 
 

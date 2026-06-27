@@ -2011,6 +2011,172 @@ def test_leadership_emerges_organically_from_built_trust_in_a_full_run() -> None
     print("PASS test_leadership_emerges_organically_from_built_trust_in_a_full_run")
 
 
+# --- Taxation & redistribution: legitimacy acts on wealth (V2 M3.3, Phase 3) ---
+def _rich_follower(name: str, pos: tuple[int, int], money: float, leader: str = "L",
+                   sid: str = "S001") -> Agent:
+    """A wealthy follower (taxable) who trusts `leader` at the form bar."""
+    import leadership
+    a = _led_settler(name, pos, sid)
+    a.money = money
+    _trusts(a, leader, leadership.FORM_TRUST)
+    return a
+
+
+def _wealth(a: Agent) -> float:
+    return a.money + a.stockpile
+
+
+def test_only_a_legitimate_leader_can_tax() -> None:
+    """No leader -> no taxation (power downstream of legitimacy); a led settlement DOES tax."""
+    import leadership, taxation
+    # Fractured: each trusts a different agent -> no leader -> taxation idles, wealth unchanged.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["taxation_on"] = True
+    world_state["tax_rate"] = 0.30; world_state["leaders"] = {}
+    rich = _led_settler("Rich", (5, 5)); rich.money = 40.0
+    a = _led_settler("A", (6, 6)); a.money = 2.0
+    b = _led_settler("B", (4, 4)); b.money = 1.0
+    _trusts(rich, "A", 2); _trusts(a, "B", 2); _trusts(b, "Rich", 2)
+    leadership.update(world_state, 1)
+    before = {x.name: _wealth(x) for x in (rich, a, b)}
+    ev = taxation.update(world_state, 1)
+    assert world_state["leaders"] == {}, "a fractured settlement has no leader"
+    assert ev == [] and {x.name: _wealth(x) for x in (rich, a, b)} == before, \
+        "with no leader, no redistribution may occur"
+    # With a real following, taxation flows.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["taxation_on"] = True
+    world_state["tax_rate"] = 0.30; world_state["leaders"] = {}
+    _led_settler("L", (5, 5)).money = 8.0
+    rich = _rich_follower("Rich", (5, 6), 40.0)
+    p1 = _led_settler("P1", (6, 5)); p1.money = 1.0; _trusts(p1, "L", leadership.FORM_TRUST)
+    p2 = _led_settler("P2", (4, 5)); p2.money = 1.0; _trusts(p2, "L", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    ev2 = taxation.update(world_state, 1)
+    assert ev2 and _wealth(rich) < 40.0 and _wealth(p1) > 1.0, "a led settlement taxes and redistributes"
+    print("PASS test_only_a_legitimate_leader_can_tax")
+
+
+def test_redistribution_lowers_within_settlement_gini_vs_untaxed() -> None:
+    """Taxation measurably lowers the within-settlement Gini below an identical untaxed run, with
+    the M3.1 labor spiral running in both."""
+    import leadership, labor, taxation
+
+    def gini(xs):
+        xs = sorted(xs); n = len(xs); s = sum(xs)
+        return 0.0 if s <= 0 else (2 * sum((i + 1) * x for i, x in enumerate(xs))) / (n * s) - (n + 1) / n
+
+    def build():
+        create_world(size=20)
+        world_state["leadership_on"] = True; world_state["leaders"] = {}
+        world_state["economy_on"] = True
+        world_state["settlements"] = {"S001": {"id": "S001", "center": (10, 10),
+                                               "members": set(), "founded": 0}}
+        cast = [_led_settler("Chief", (10, 10))]; cast[0].money = 8.0
+        for i in range(2):
+            e = _rich_follower(f"Emp{i}", (9 + i, 10), 30.0, "Chief"); e.knowledge.add("farming")
+            cast.append(e)
+        for i in range(7):
+            w = _led_settler(f"Wkr{i}", (10, 9 + (i % 3))); w.money = 1.0; w.hunger = 6
+            _trusts(w, "Chief", leadership.FORM_TRUST); cast.append(w)
+        return cast
+
+    def run(tax_on):
+        cast = build(); world_state["taxation_on"] = tax_on; world_state["tax_rate"] = 0.30
+        for t in range(1, 21):
+            leadership.update(world_state, t); labor.update(world_state, t)
+            if tax_on:
+                taxation.update(world_state, t)
+            for a in cast:
+                if a.name.startswith("Wkr"):
+                    a.hunger = max(a.hunger, 6)
+        return gini([_wealth(a) for a in cast])
+
+    _fresh_world(); off = run(False)
+    _fresh_world(); on = run(True)
+    assert on < off - 0.05, f"taxation must lower Gini: on {on:.3f} vs off {off:.3f}"
+    assert off > 0.4, f"untaxed inequality should persist (the spiral): {off:.3f}"
+    print("PASS test_redistribution_lowers_within_settlement_gini_vs_untaxed")
+
+
+def test_over_taxation_costs_legitimacy_while_moderate_is_sustained() -> None:
+    """Moderate taxation is sustained (no resentment); over-taxation erodes the taxed below the
+    keep bar and the leader loses legitimacy (M3.2 contingency fires)."""
+    import leadership, taxation
+
+    def run_rate(rate):
+        create_world(size=12)
+        world_state["leadership_on"] = True; world_state["taxation_on"] = True
+        world_state["tax_rate"] = rate; world_state["leaders"] = {}
+        _led_settler("Gov", (5, 5)).money = 5.0
+        rich = [_rich_follower(f"R{i}", (5 + (i % 2), 6 - (i // 2)), 40.0, "Gov") for i in range(3)]
+        poor = _led_settler("Poor", (4, 5)); poor.money = 1.0
+        _trusts(poor, "Gov", leadership.FORM_TRUST)
+        fates = []
+        for t in range(1, 5):
+            leadership.update(world_state, t)
+            rec = world_state["leaders"].get("S001")
+            fates.append(rec["leader"] if rec else None)
+            if rec:
+                taxation.update(world_state, t)
+        return fates, rich[0].relationships["Gov"]["trust"]
+
+    _fresh_world(); mod_fates, mod_trust = run_rate(0.30)
+    assert all(f == "Gov" for f in mod_fates), "moderate taxation must be sustained"
+    assert mod_trust >= leadership.KEEP_TRUST, "moderate taxation must not erode the rich below keep"
+    _fresh_world(); over_fates, over_trust = run_rate(0.90)
+    assert over_fates[0] == "Gov" and None in over_fates, "over-taxation must cost legitimacy"
+    assert over_trust < leadership.KEEP_TRUST, "over-taxation must erode the taxed below the keep bar"
+    print("PASS test_over_taxation_costs_legitimacy_while_moderate_is_sustained")
+
+
+def test_tax_flows_rich_to_poor_among_followers_and_conserves_wealth() -> None:
+    """Wealth is taxed from the rich, lifts the poorest most, conserves the total, and leaves the
+    leader, mid-wealth followers and non-followers untouched."""
+    import leadership, taxation
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["taxation_on"] = True
+    world_state["tax_rate"] = 0.30; world_state["leaders"] = {}
+    leader = _led_settler("Chief", (5, 5)); leader.money = 8.0
+    rich = _rich_follower("Rich", (5, 6), 50.0, "Chief")
+    poor1 = _led_settler("Poor1", (6, 5)); poor1.money = 1.0; _trusts(poor1, "Chief", leadership.FORM_TRUST)
+    poor2 = _led_settler("Poor2", (4, 5)); poor2.money = 3.0; _trusts(poor2, "Chief", leadership.FORM_TRUST)
+    middle = _led_settler("Middle", (5, 4)); middle.money = 7.0; _trusts(middle, "Chief", leadership.FORM_TRUST)
+    outsider = _led_settler("Outsider", (7, 7)); outsider.money = 99.0  # settled, NOT a follower
+    leader_record_cast = [leader, rich, poor1, poor2, middle, outsider]
+    leadership.update(world_state, 1)
+    before = {a.name: _wealth(a) for a in leader_record_cast}
+    taxation.update(world_state, 1)
+    after = {a.name: _wealth(a) for a in leader_record_cast}
+    assert after["Rich"] < before["Rich"], "the rich follower is taxed"
+    assert after["Poor1"] - before["Poor1"] > after["Poor2"] - before["Poor2"], "poorest gets most"
+    assert after["Chief"] == before["Chief"] and after["Middle"] == before["Middle"], "leader/middle untouched"
+    assert after["Outsider"] == before["Outsider"], "a non-follower is untouched"
+    assert abs(sum(after.values()) - sum(before.values())) < 1e-9, "total wealth conserved"
+    print("PASS test_tax_flows_rich_to_poor_among_followers_and_conserves_wealth")
+
+
+def test_taxation_off_run_is_byte_identical_to_v1() -> None:
+    """taxation_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(41)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, taxation_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "taxation_on=False changed the default run output"
+    print("PASS test_taxation_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -3131,6 +3297,11 @@ def main_runner() -> None:
         test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng,
         test_leadership_off_run_is_byte_identical_to_v1,
         test_leadership_emerges_organically_from_built_trust_in_a_full_run,
+        test_only_a_legitimate_leader_can_tax,
+        test_redistribution_lowers_within_settlement_gini_vs_untaxed,
+        test_over_taxation_costs_legitimacy_while_moderate_is_sustained,
+        test_tax_flows_rich_to_poor_among_followers_and_conserves_wealth,
+        test_taxation_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

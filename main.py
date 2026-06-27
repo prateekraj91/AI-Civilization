@@ -43,6 +43,7 @@ import leadership
 import population
 import settlement
 import storage
+import taxation
 from cognition import update_tiers
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -658,6 +659,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "(needs a settlement to lead). Zero LLM/RNG. Off by default -> v1 identical. "
              "(Taxation, law and revolt are out of scope, later Phase 3.)")
     p.add_argument(
+        "--taxation", action="store_true",
+        help="V2 M3.3: enable TAXATION & REDISTRIBUTION — the COLLISION of the M3.1 class engine "
+             "and the M3.2 legitimacy engine, the first force that BENDS the inequality spiral. A "
+             "legitimate leader (M3.2) taxes its wealthy followers' wealth above a threshold and "
+             "redistributes to its poor ones, lowering the within-settlement Gini. ONLY a led "
+             "settlement can tax (power downstream of legitimacy, not wealth). Over-taxation costs "
+             "the leader trust and SELF-LIMITS: it erodes the taxed below M3.2's keep bar, the "
+             "following collapses and the leader loses legitimacy (and the power to tax) — consent "
+             "of the governed, emergent. Conserves wealth (redistribution, not minting). Implies "
+             "--leadership (and so --settlements); pair with --labor for the inequality to bend. "
+             "Set the levy with --tax-rate. Zero LLM/RNG. Off by default -> v1 identical. "
+             "(Law/legislation, revolt and fiat money are out of scope, later Phase 3.)")
+    p.add_argument(
+        "--tax-rate", type=float, default=None, metavar="R",
+        help=f"V2 M3.3 levy (with --taxation): the fraction of a wealthy follower's wealth ABOVE "
+             f"the threshold taxed each turn (default {taxation.DEFAULT_TAX_RATE}). At or below "
+             f"the consent band ({taxation.CONSENT_RATE} of the surplus) taxation is tolerated and "
+             f"SUSTAINED; well above it the backlash erodes the leader's legitimacy until taxing "
+             f"stops.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -698,7 +719,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    storage_on: bool = False,
                    economy_on: bool = False,
                    labor_on: bool = False,
-                   leadership_on: bool = False) -> None:
+                   leadership_on: bool = False,
+                   taxation_on: bool = False,
+                   tax_rate: "float | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -758,6 +781,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M3.2: the legitimate-leadership institution flag. False (default) -> leadership.update never
     # called, leaders stays empty, the home-pull is never retargeted -> byte-identical to v1.
     world_state["leadership_on"] = leadership_on
+    # M3.3: the taxation institution flag + rate. False (default) -> taxation.update never called
+    # -> byte-identical to v1. The rate (when given) is the levy on follower wealth above the
+    # threshold; None keeps the documented default already on world_state.
+    world_state["taxation_on"] = taxation_on
+    if tax_rate is not None:
+        world_state["tax_rate"] = tax_rate
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -898,6 +927,16 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if leadership_on:
             leadership.update(world_state, turn)
 
+        # M3.3: taxation & redistribution — the COLLISION of the M3.1 class engine and the M3.2
+        # legitimacy engine. A legitimate leader taxes its wealthy followers and redistributes to
+        # its poor ones, BENDING the inequality spiral; over-taxation costs the leader trust and
+        # self-limits via M3.2's contingency. Runs AFTER leadership.update so it taxes with THIS
+        # turn's leader/following, and the trust it WRITES feeds NEXT turn's leadership re-eval
+        # (the backlash). Zero LLM/RNG, conserves wealth; gated on the opt-in flag, so a default
+        # run never calls it (byte-identical to v1).
+        if taxation_on:
+            taxation.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1024,7 +1063,11 @@ def main(argv: list[str] | None = None) -> None:
     # M3.2: legitimate leadership needs only a SETTLEMENT to lead (a coherent trust cluster of
     # co-settlers) — it is the first power NOT downstream of wealth, so it does NOT pull in the
     # economy/labor. --leadership therefore implies --settlements only. Each can be enabled alone.
-    settlements_on = args.settlements or economy_on or args.leadership
+    # M3.3: taxation needs a legitimate LEADER to levy, so --taxation implies --leadership (and so
+    # --settlements). It does NOT force --labor: taxation works on whatever wealth exists, but the
+    # inequality it BENDS is the M3.1 spiral, so a user demonstrates the collision with --labor too.
+    leadership_on = args.leadership or args.taxation
+    settlements_on = args.settlements or economy_on or leadership_on
     storage_on = args.storage or economy_on
 
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
@@ -1062,7 +1105,8 @@ def main(argv: list[str] | None = None) -> None:
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
-                           labor_on=args.labor, leadership_on=args.leadership)
+                           labor_on=args.labor, leadership_on=leadership_on,
+                           taxation_on=args.taxation, tax_rate=args.tax_rate)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1079,7 +1123,8 @@ def main(argv: list[str] | None = None) -> None:
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
-                           labor_on=args.labor, leadership_on=args.leadership)
+                           labor_on=args.labor, leadership_on=leadership_on,
+                           taxation_on=args.taxation, tax_rate=args.tax_rate)
 
 
 if __name__ == "__main__":
