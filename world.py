@@ -208,6 +208,21 @@ world_state: dict[str, Any] = {
     # to v1. Conquest can KILL agents (deterministically, via population.announce_death).
     "monarchs": {},          # dict[str, dict]: settlement id -> monarchy record (persistent)
     "monarchy_on": False,    # bool: M3.4 conquest/monarchy institution enabled for this run
+    # V2 M3.5 kingdoms & vassalage (feudalism) — the SCALE-UP of M3.4: a monarch conquers
+    # NEIGHBOURING settlements into a multi-settlement REALM, a two-level feudal hierarchy
+    # (KING -> VASSAL LORDS -> their settlements). Each record {"king": name, "home": sid,
+    # "settlements": set[sid], "vassals": {sid: lord}, "founded": turn, "discontent": {lord: int}}
+    # is keyed by the king's name. Tribute cascades UP (members->vassal->king), vassals owe military
+    # SERVICE (the king's host = its force + loyal vassals' forces), and loyalty is CONDITIONAL — a
+    # vassal pushed by heavy tribute can BREAK AWAY (leave the realm). `tribute_rate` is the king's
+    # share that cascades up (read by kingdoms.tribute; mirrors kingdoms.DEFAULT_KING_SHARE). Inert
+    # unless the run opts in (kingdoms_on), so a default run never calls kingdoms.update and stays
+    # byte-identical to v1. (Baronial civil war, defection to a rival king, and rebellion cascades
+    # are out of scope — later milestones.)
+    "kingdoms": {},          # dict[str, dict]: king name -> realm record (persistent)
+    "kingdoms_on": False,    # bool: M3.5 kingdoms/vassalage institution enabled for this run
+    "tribute_rate": 0.25,    # float: the king's share of vassal tribute (mirrors
+                             # kingdoms.DEFAULT_KING_SHARE; run_simulation sets it from its param)
 }
 
 
@@ -365,6 +380,11 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # them and reset the flag OFF so a fresh run is v1 unless run_simulation opts in.
     world_state.setdefault("monarchs", {}).clear()
     world_state["monarchy_on"] = False
+    # M3.5: realm records are per-simulation (a stale kingdom must not leak across runs) — clear
+    # them and reset the flag OFF + tribute rate to default so a fresh run is v1 unless opted in.
+    world_state.setdefault("kingdoms", {}).clear()
+    world_state["kingdoms_on"] = False
+    world_state["tribute_rate"] = 0.25
     return world_state["grid"]
 
 

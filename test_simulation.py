@@ -2335,6 +2335,160 @@ def test_monarchy_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_monarchy_off_run_is_byte_identical_to_v1")
 
 
+# --- Kingdoms & vassalage: feudalism (V2 M3.5, Phase 3) -------------------
+def _realm_world() -> None:
+    """A fresh world with the M3.5 stack on and the institution dicts cleared."""
+    _fresh_world(); create_world(size=30)
+    world_state["monarchy_on"] = True; world_state["kingdoms_on"] = True
+    world_state["leadership_on"] = True
+    world_state["leaders"] = {}; world_state["monarchs"] = {}; world_state["kingdoms"] = {}
+    world_state["settlements"] = {}
+
+
+def _led_town(sid: str, center: tuple[int, int], chief: str, followers: list[str],
+              member_wealth: float = 1.0) -> None:
+    """A trust-led settlement (M3.2): `chief` trusted by `followers` who co-settle it."""
+    import leadership
+    world_state["settlements"][sid] = {"id": sid, "center": center,
+                                       "members": {chief} | set(followers), "founded": 0}
+    _combatant(chief, center, 2.0, sid)
+    for f in followers:
+        a = _combatant(f, (center[0], center[1] + 1), member_wealth, sid)
+        _trusts(a, chief, leadership.FORM_TRUST)
+
+
+def test_conquest_of_neighbour_makes_its_ruler_a_vassal() -> None:
+    """A king conquers a neighbouring trust-led town; its chief becomes a VASSAL and the realm
+    is a two-level hierarchy with the local leadership preserved (local autonomy)."""
+    import kingdoms, leadership, monarchy
+    _realm_world()
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5), "members": {"King"}, "founded": 0}
+    _combatant("King", (5, 5), 200.0, "S001")
+    world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+    _led_town("S002", (9, 9), "Chief", ["A", "B"])
+    leadership.update(world_state, 0)
+    for i in range(6):
+        _combatant(f"M{i}", (4 + i % 3, 4), 0.5)
+    res = kingdoms.conquer_neighbour(world_state, "King", "S002", 1)
+    rec = world_state["kingdoms"]["King"]
+    assert res["won"] and rec["vassals"].get("S002") == "Chief", "the conquered local ruler must become a vassal"
+    assert "S001" in rec["settlements"] and "S002" in rec["settlements"], "both settlements form one realm"
+    assert world_state["leaders"]["S002"]["leader"] == "Chief", "the vassal keeps local leadership (autonomy)"
+    assert res["host"] > res["defenders"], "the realm host out-fielded the defence (it was a real fight/submission)"
+    print("PASS test_conquest_of_neighbour_makes_its_ruler_a_vassal")
+
+
+def test_tribute_cascades_settlement_to_vassal_to_king_and_conserves_wealth() -> None:
+    """Tribute flows members -> vassal -> king (up the levels), conserving total wealth."""
+    import kingdoms
+    _realm_world()
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5), "members": {"King"}, "founded": 0}
+    world_state["settlements"]["S002"] = {"id": "S002", "center": (9, 9),
+                                          "members": {"Chief", "Rich1", "Rich2"}, "founded": 0}
+    king = _combatant("King", (5, 5), 10.0, "S001")
+    chief = _combatant("Chief", (9, 9), 10.0, "S002")
+    rich1 = _combatant("Rich1", (9, 10), 25.0, "S002"); rich2 = _combatant("Rich2", (10, 9), 15.0, "S002")
+    world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+    world_state["kingdoms"]["King"] = {"king": "King", "home": "S001",
+                                       "settlements": {"S001", "S002"}, "vassals": {"S002": "Chief"},
+                                       "founded": 0, "discontent": {"Chief": 0}}
+    _trusts(chief, "King", kingdoms.LOYAL_TRUST)
+    world_state["tribute_rate"] = kingdoms.DEFAULT_KING_SHARE  # fair: no backlash to muddy the flow
+    total0 = sum(_wealth(a) for a in world_state["agents"] if a.alive)
+    wk0, wc0, wm0 = _wealth(king), _wealth(chief), _wealth(rich1) + _wealth(rich2)
+    kingdoms.tribute(world_state, 1)
+    assert _wealth(rich1) < 25.0 and _wealth(rich2) < 15.0, "members are levied (bottom of the cascade)"
+    assert _wealth(chief) > wc0 and _wealth(king) > wk0, "tribute flows up to BOTH the vassal and the king"
+    assert _wealth(rich1) + _wealth(rich2) < wm0, "the members lost what cascaded up"
+    total1 = sum(_wealth(a) for a in world_state["agents"] if a.alive)
+    assert abs(total1 - total0) < 1e-9, "tribute only MOVES wealth — total conserved"
+    print("PASS test_tribute_cascades_settlement_to_vassal_to_king_and_conserves_wealth")
+
+
+def test_king_musters_loyal_vassal_but_not_broken_away_one() -> None:
+    """The king's host includes a loyal vassal's fighters; a vassal no longer in the realm owes none."""
+    import kingdoms, monarchy
+    _realm_world()
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5), "members": {"King"}, "founded": 0}
+    world_state["settlements"]["S002"] = {"id": "S002", "center": (22, 22), "members": {"Chief"}, "founded": 0}
+    king = _combatant("King", (5, 5), 20.0, "S001")
+    chief = _combatant("Chief", (22, 22), 20.0, "S002")  # a vassal with its own war chest, far from the king
+    world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+    world_state["kingdoms"]["King"] = {"king": "King", "home": "S001",
+                                       "settlements": {"S001", "S002"}, "vassals": {"S002": "Chief"},
+                                       "founded": 0, "discontent": {"Chief": 0}}
+    _trusts(chief, "King", kingdoms.LOYAL_TRUST)
+    for i in range(3):
+        _combatant(f"KM{i}", (4, 4), 0.5)        # mercs near the king (only the king can reach these)
+    for i in range(3):
+        _combatant(f"VM{i}", (22, 21), 0.5)      # mercs near the vassal's seat (only the vassal reaches these)
+    host = kingdoms.muster_realm(world_state, king, exclude=set())
+    assert any(h.name.startswith("VM") for h in host), "a loyal vassal answers the muster with its own fighters"
+    # Break the vassal away: it is no longer in the realm, so owes no service.
+    for a in world_state["agents"]:
+        if a.name.startswith(("KM", "VM")):
+            a.money = 0.5
+    king.money = 20.0
+    world_state["kingdoms"]["King"]["vassals"].clear()
+    world_state["kingdoms"]["King"]["settlements"].discard("S002")
+    host2 = kingdoms.muster_realm(world_state, king, exclude=set())
+    assert not any(h.name.startswith("VM") for h in host2), "a broken-away vassal owes the crown no military service"
+    print("PASS test_king_musters_loyal_vassal_but_not_broken_away_one")
+
+
+def test_over_tribute_breaks_a_vassal_away_with_hysteresis_fair_one_stays() -> None:
+    """A grasping crown erodes a vassal's loyalty until it breaks away (not on the first turn —
+    hysteresis); a fairly-treated identical vassal stays in the realm."""
+    import kingdoms
+
+    def run(tribute_rate: float, turns: int) -> list[bool]:
+        _realm_world()
+        world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5), "members": {"King"}, "founded": 0}
+        world_state["settlements"]["S002"] = {"id": "S002", "center": (9, 9),
+                                              "members": {"Chief", "Rich"}, "founded": 0}
+        _combatant("King", (5, 5), 10.0, "S001")
+        chief = _combatant("Chief", (9, 9), 10.0, "S002"); _combatant("Rich", (9, 10), 25.0, "S002")
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        world_state["kingdoms"]["King"] = {"king": "King", "home": "S001",
+                                           "settlements": {"S001", "S002"}, "vassals": {"S002": "Chief"},
+                                           "founded": 0, "discontent": {"Chief": 0}}
+        _trusts(chief, "King", kingdoms.LOYAL_TRUST)
+        world_state["tribute_rate"] = tribute_rate
+        in_realm = []
+        for t in range(1, turns + 1):
+            kingdoms.tribute(world_state, t); kingdoms._check_breakaways(world_state, t)
+            in_realm.append("S002" in world_state["kingdoms"].get("King", {}).get("settlements", set()))
+        return in_realm
+
+    grasping = run(0.9, 4)
+    assert grasping[0] is True, "hysteresis: the vassal must not break away on the very first hard turn"
+    assert grasping[-1] is False, "a sufficiently disloyal vassal must break away"
+    fair = run(0.25, 4)
+    assert all(fair), "a fairly-treated vassal (share within the consent band) stays in the realm"
+    print("PASS test_over_tribute_breaks_a_vassal_away_with_hysteresis_fair_one_stays")
+
+
+def test_kingdoms_off_run_is_byte_identical_to_v1() -> None:
+    """kingdoms_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(43)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, kingdoms_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "kingdoms_on=False changed the default run output"
+    print("PASS test_kingdoms_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -3466,6 +3620,11 @@ def main_runner() -> None:
         test_monarch_is_overthrowable_by_a_stronger_force,
         test_war_kills_real_agents,
         test_monarchy_off_run_is_byte_identical_to_v1,
+        test_conquest_of_neighbour_makes_its_ruler_a_vassal,
+        test_tribute_cascades_settlement_to_vassal_to_king_and_conserves_wealth,
+        test_king_musters_loyal_vassal_but_not_broken_away_one,
+        test_over_tribute_breaks_a_vassal_away_with_hysteresis_fair_one_stays,
+        test_kingdoms_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

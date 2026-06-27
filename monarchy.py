@@ -226,6 +226,27 @@ def _fell_in_battle(state: dict[str, Any], units: list[Any], n: int, turn: int, 
     return fallen
 
 
+def resolve_battle(state: dict[str, Any], attackers: list[Any], defenders: list[Any],
+                   turn: int, att_side: str, def_side: str) -> tuple[bool, list[str], list[str], list[Any]]:
+    """Resolve a clash between two mustered forces. Deterministic, ZERO RNG (M3.4, reused by M3.5).
+
+    The attacker WINS iff its force strictly OUTNUMBERS the defenders (`att > def_`); a tie is held
+    by the defender (the incumbent's advantage). Each side then loses `round(CASUALTY_RATE *
+    opposing_force)` fighters (capped at its own size), slain by name order via `_fell_in_battle`
+    (a real, logged death + queued respawn). Returns (won, att_dead, def_dead, survivors). Shared by
+    M3.4 single-settlement conquest and M3.5 realm conquest so BOTH use the identical fight maths.
+    """
+    att, def_ = len(attackers), len(defenders)
+    won = att > def_  # strict: the attacker must OVERCOME the defence; a tie is held by the seat
+    # Casualties: each side loses round(CASUALTY_RATE * opposing_force), capped at its own size.
+    att_loss = min(att, round(CASUALTY_RATE * def_))
+    def_loss = min(def_, round(CASUALTY_RATE * att))
+    att_dead = _fell_in_battle(state, attackers, att_loss, turn, att_side)
+    def_dead = _fell_in_battle(state, defenders, def_loss, turn, def_side)
+    survivors = [f for f in attackers if f.alive]
+    return won, att_dead, def_dead, survivors
+
+
 def attempt_conquest(state: dict[str, Any], aspirant: Any, sid: str, turn: int) -> dict[str, Any]:
     """Resolve ONE assault by `aspirant` on settlement `sid`. Deterministic (ZERO RNG), M3.4.
 
@@ -241,14 +262,8 @@ def attempt_conquest(state: dict[str, Any], aspirant: Any, sid: str, turn: int) 
         exclude.add(holder)
     army = muster(state, aspirant, exclude)
     att, def_ = len(army), len(defenders)
-    won = att > def_  # strict: the attacker must OVERCOME the defence; a tie is held by the seat
-
-    # Casualties: each side loses round(CASUALTY_RATE * opposing_force), capped at its own size.
-    att_loss = min(att, round(CASUALTY_RATE * def_))
-    def_loss = min(def_, round(CASUALTY_RATE * att))
-    att_dead = _fell_in_battle(state, army, att_loss, turn, f"{aspirant.name}'s army")
-    def_dead = _fell_in_battle(state, defenders, def_loss, turn, f"defending {sid}")
-    survivors = [f for f in army if f.alive]
+    won, att_dead, def_dead, survivors = resolve_battle(
+        state, army, defenders, turn, f"{aspirant.name}'s army", f"defending {sid}")
 
     monarchs = state.setdefault("monarchs", {})
     if won:

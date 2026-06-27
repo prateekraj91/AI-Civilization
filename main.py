@@ -37,6 +37,7 @@ import conversation
 import economy
 import god_mode
 import heuristic
+import kingdoms
 import knowledge
 import labor
 import leadership
@@ -445,6 +446,19 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                                if agent.name in r["garrison"]), None)
                 if serves is not None:
                     print(f"Soldiers for:    {serves}")
+        # M3.5: read-only kingdoms/vassalage overlay — printed ONLY when the system is on (default
+        # run is byte-identical to v1). Pure read of world_state["kingdoms"].
+        if world_state.get("kingdoms_on"):
+            kdoms = world_state.get("kingdoms", {})
+            rec = kdoms.get(agent.name)
+            if rec is not None:
+                print(f"Rules kingdom:   {len(rec['settlements'])} settlements, "
+                      f"{len(rec['vassals'])} vassals (since turn {rec['founded']})  [feudal crown]")
+            else:
+                liege = next((k for k, r in sorted(kdoms.items())
+                              if agent.name in r["vassals"].values()), None)
+                if liege is not None:
+                    print(f"Vassal of:       {liege}  [sworn fealty]")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -707,6 +721,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "LLM/RNG, deterministic under seed. Off by default -> v1 identical. (Underclass revolt, "
              "inter-kingdom war and multi-settlement kingdoms are out of scope, later Phase 3.)")
     p.add_argument(
+        "--kingdoms", action="store_true",
+        help="V2 M3.5: enable KINGDOMS & VASSALAGE (feudalism) — the SCALE-UP of M3.4. A MONARCH "
+             "conquers NEIGHBOURING settlements into a multi-settlement REALM, a two-level feudal "
+             "hierarchy (KING -> VASSAL LORDS -> their settlements). A conquered local ruler keeps "
+             "ruling as a VASSAL (local autonomy); a ruler-less town is held directly. TRIBUTE "
+             "cascades UP (members -> vassal -> king); vassals owe military SERVICE (the king's host "
+             "= its force + loyal vassals' forces); loyalty is CONDITIONAL — heavy tribute erodes a "
+             "vassal's trust (M3.3-shape backlash) and a pushed vassal BREAKS AWAY (with hysteresis) "
+             "while a fairly-treated one stays. Pooled tribute funds further conquest, so the map "
+             "CONSOLIDATES. Implies --monarchy + --settlements; pair with --economy/--labor for "
+             "army-funding wealth and --leadership for vassalable trust-leaders. Set the crown's "
+             "share with --tribute-rate. Zero LLM/RNG, deterministic under seed. Off by default -> "
+             "v1 identical. (Baronial civil war, defection to a rival king and rebellion cascades "
+             "are out of scope, later Phase 3.)")
+    p.add_argument(
+        "--tribute-rate", type=float, default=None, metavar="R",
+        help=f"V2 M3.5: the KING's share of a vassal's tribute that cascades up each turn (default "
+             f"{kingdoms.DEFAULT_KING_SHARE}). At or below the consent band ({kingdoms.KING_CONSENT}) "
+             f"a vassal tolerates the crown and stays loyal; well above it the backlash erodes the "
+             f"vassal's trust until it BREAKS AWAY. Only meaningful with --kingdoms.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -750,7 +785,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    leadership_on: bool = False,
                    taxation_on: bool = False,
                    tax_rate: "float | None" = None,
-                   monarchy_on: bool = False) -> None:
+                   monarchy_on: bool = False,
+                   kingdoms_on: bool = False,
+                   tribute_rate: "float | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -819,6 +856,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M3.4: the conquest/monarchy institution flag. False (default) -> monarchy.update never called
     # -> no armies, no crowns, no battle deaths -> byte-identical to v1.
     world_state["monarchy_on"] = monarchy_on
+    # M3.5: the kingdoms/vassalage institution flag + tribute rate. False (default) -> kingdoms.update
+    # never called, kingdoms stays empty -> byte-identical to v1. The rate (when given) is the king's
+    # share of vassal tribute; None keeps the documented default already on world_state.
+    world_state["kingdoms_on"] = kingdoms_on
+    if tribute_rate is not None:
+        world_state["tribute_rate"] = tribute_rate
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -979,6 +1022,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if monarchy_on:
             monarchy.update(world_state, turn)
 
+        # M3.5: kingdoms & vassalage — the SCALE-UP of M3.4. A monarch conquers NEIGHBOURING
+        # settlements into a multi-settlement REALM (king -> vassal lords -> their settlements);
+        # tribute cascades UP, loyal vassals owe military SERVICE, and a vassal pushed by heavy
+        # tribute can BREAK AWAY (conditional loyalty). Runs AFTER monarchy.update so this turn's
+        # monarchs are the kings-in-waiting and conquest reuses the SAME fight (resolve_battle). Zero
+        # LLM/RNG; gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
+        if kingdoms_on:
+            kingdoms.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1109,10 +1161,13 @@ def main(argv: list[str] | None = None) -> None:
     # --settlements). It does NOT force --labor: taxation works on whatever wealth exists, but the
     # inequality it BENDS is the M3.1 spiral, so a user demonstrates the collision with --labor too.
     leadership_on = args.leadership or args.taxation
-    # M3.4: conquest needs only a SETTLEMENT to seize (and wealth, which the run may supply via
-    # --economy/--labor, and loyalty to collide with via --leadership). So --monarchy implies
-    # --settlements only — it does NOT force the economy or leadership; each can be enabled alone.
-    settlements_on = args.settlements or economy_on or leadership_on or args.monarchy
+    # M3.5: kingdoms BUILD ON monarchy (a king is a monarch who expanded), so --kingdoms implies
+    # --monarchy; both need a settlement to seize/realm.
+    monarchy_on = args.monarchy or args.kingdoms
+    # M3.4/M3.5: conquest needs only a SETTLEMENT to seize (and wealth, which the run may supply via
+    # --economy/--labor, and loyalty to collide with via --leadership). So --monarchy/--kingdoms imply
+    # --settlements only — they do NOT force the economy or leadership; each can be enabled alone.
+    settlements_on = args.settlements or economy_on or leadership_on or monarchy_on
     storage_on = args.storage or economy_on
 
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
@@ -1152,7 +1207,8 @@ def main(argv: list[str] | None = None) -> None:
                            storage_on=storage_on, economy_on=economy_on,
                            labor_on=args.labor, leadership_on=leadership_on,
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
-                           monarchy_on=args.monarchy)
+                           monarchy_on=monarchy_on,
+                           kingdoms_on=args.kingdoms, tribute_rate=args.tribute_rate)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1171,7 +1227,8 @@ def main(argv: list[str] | None = None) -> None:
                            storage_on=storage_on, economy_on=economy_on,
                            labor_on=args.labor, leadership_on=leadership_on,
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
-                           monarchy_on=args.monarchy)
+                           monarchy_on=monarchy_on,
+                           kingdoms_on=args.kingdoms, tribute_rate=args.tribute_rate)
 
 
 if __name__ == "__main__":
