@@ -2177,6 +2177,164 @@ def test_taxation_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_taxation_off_run_is_byte_identical_to_v1")
 
 
+# --- Conquest & monarchy: power seized by force (V2 M3.4, Phase 3) ---------
+def _combatant(name: str, pos: tuple[int, int], money: float, sid: str | None = None) -> Agent:
+    """A living agent at `pos` with set wealth — a roaming aspirant/mercenary (sid None) or settler."""
+    a = _agent(name, "cautious and territorial", pos, hunger=0)
+    a.settlement = sid
+    a.money = money
+    return a
+
+
+def _set_settlement(sid: str, center: tuple[int, int], members: set[str]) -> None:
+    world_state["settlements"] = {sid: {"id": sid, "center": center, "members": members, "founded": 0}}
+
+
+def test_force_scales_with_wealth_funded_fighters_broke_cannot_conquer() -> None:
+    """An army is REAL fighters bought with money: a rich aspirant musters and seizes an unled
+    town; a broke aspirant funds nobody and conquers nothing."""
+    import monarchy
+    _fresh_world(); create_world(size=14)
+    world_state["monarchy_on"] = True; world_state["monarchs"] = {}
+    _set_settlement("S001", (7, 7), {"M1", "M2"})
+    _combatant("M1", (7, 7), 1.0, "S001"); _combatant("M2", (7, 8), 1.0, "S001")
+    rich = _combatant("Rich", (8, 8), 30.0)
+    for i in range(4):
+        _combatant(f"Merc{i}", (6 + i % 3, 6), 0.5)
+    res = monarchy.attempt_conquest(world_state, rich, "S001", 1)
+    assert res["won"] and world_state["monarchs"]["S001"]["monarch"] == "Rich"
+    assert res["attackers"] == 4, "force = real mustered fighters (4 in range), not a wealth compare"
+    assert _wealth(rich) == 30.0 - 4 * monarchy.FIGHTER_COST, "fighters are PAID for with wealth"
+
+    _fresh_world(); create_world(size=14)
+    world_state["monarchy_on"] = True; world_state["monarchs"] = {}
+    _set_settlement("S001", (7, 7), {"M1", "M2"})
+    _combatant("M1", (7, 7), 1.0, "S001"); _combatant("M2", (7, 8), 1.0, "S001")
+    broke = _combatant("Broke", (8, 8), 3.0)
+    for i in range(4):
+        _combatant(f"Merc{i}", (6 + i % 3, 6), 0.5)
+    res2 = monarchy.attempt_conquest(world_state, broke, "S001", 1)
+    assert monarchy.max_fighters(broke) == 0 and not res2["won"], "a broke aspirant conquers nothing"
+    assert world_state["monarchs"] == {}, "no crown without an army"
+    print("PASS test_force_scales_with_wealth_funded_fighters_broke_cannot_conquer")
+
+
+def test_loyalty_repels_smaller_force_but_not_overwhelming_one() -> None:
+    """Force vs legitimacy: a trusted leader's loyal followers repel a richer-but-smaller attacker,
+    but an overwhelming bought force overcomes them (and consent survives the conquest)."""
+    import leadership, monarchy
+
+    def build(n_followers, n_mercs):
+        create_world(size=16)
+        world_state["monarchy_on"] = True; world_state["monarchs"] = {}
+        world_state["leadership_on"] = True; world_state["leaders"] = {}
+        members = {f"F{i}" for i in range(n_followers)} | {"Chief"}
+        _set_settlement("S001", (8, 8), members)
+        c = _combatant("Chief", (8, 8), 2.0, "S001")
+        for i in range(n_followers):
+            f = _combatant(f"F{i}", (8, 9), 1.0, "S001"); _trusts(f, "Chief", leadership.FORM_TRUST)
+        leadership.update(world_state, 1)
+        rich = _combatant("Rich", (9, 9), 200.0)  # the WEALTHIEST, but force = mustered fighters
+        for i in range(n_mercs):
+            _combatant(f"Merc{i}", (10, 10), 0.5)
+        return rich
+
+    _fresh_world(); rich = build(n_followers=4, n_mercs=3)
+    res = monarchy.attempt_conquest(world_state, rich, "S001", 1)
+    assert not res["won"] and "S001" not in world_state["monarchs"], \
+        "loyal followers must repel a richer attacker whose force (3) is smaller than the following (4)"
+
+    _fresh_world(); rich = build(n_followers=4, n_mercs=7)
+    res2 = monarchy.attempt_conquest(world_state, rich, "S001", 1)
+    assert res2["won"] and world_state["monarchs"]["S001"]["monarch"] == "Rich", \
+        "an overwhelming force (7 > 4) must win"
+    assert world_state["leaders"]["S001"]["leader"] == "Chief", \
+        "conquest rules by force but does not erase consent — the two roles coexist"
+    print("PASS test_loyalty_repels_smaller_force_but_not_overwhelming_one")
+
+
+def test_monarch_levies_without_consent() -> None:
+    """A monarch extracts wealth from subjects with NO leader/trust/consent (vs M3.3)."""
+    import monarchy
+    _fresh_world(); create_world(size=12)
+    world_state["monarchy_on"] = True; world_state["leaders"] = {}
+    world_state["monarchs"] = {"S001": {"monarch": "King", "since": 1, "garrison": {"G1"}}}
+    _set_settlement("S001", (6, 6), {"Sub1", "Sub2", "King"})
+    king = _combatant("King", (6, 6), 5.0, "S001")
+    sub1 = _combatant("Sub1", (6, 7), 20.0, "S001"); sub2 = _combatant("Sub2", (7, 6), 15.0, "S001")
+    w0 = _wealth(king)
+    ev = monarchy.levy(world_state, 2)
+    assert _wealth(king) > w0 and _wealth(sub1) < 20.0 and _wealth(sub2) < 15.0, "the crown extracts wealth"
+    assert ev and "no consent" in ev[0], "the levy needs no consent"
+    # No legitimate leader exists, yet the levy still flowed -> it is NOT consent-gated like M3.3.
+    assert world_state["leaders"] == {}, "the monarch levied with NO trust-leader present"
+    print("PASS test_monarch_levies_without_consent")
+
+
+def test_monarch_is_overthrowable_by_a_stronger_force() -> None:
+    """The crown is losable: a stronger later aspirant overthrows the incumbent monarch."""
+    import monarchy
+    _fresh_world(); create_world(size=16)
+    world_state["monarchy_on"] = True; world_state["leaders"] = {}
+    _set_settlement("S001", (8, 8), {"Sub"})
+    _combatant("Sub", (8, 8), 1.0, "S001")
+    world_state["monarchs"] = {"S001": {"monarch": "OldKing", "since": 1, "garrison": {"G1", "G2"}}}
+    _combatant("OldKing", (8, 8), 2.0); _combatant("G1", (8, 9), 0.5); _combatant("G2", (9, 8), 0.5)
+    usurper = _combatant("Usurper", (9, 9), 40.0)
+    for i in range(4):
+        _combatant(f"Merc{i}", (10, 10), 0.5)
+    res = monarchy.attempt_conquest(world_state, usurper, "S001", 5)
+    rec = world_state["monarchs"]["S001"]
+    assert res["won"] and rec["monarch"] == "Usurper" and rec["since"] == 5, "a stronger force overthrows"
+    print("PASS test_monarch_is_overthrowable_by_a_stronger_force")
+
+
+def test_war_kills_real_agents() -> None:
+    """Fighting is costly: real agents die on both sides, logged like any death."""
+    import leadership, monarchy
+    _fresh_world(); create_world(size=16)
+    world_state["monarchy_on"] = True; world_state["leadership_on"] = True
+    world_state["leaders"] = {}; world_state["monarchs"] = {}
+    _set_settlement("S001", (8, 8), {"Chief", "F0", "F1", "F2", "F3"})
+    _combatant("Chief", (8, 8), 2.0, "S001")
+    for i in range(4):
+        f = _combatant(f"F{i}", (8, 9), 1.0, "S001"); _trusts(f, "Chief", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    rich = _combatant("Rich", (9, 9), 60.0)
+    for i in range(6):
+        _combatant(f"Merc{i}", (10, 10), 0.5)
+    alive_before = sum(1 for a in world_state["agents"] if a.alive)
+    res = monarchy.attempt_conquest(world_state, rich, "S001", 3)
+    fallen = res["att_dead"] + res["def_dead"]
+    alive_after = sum(1 for a in world_state["agents"] if a.alive)
+    assert len(fallen) > 0, "a defended assault must produce casualties"
+    assert alive_after == alive_before - len(fallen), "the fallen are actually dead"
+    assert sum(1 for e in world_state["events"] if "fell in battle" in e) == len(fallen), \
+        "each battle death is a logged civilizational event"
+    print("PASS test_war_kills_real_agents")
+
+
+def test_monarchy_off_run_is_byte_identical_to_v1() -> None:
+    """monarchy_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(43)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, monarchy_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "monarchy_on=False changed the default run output"
+    print("PASS test_monarchy_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -3302,6 +3460,12 @@ def main_runner() -> None:
         test_over_taxation_costs_legitimacy_while_moderate_is_sustained,
         test_tax_flows_rich_to_poor_among_followers_and_conserves_wealth,
         test_taxation_off_run_is_byte_identical_to_v1,
+        test_force_scales_with_wealth_funded_fighters_broke_cannot_conquer,
+        test_loyalty_repels_smaller_force_but_not_overwhelming_one,
+        test_monarch_levies_without_consent,
+        test_monarch_is_overthrowable_by_a_stronger_force,
+        test_war_kills_real_agents,
+        test_monarchy_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

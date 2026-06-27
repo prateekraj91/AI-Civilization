@@ -40,6 +40,7 @@ import heuristic
 import knowledge
 import labor
 import leadership
+import monarchy
 import population
 import settlement
 import storage
@@ -431,6 +432,19 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                                 if agent.name in r["followers"]), None)
                 if follows is not None:
                     print(f"Follows:         {follows}")
+        # M3.4: read-only monarchy overlay — printed ONLY when the system is on (default run is
+        # byte-identical to v1). Pure read of world_state["monarchs"].
+        if world_state.get("monarchy_on"):
+            monarchs = world_state.get("monarchs", {})
+            reigns = next((f"{sid} (since turn {r['since']}, garrison {len(r['garrison'])})"
+                           for sid, r in monarchs.items() if r["monarch"] == agent.name), None)
+            if reigns is not None:
+                print(f"Reigns over:     {reigns}  [by force]")
+            else:
+                serves = next((r["monarch"] for r in monarchs.values()
+                               if agent.name in r["garrison"]), None)
+                if serves is not None:
+                    print(f"Soldiers for:    {serves}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -679,6 +693,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              f"SUSTAINED; well above it the backlash erodes the leader's legitimacy until taxing "
              f"stops.")
     p.add_argument(
+        "--monarchy", action="store_true",
+        help="V2 M3.4: enable CONQUEST & MONARCHY — the SECOND source of power, DOMINATION by "
+             "force (vs M3.2's consent). A wealthy aspirant SPENDS money to muster an army of real "
+             "fighters (poor agents who fight for pay) and ATTACKS a settlement to seize it, "
+             "becoming MONARCH — a persistent title held by FORCE. A fight is resolved on MUSTERED "
+             "force (attacker's bought army vs the defenders: a monarch's garrison, else a trusted "
+             "leader's loyal FOLLOWERS, else the militia), so loyalty can repel a richer-but-smaller "
+             "attacker while an overwhelming bought force wins — and war KILLS agents. A monarch "
+             "levies wealth WITHOUT consent (contrast M3.3); the crown is LOSABLE to a stronger "
+             "later army. Implies --settlements (needs a town to seize); pair with --economy/--labor "
+             "for the wealth that funds armies and --leadership for the loyalty that defends. Zero "
+             "LLM/RNG, deterministic under seed. Off by default -> v1 identical. (Underclass revolt, "
+             "inter-kingdom war and multi-settlement kingdoms are out of scope, later Phase 3.)")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -721,7 +749,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    labor_on: bool = False,
                    leadership_on: bool = False,
                    taxation_on: bool = False,
-                   tax_rate: "float | None" = None) -> None:
+                   tax_rate: "float | None" = None,
+                   monarchy_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -787,6 +816,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     world_state["taxation_on"] = taxation_on
     if tax_rate is not None:
         world_state["tax_rate"] = tax_rate
+    # M3.4: the conquest/monarchy institution flag. False (default) -> monarchy.update never called
+    # -> no armies, no crowns, no battle deaths -> byte-identical to v1.
+    world_state["monarchy_on"] = monarchy_on
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -937,6 +969,16 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if taxation_on:
             taxation.update(world_state, turn)
 
+        # M3.4: conquest & monarchy — the SECOND source of power, DOMINATION by force. A wealthy
+        # aspirant spends money to muster an army of real fighters and SEIZES a settlement, becoming
+        # MONARCH (rule by force, no consent — contrast M3.3); standing monarchs levy by force, and
+        # the crown is LOSABLE to a stronger later army. Runs AFTER leadership/taxation so it reads
+        # this turn's followers (a leader's loyal defenders) and current wealth. Conquest can KILL
+        # agents deterministically (via population.announce_death). Zero LLM/RNG; gated on the opt-in
+        # flag, so a default run never calls it (byte-identical to v1).
+        if monarchy_on:
+            monarchy.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1067,7 +1109,10 @@ def main(argv: list[str] | None = None) -> None:
     # --settlements). It does NOT force --labor: taxation works on whatever wealth exists, but the
     # inequality it BENDS is the M3.1 spiral, so a user demonstrates the collision with --labor too.
     leadership_on = args.leadership or args.taxation
-    settlements_on = args.settlements or economy_on or leadership_on
+    # M3.4: conquest needs only a SETTLEMENT to seize (and wealth, which the run may supply via
+    # --economy/--labor, and loyalty to collide with via --leadership). So --monarchy implies
+    # --settlements only — it does NOT force the economy or leadership; each can be enabled alone.
+    settlements_on = args.settlements or economy_on or leadership_on or args.monarchy
     storage_on = args.storage or economy_on
 
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
@@ -1106,7 +1151,8 @@ def main(argv: list[str] | None = None) -> None:
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
                            labor_on=args.labor, leadership_on=leadership_on,
-                           taxation_on=args.taxation, tax_rate=args.tax_rate)
+                           taxation_on=args.taxation, tax_rate=args.tax_rate,
+                           monarchy_on=args.monarchy)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1124,7 +1170,8 @@ def main(argv: list[str] | None = None) -> None:
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
                            labor_on=args.labor, leadership_on=leadership_on,
-                           taxation_on=args.taxation, tax_rate=args.tax_rate)
+                           taxation_on=args.taxation, tax_rate=args.tax_rate,
+                           monarchy_on=args.monarchy)
 
 
 if __name__ == "__main__":

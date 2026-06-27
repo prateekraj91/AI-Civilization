@@ -79,7 +79,9 @@ def living_count(state: dict[str, Any]) -> int:
 
 
 def announce_death(agent: Any, turn: int, state: dict[str, Any],
-                   cause: str = "starved") -> list[Any]:
+                   cause: str = "starved", *,
+                   final_memory: str = "Starved",
+                   note: str = "they were starving") -> list[Any]:
     """Register `agent`'s death with the whole society and queue a respawn (Day 14).
 
     Strengthens the bare Day 6 death (which only flipped `alive`) into an event the
@@ -91,6 +93,11 @@ def announce_death(agent: Any, turn: int, state: dict[str, Any],
       - the dead agent keeps its own final "Starved" memory for the post-mortem;
       - a respawn is scheduled for turn + RESPAWN_DELAY.
 
+    `cause`, `final_memory` and `note` parameterise the wording so a non-starvation
+    death (e.g. M3.4 a fighter falling in battle) reads correctly while every default
+    reproduces the original Day 14 strings EXACTLY — so the starvation path (every
+    existing caller) is byte-for-byte unchanged.
+
     Survivors are captured BEFORE mark_dead so the set is exactly "who was alive
     when it happened". Relationships toward the deceased are left untouched — the
     dead are remembered (see module docstring). Returns the survivor list (for
@@ -99,16 +106,16 @@ def announce_death(agent: Any, turn: int, state: dict[str, Any],
     survivors = [a for a in state["agents"] if a.alive and a is not agent]
 
     # The deceased's own last memory, then the world frees its cell.
-    world.record_memory(agent, "Starved")
+    world.record_memory(agent, final_memory)
     world.mark_dead(agent)
 
     state["events"].append(f"turn {turn}: {agent.name} died ({cause})")
 
-    # Gender-neutral "they were starving" — we cannot know an agent's gender from a
-    # name, so we avoid guessing while keeping the milestone's phrasing.
+    # Gender-neutral phrasing — we cannot know an agent's gender from a name, so we
+    # avoid guessing while keeping the milestone's phrasing.
     for survivor in survivors:
         world.record_memory(
-            survivor, f"{agent.name} died on turn {turn} — they were starving."
+            survivor, f"{agent.name} died on turn {turn} — {note}."
         )
 
     state.setdefault("pending_respawns", []).append(turn + RESPAWN_DELAY)

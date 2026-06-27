@@ -198,6 +198,16 @@ world_state: dict[str, Any] = {
     "taxation_on": False,    # bool: M3.3 taxation institution enabled for this run
     "tax_rate": 0.25,        # float: levy on follower wealth above the threshold (mirrors
                              # taxation.DEFAULT_TAX_RATE; run_simulation sets it from its param)
+    # V2 M3.4 conquest & monarchy — the SECOND source of power: DOMINATION by force (vs M3.2's
+    # consent). A wealthy aspirant spends money to muster an army of real fighters and SEIZES a
+    # settlement, becoming its MONARCH — a persistent ruling title held by FORCE, not trust. Each
+    # record {"monarch": name, "since": turn, "garrison": set[name]} is keyed by settlement id; the
+    # garrison is the standing army that defends the crown (and the crown is LOSABLE to a stronger
+    # later army). A monarch levies by force WITHOUT consent (contrast M3.3). Inert unless the run
+    # opts in (monarchy_on), so a default run never calls monarchy.update and stays byte-identical
+    # to v1. Conquest can KILL agents (deterministically, via population.announce_death).
+    "monarchs": {},          # dict[str, dict]: settlement id -> monarchy record (persistent)
+    "monarchy_on": False,    # bool: M3.4 conquest/monarchy institution enabled for this run
 }
 
 
@@ -351,6 +361,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # default so a fresh run is v1 unless run_simulation opts in and sets the rate for that run.
     world_state["taxation_on"] = False
     world_state["tax_rate"] = 0.25
+    # M3.4: monarchy records are per-simulation (a stale crown must not leak across runs) — clear
+    # them and reset the flag OFF so a fresh run is v1 unless run_simulation opts in.
+    world_state.setdefault("monarchs", {}).clear()
+    world_state["monarchy_on"] = False
     return world_state["grid"]
 
 
