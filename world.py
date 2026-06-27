@@ -177,6 +177,16 @@ world_state: dict[str, Any] = {
     # single source of truth like every other system and serialises/inspects the same way.
     "employments": [],       # list[dict]: persistent {employer, worker, wage, since} links
     "labor_on": False,       # bool: M3.1 wage-labor institution enabled for this run
+    # V2 M3.2 legitimate leadership — the first POLITICAL institution and the first power NOT
+    # downstream of wealth. Each record {"leader": name, "followers": set[name], "since": turn}
+    # is the persistent CENTRE of a coherent trust cluster within a settlement; it EMERGES
+    # (leadership.update) only when >= MIN_FOLLOWERS co-settlers trust a common agent above the
+    # trust bar, and is CONTINGENT (lost when that following erodes). A PURE read of the v1 trust
+    # system — leadership writes no trust values. Empty + inert unless the run opts in
+    # (leadership_on), so a default run never retargets the home-pull and stays byte-identical
+    # to v1. Keyed by settlement id (the home-pull and renderer both read it).
+    "leaders": {},           # dict[str, dict]: settlement id -> leadership record (persistent)
+    "leadership_on": False,  # bool: M3.2 legitimate-leadership institution enabled for this run
 }
 
 
@@ -323,6 +333,9 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # boss/worker pairing never leaks across runs — and reset the wage-labor flag OFF.
     world_state.setdefault("employments", []).clear()
     world_state["labor_on"] = False
+    # M3.2: leadership records are per-simulation (a stale leader must not leak across runs).
+    world_state.setdefault("leaders", {}).clear()
+    world_state["leadership_on"] = False
     return world_state["grid"]
 
 

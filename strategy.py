@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import alliance
+import leadership
 import settlement
 import trust
 import world
@@ -421,10 +422,19 @@ def choose_action(agent: Any, strat: Strategy | None,
     if sid is not None:
         record = state.get("settlements", {}).get(sid)
         if record is not None:
-            center = record["center"]
-            if _chebyshev(pos, center) > settlement.HOME_RADIUS:
-                return (_navigate(s, _dirs_toward(pos, center)),
-                        "home-pull: drift toward settlement")
+            target, radius = record["center"], settlement.HOME_RADIUS
+            note = "home-pull: drift toward settlement"
+            # M3.2: a FOLLOWER coordinates more tightly around its LEADER (the minimal
+            # leadership effect — influence, not tax/law). following_target retargets the
+            # pull to the leader's tile at a tighter radius; it returns None (so the plain
+            # settlement pull above stands) for the leader itself, a non-follower, or when
+            # leadership is off (leaders empty), keeping a no-leadership run byte-identical.
+            led = leadership.following_target(state, agent)
+            if led is not None:
+                target, radius = led
+                note = "home-pull: rally to leader"
+            if _chebyshev(pos, target) > radius:
+                return (_navigate(s, _dirs_toward(pos, target)), note)
 
     # 4. Cautious agents conserve near a food cache when not yet hungry.
     if pers.dominant == "caution" and agent.hunger < pers.comfort and _near_food(pos, state):

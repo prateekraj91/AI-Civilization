@@ -39,6 +39,7 @@ import god_mode
 import heuristic
 import knowledge
 import labor
+import leadership
 import population
 import settlement
 import storage
@@ -416,6 +417,19 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                 print(f"Employs:         {len(as_boss)} ({workers})")
             elif as_worker is not None:
                 print(f"Employed by:     {as_worker['employer']} at wage {as_worker['wage']:.2f}")
+        # M3.2: read-only leadership overlay — printed ONLY when the system is on, so a default
+        # run's summary is byte-identical to v1. Pure read of world_state["leaders"].
+        if world_state.get("leadership_on"):
+            leaders = world_state.get("leaders", {})
+            leads = next((r for r in leaders.values() if r["leader"] == agent.name), None)
+            if leads is not None:
+                print(f"Leads:           {leads['leader']}'s following of "
+                      f"{len(leads['followers'])} (since turn {leads['since']})")
+            else:
+                follows = next((r["leader"] for r in leaders.values()
+                                if agent.name in r["followers"]), None)
+                if follows is not None:
+                    print(f"Follows:         {follows}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -632,6 +646,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Implies --economy (and so --settlements --storage). Zero LLM/RNG. Off by default -> "
              "v1 identical. (Governance/law/revolt and fiat money are out of scope, Phase 3+.)")
     p.add_argument(
+        "--leadership", action="store_true",
+        help="V2 M3.2: enable LEGITIMATE LEADERSHIP — the first POLITICAL institution and the "
+             "first power NOT downstream of wealth. A leader EMERGES as the centre of a coherent "
+             "TRUST cluster within a settlement (>= MIN_FOLLOWERS co-settlers trust a common "
+             "agent above the trust bar) — never a global-max lookup, and NONE emerges in a "
+             "fractured low-trust settlement. Legitimacy is CONTINGENT: the role is lost when the "
+             "following erodes (with hysteresis) and a more-trusted centre can displace it. A "
+             "leader COORDINATES its followers (a tighter home-pull) — INFLUENCE only, not "
+             "tax/law. PURE read of the v1 trust system (writes no trust). Implies --settlements "
+             "(needs a settlement to lead). Zero LLM/RNG. Off by default -> v1 identical. "
+             "(Taxation, law and revolt are out of scope, later Phase 3.)")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -671,7 +697,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    settlements: bool = False,
                    storage_on: bool = False,
                    economy_on: bool = False,
-                   labor_on: bool = False) -> None:
+                   labor_on: bool = False,
+                   leadership_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -728,6 +755,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M3.1: the wage-labor institution flag. False (default) -> labor.update never called and no
     # employment links form -> byte-identical to v1.
     world_state["labor_on"] = labor_on
+    # M3.2: the legitimate-leadership institution flag. False (default) -> leadership.update never
+    # called, leaders stays empty, the home-pull is never retargeted -> byte-identical to v1.
+    world_state["leadership_on"] = leadership_on
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -857,6 +887,17 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if labor_on:
             labor.update(world_state, turn)
 
+        # M3.2: legitimate leadership — the first POLITICAL institution. A leader EMERGES as the
+        # centre of a coherent trust cluster within a settlement (>= MIN_FOLLOWERS co-settlers
+        # trust a common agent), persists only while that following holds, and coordinates its
+        # followers (a tighter home-pull). PURE read of the v1 trust system — writes no trust.
+        # Runs AFTER settlement.update so this turn's membership is current; AFTER labor so a
+        # trusted poor agent can lead a settlement its richest member does not (power decoupled
+        # from wealth). Zero LLM/RNG; gated on the opt-in flag, so a default run never calls it
+        # (byte-identical to v1).
+        if leadership_on:
+            leadership.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -980,7 +1021,10 @@ def main(argv: list[str] | None = None) -> None:
     # economy. So --labor implies --economy, and --economy implies --settlements + --storage (a
     # trader/employer must be a settled agent with a stockpile). Each can still be enabled alone.
     economy_on = args.economy or args.labor
-    settlements_on = args.settlements or economy_on
+    # M3.2: legitimate leadership needs only a SETTLEMENT to lead (a coherent trust cluster of
+    # co-settlers) — it is the first power NOT downstream of wealth, so it does NOT pull in the
+    # economy/labor. --leadership therefore implies --settlements only. Each can be enabled alone.
+    settlements_on = args.settlements or economy_on or args.leadership
     storage_on = args.storage or economy_on
 
     # M0.1 baseline mind: explicit --cognition wins; else 'llm' for the trio (v1) and
@@ -1018,7 +1062,7 @@ def main(argv: list[str] | None = None) -> None:
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
-                           labor_on=args.labor)
+                           labor_on=args.labor, leadership_on=args.leadership)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1035,7 +1079,7 @@ def main(argv: list[str] | None = None) -> None:
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
                            settlements=settlements_on,
                            storage_on=storage_on, economy_on=economy_on,
-                           labor_on=args.labor)
+                           labor_on=args.labor, leadership_on=args.leadership)
 
 
 if __name__ == "__main__":

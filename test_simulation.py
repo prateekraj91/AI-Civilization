@@ -1804,6 +1804,213 @@ def test_labor_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_labor_off_run_is_byte_identical_to_v1")
 
 
+# --- Legitimate leadership: authority by trust (V2 M3.2, Phase 3) -----------
+def _led_settler(name: str, pos: tuple[int, int], sid: str = "S001") -> Agent:
+    """A living, settled agent (so leadership can read it within a settlement)."""
+    a = _agent(name, "cautious and territorial", pos, hunger=0)
+    a.settlement = sid
+    return a
+
+
+def _trusts(follower: Agent, leader_name: str, value: int) -> None:
+    """Set `follower`'s trust in `leader_name` directly (the v1 trust the module READS)."""
+    follower.relationships[leader_name] = {"trust": value, "interactions": 1, "grudge": False}
+
+
+def test_leader_emerges_only_with_a_cohered_following_not_a_global_max() -> None:
+    """A leader emerges ONLY when >= MIN_FOLLOWERS co-settlers trust a common agent — never on a
+    single high score, and never in a fractured settlement."""
+    import leadership
+    # A cohered cluster: two co-settlers trust L above the bar -> L leads.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    leadership_l = _led_settler("L", (5, 5))
+    f1 = _led_settler("F1", (5, 6)); f2 = _led_settler("F2", (6, 5))
+    _trusts(f1, "L", leadership.FORM_TRUST); _trusts(f2, "L", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    assert world_state["leaders"]["S001"]["leader"] == "L"
+    assert world_state["leaders"]["S001"]["followers"] == {"F1", "F2"}
+
+    # NOT a global-max lookup: one ardent admirer (the single highest trust in the world) is
+    # below MIN_FOLLOWERS, and trust spread thin reaches no cluster -> NO leader emerges.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    a = _led_settler("A", (5, 5)); b = _led_settler("B", (6, 6))
+    c = _led_settler("C", (4, 4)); d = _led_settler("D", (5, 6))
+    _trusts(b, "A", 9)          # A holds the globally HIGHEST trust score (9) — but from ONE agent
+    _trusts(c, "D", leadership.FORM_TRUST)   # D has a single follower too
+    leadership.update(world_state, 1)
+    assert world_state["leaders"] == {}, "no cohered cluster -> no leader, even with a max score"
+    print("PASS test_leader_emerges_only_with_a_cohered_following_not_a_global_max")
+
+
+def test_leader_can_be_a_non_wealthiest_agent_power_decoupled_from_wealth() -> None:
+    """The trust-leader need not be the richest: a poor, trusted agent leads while a rich,
+    distrusted one does not — political power decoupled from economic power."""
+    import leadership
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    poor = _led_settler("Poor", (5, 5)); poor.money = 0.0
+    rich = _led_settler("Rich", (6, 6)); rich.money = 99.0   # wealthiest by far
+    f1 = _led_settler("F1", (5, 6)); f2 = _led_settler("F2", (6, 5)); f3 = _led_settler("F3", (4, 5))
+    for f in (f1, f2, f3):
+        _trusts(f, "Poor", leadership.FORM_TRUST)   # the poor agent is widely trusted
+        _trusts(f, "Rich", -3)                      # the rich agent is distrusted
+    leadership.update(world_state, 1)
+    leader = world_state["leaders"]["S001"]["leader"]
+    assert leader == "Poor", "trust, not wealth, must drive leadership"
+    assert leader != max((poor, rich), key=lambda a: a.money).name, "the richest does NOT lead"
+    print("PASS test_leader_can_be_a_non_wealthiest_agent_power_decoupled_from_wealth")
+
+
+def test_leadership_lost_when_trust_erodes_with_hysteresis_and_can_be_displaced() -> None:
+    """Legitimacy is contingent: a single-turn wobble does NOT unseat (hysteresis); real erosion
+    ends the role; and a strictly more-trusted centre DISPLACES the incumbent."""
+    import leadership
+    # Erosion + hysteresis.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    leadership_l = _led_settler("L", (5, 5))
+    f1 = _led_settler("F1", (5, 6)); f2 = _led_settler("F2", (6, 5))
+    _trusts(f1, "L", leadership.FORM_TRUST); _trusts(f2, "L", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    assert world_state["leaders"]["S001"]["leader"] == "L"
+    # Wobble: one follower drifts FORM_TRUST -> KEEP_TRUST. Still retained (no flicker).
+    _trusts(f1, "L", leadership.KEEP_TRUST)
+    leadership.update(world_state, 2)
+    assert world_state["leaders"].get("S001", {}).get("leader") == "L", "a one-turn wobble must NOT unseat"
+    # Real erosion: the leader turns hostile, both fall below KEEP_TRUST -> the role is lost.
+    _trusts(f1, "L", -3); _trusts(f2, "L", -3)
+    ev = leadership.update(world_state, 3)
+    assert "S001" not in world_state["leaders"], "erosion below the keep bar must end the role"
+    assert any("lost legitimacy" in e for e in ev), ev
+
+    # Displacement by a more-trusted centre.
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    leadership_l = _led_settler("L", (5, 5)); c = _led_settler("C", (7, 7))
+    f1 = _led_settler("F1", (5, 6)); f2 = _led_settler("F2", (6, 5))
+    _trusts(f1, "L", leadership.FORM_TRUST); _trusts(f2, "L", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    assert world_state["leaders"]["S001"]["leader"] == "L"
+    # The following shifts to C (strictly more high-trust followers than L now has).
+    _trusts(f1, "L", leadership.KEEP_TRUST); _trusts(f2, "L", leadership.KEEP_TRUST)
+    _trusts(f1, "C", leadership.FORM_TRUST); _trusts(f2, "C", leadership.FORM_TRUST)
+    ev = leadership.update(world_state, 2)
+    assert world_state["leaders"]["S001"]["leader"] == "C", "a more-trusted centre must displace"
+    assert world_state["leaders"]["S001"]["since"] == 2, "displacement resets the tenure"
+    assert any("displaced" in e for e in ev), ev
+    print("PASS test_leadership_lost_when_trust_erodes_with_hysteresis_and_can_be_displaced")
+
+
+def test_leadership_effect_makes_a_led_settlement_more_cohesive_than_unled() -> None:
+    """The leadership EFFECT is real: a FOLLOWER is pulled tighter to its leader than a plain
+    settler is to the centre — a led settlement differs measurably from an unled one (influence,
+    not tax/law)."""
+    import leadership, settlement
+    _fresh_world(); create_world(size=20)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    world_state["settlements"] = {"S001": {"id": "S001", "center": (10, 10),
+                                            "members": {"L", "F1", "F2"}, "founded": 0}}
+    leadership_l = _led_settler("L", (10, 10))                 # leader sits at the centre
+    follower = _led_settler("F1", (12, 10)); _led_settler("F2", (10, 12))
+    _trusts(follower, "L", leadership.FORM_TRUST)
+    _trusts(world_state["agents"][-1], "L", leadership.FORM_TRUST)
+    leadership.update(world_state, 1)
+    # The follower stands at Chebyshev distance 2 — within the settlement HOME_RADIUS (2) but
+    # OUTSIDE the tighter LED_HOME_RADIUS (1). LED: it is pulled in. UNLED: it holds.
+    assert leadership.LED_HOME_RADIUS < settlement.HOME_RADIUS
+    led_action, led_note = choose_action(follower, None, world_state)
+    assert led_action in world.VALID_ACTIONS and led_action.startswith("move_")
+    assert "leader" in led_note, led_note
+    # Same agent, same position, leadership OFF (no leader record) -> the ordinary settlement
+    # pull leaves it alone at distance 2 (within HOME_RADIUS), so it does NOT rally.
+    world_state["leaders"] = {}
+    unled_action, _ = choose_action(follower, None, world_state)
+    assert not (unled_action.startswith("move_")), \
+        "without a leader the member is within HOME_RADIUS and is not pulled — less cohesive"
+    print("PASS test_leadership_effect_makes_a_led_settlement_more_cohesive_than_unled")
+
+
+def test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng() -> None:
+    """The load-bearing invariant: leadership is a PURE read — it writes no trust, makes no LLM
+    call, and draws no RNG."""
+    import copy, leadership
+    _fresh_world(); create_world(size=12)
+    world_state["leadership_on"] = True; world_state["leaders"] = {}
+    leadership_l = _led_settler("L", (5, 5))
+    f1 = _led_settler("F1", (5, 6)); f2 = _led_settler("F2", (6, 5))
+    _trusts(f1, "L", leadership.FORM_TRUST); _trusts(f2, "L", leadership.FORM_TRUST)
+    before = {a.name: copy.deepcopy(a.relationships) for a in world_state["agents"]}
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"; llm.reset_call_stats(); st0 = random.getstate()
+        for t in range(1, 12):
+            leadership.update(world_state, t)
+        stats = llm.get_call_stats()
+    finally:
+        llm.PROVIDER = saved
+    after = {a.name: a.relationships for a in world_state["agents"]}
+    assert after == before, "leadership MUST NOT write any trust value (pure read of the network)"
+    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert random.getstate() == st0, "leadership consumed RNG (would desync v1)"
+    print("PASS test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng")
+
+
+def test_leadership_off_run_is_byte_identical_to_v1() -> None:
+    """leadership_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(37)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, leadership_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "leadership_on=False changed the default run output"
+    print("PASS test_leadership_off_run_is_byte_identical_to_v1")
+
+
+def test_leadership_emerges_organically_from_built_trust_in_a_full_run() -> None:
+    """The load-bearing test: in a FULL seeded simulation with ZERO injected trust, agents
+    settle, build trust ONLY through the conversation loop, and a leader emerges at the
+    settlement's founding and is later DISPLACED as the network shifts — leadership falls out
+    of earned trust, not a constructed fixture. Deterministic (seeded) and reproducible."""
+    def organic_run():
+        random.seed(7)
+        cells = [(x, y) for x in range(4, 7) for y in range(4, 7)]
+        goals = {"survive": 8, "wealth": 3, "friendship": 4}
+        specs = [(f"P{i}", ["friendly", "cautious", "social"][i % 3], dict(goals), cells[i])
+                 for i in range(7)]
+        food = {"initial": 40, "per_turn": 6, "cap": 60, "cluster": True}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(60, focal_budget=7, agent_specs=specs, grid_size=10,
+                                food_cfg=food, knowledge_seed=[("farming", 7)],
+                                settlements=True, storage_on=True, leadership_on=True,
+                                cognition="llm")
+        return [l.strip() for l in buf.getvalue().splitlines()
+                if "emerged as leader" in l or "displaced" in l]
+    saved = llm.PROVIDER
+    try:
+        llm.PROVIDER = "random"
+        events = organic_run()
+        events2 = organic_run()
+    finally:
+        llm.PROVIDER = saved
+    assert any("emerged as leader" in e for e in events), "a leader must emerge from built trust"
+    assert any("displaced" in e for e in events), "the role must change hands as trust shifts"
+    assert events == events2, "the organic leadership trajectory must be reproducible (seeded)"
+    print("PASS test_leadership_emerges_organically_from_built_trust_in_a_full_run")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -2917,6 +3124,13 @@ def main_runner() -> None:
         test_inequality_compounds_with_wage_labor_on_vs_off,
         test_labor_adds_zero_llm_and_no_rng,
         test_labor_off_run_is_byte_identical_to_v1,
+        test_leader_emerges_only_with_a_cohered_following_not_a_global_max,
+        test_leader_can_be_a_non_wealthiest_agent_power_decoupled_from_wealth,
+        test_leadership_lost_when_trust_erodes_with_hysteresis_and_can_be_displaced,
+        test_leadership_effect_makes_a_led_settlement_more_cohesive_than_unled,
+        test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng,
+        test_leadership_off_run_is_byte_identical_to_v1,
+        test_leadership_emerges_organically_from_built_trust_in_a_full_run,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,
