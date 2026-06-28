@@ -3360,6 +3360,123 @@ def test_event_styling_emphasises_major_moments() -> None:
     print("PASS test_event_styling_emphasises_major_moments")
 
 
+def test_pygame_renderer_imports_only_state_reading_modules() -> None:
+    """renderer/pygame_renderer.py must READ state only — no decision-logic imports.
+
+    Mirrors the text-renderer AST boundary test: the visual renderer DRAWS the world and
+    may touch nothing but pygame + stdlib. It must not import strategy/trust/conversation/
+    alliance/personality/agents/llm/god_mode/economy/population/monarchy/kingdoms/empire —
+    importing any would let presentation reach into decision logic. Parses the file (never
+    imports it), so this runs with or without pygame installed.
+    """
+    import ast
+    with open("renderer/pygame_renderer.py") as f:
+        tree = ast.parse(f.read())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    forbidden = {"strategy", "trust", "conversation", "alliance", "personality", "agents",
+                 "llm", "god_mode", "economy", "population", "monarchy", "kingdoms", "empire",
+                 "leadership", "taxation", "labor", "settlement", "knowledge"}
+    assert not (imported & forbidden), f"pygame renderer imports decision logic: {imported & forbidden}"
+    # It may lean on pygame + stdlib only; it draws straight from the snapshot dict, so it
+    # needs no project module at all (not even `world`).
+    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "pygame"}
+    assert imported <= allowed, f"pygame renderer imports unexpected modules: {imported - allowed}"
+    print("PASS test_pygame_renderer_imports_only_state_reading_modules")
+
+
+def test_pygame_renderer_color_by_personality_and_size_by_wealth() -> None:
+    """Pure mapping helpers: COLOUR encodes dominant personality, RADIUS grows with wealth.
+
+    Skips gracefully if pygame is not installed (the renderer is an OPTIONAL dependency),
+    so the suite stays green either way.
+    """
+    try:
+        from renderer.pygame_renderer import (agent_color, agent_radius, dominant_trait, _wealth)
+    except ImportError:
+        print("PASS test_pygame_renderer_color_by_personality_and_size_by_wealth (skipped: no pygame)")
+        return
+    # Dominant trait read straight off the free-text personality (no personality-module import).
+    assert dominant_trait("cautious and territorial") == "caution"
+    assert dominant_trait("friendly and outgoing") == "friendliness"
+    assert dominant_trait("independent and competitive") == "independence"
+    assert dominant_trait("curious explorer") == "curiosity"
+    assert dominant_trait("") == "curiosity", "an unrecognised personality falls back deterministically"
+    # Distinct colours per dominant trait.
+    colors = {agent_color(p) for p in ("cautious", "friendly", "independent", "curious")}
+    assert len(colors) == 4, "each dominant personality maps to a distinct colour"
+    # Radius is monotonic in wealth and clamped to a sane band.
+    cell = 40
+    r_poor = agent_radius(0.0, cell)
+    r_mid = agent_radius(20.0, cell)
+    r_rich = agent_radius(500.0, cell)
+    assert r_poor < r_mid < r_rich, "richer agents are drawn larger"
+    assert 2 <= r_poor and r_rich <= cell, "radius clamped to a visible, bounded range"
+    assert _wealth(_FakeAgent(money=10.0, stockpile=5.0)) == 15.0, "wealth = money + stockpile"
+    assert _wealth(_FakeAgent()) == 0.0, "missing wealth fields default to 0"
+    print("PASS test_pygame_renderer_color_by_personality_and_size_by_wealth")
+
+
+class _FakeAgent:
+    """A minimal stand-in agent for the pygame-renderer read-only/draw tests."""
+    def __init__(self, name="A", personality="cautious", position=(1, 1),
+                 alive=True, money=None, stockpile=None):
+        self.name = name; self.personality = personality; self.position = position
+        self.alive = alive
+        if money is not None:
+            self.money = money
+        if stockpile is not None:
+            self.stockpile = stockpile
+
+
+def test_pygame_renderer_draw_does_not_mutate_world_state() -> None:
+    """Drawing a frame is a pure READ: world_state is byte-identical before and after.
+
+    Uses SDL's headless 'dummy' video driver so a surface can be created without a real
+    display. Skips gracefully if pygame (or a usable driver) is unavailable.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_renderer_draw_does_not_mutate_world_state (skipped: no pygame)")
+        return
+    state = {
+        "size": 12, "turn": 5,
+        "food": [(2, 3), (7, 8), (1, 1)],
+        "agents": [
+            _FakeAgent("Rich", "independent and competitive", (4, 4), True, 200.0, 50.0),
+            _FakeAgent("Poor", "friendly and outgoing", (6, 6), True, 0.5, 0.0),
+            _FakeAgent("Dead", "curious", (8, 2), False, 5.0, 0.0),  # must not be drawn
+        ],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.personality, a.position, a.alive,
+                      getattr(a, "money", None), getattr(a, "stockpile", None))
+                     for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        r._draw(state)              # the pure draw path (no input/pacing loop)
+    finally:
+        pygame.quit()
+    after = {k: state[k] for k in state if k != "agents"}
+    assert after == before, "pygame draw mutated world_state"
+    agents_after = [(a.name, a.personality, a.position, a.alive,
+                     getattr(a, "money", None), getattr(a, "stockpile", None))
+                    for a in state["agents"]]
+    assert agents_after == agents_before, "pygame draw mutated an agent"
+    print("PASS test_pygame_renderer_draw_does_not_mutate_world_state")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -3855,6 +3972,9 @@ def main_runner() -> None:
         test_renderer_imports_only_state_reading_modules,
         test_render_frame_does_not_mutate_world_state,
         test_event_styling_emphasises_major_moments,
+        test_pygame_renderer_imports_only_state_reading_modules,
+        test_pygame_renderer_color_by_personality_and_size_by_wealth,
+        test_pygame_renderer_draw_does_not_mutate_world_state,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

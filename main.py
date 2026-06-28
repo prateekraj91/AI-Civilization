@@ -800,9 +800,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--speed", type=parse_speed, default=_SPEED_PRESETS["normal"], metavar="SPEED",
         help="pacing for a RENDERED run: slow (~2.0s/turn), normal (~0.5s/turn, "
              "default), fast (~0.1s/turn), or a raw number of seconds (e.g. 0.3). The "
-             "pause is presentation-only — it applies ONLY with --render rich, after "
-             "each turn is drawn, and never affects tests, plain/logged runs, or the "
-             "seeded RNG. Demo invocation: --render rich --speed slow --turns 30.")
+             "pause is presentation-only — it applies ONLY with a renderer (--render "
+             "rich / --pygame), after each turn is drawn, and never affects tests, "
+             "plain/logged runs, or the seeded RNG. Demo: --render rich --speed slow.")
+    p.add_argument(
+        "--pygame", action="store_true",
+        help="VISUAL renderer (Pygame, SLICE 1): open a window and watch the world — a "
+             "muted terrain grid with food dots and one circle per LIVING agent, COLOURED "
+             "by personality and SIZED by wealth (richer = bigger). READ-ONLY: it draws "
+             "world_state and writes nothing back, reusing the real per-turn sim loop (it "
+             "never advances the world itself). SPACE pauses, ESC / window-close quits; "
+             "--speed sets the pace. Honours the world-setup flags (--agents, --grid-size, "
+             "--seed, institution flags). Optional dependency: if Pygame is not installed "
+             "the run exits with a 'pip install pygame' message. (Settlements, rulers, "
+             "kingdoms and war are later slices — this slice draws only terrain + agents.)")
     return p.parse_args(argv)
 
 
@@ -1142,18 +1153,24 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     print_events_log()
 
 
-def _make_renderer(mode: str, *, sink: "Any" = None):
-    """Build the optional Day 18 renderer for --render (None for plain mode).
+def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0):
+    """Build the optional renderer for the chosen mode (None for plain mode).
 
-    Imported lazily so a plain run never imports `rich` (or the renderer package) at
-    all — keeping the default path's dependencies and import-time behaviour unchanged.
-    `sink` is where the plain per-turn text is redirected during the loop: the open log
-    file under --log, else None (the renderer defaults it to os.devnull).
+    Imported lazily so a plain run never imports `rich`/`pygame` (or the renderer
+    package) at all — keeping the default path's dependencies and import-time behaviour
+    unchanged. `sink` is where the plain per-turn text is redirected during the loop:
+    the open log file under --log, else None (the renderer defaults it to os.devnull).
+    `turn_delay` paces the visual renderer (it waits this long per turn itself).
     """
-    if mode != "rich":
-        return None
-    from renderer import RichRenderer
-    return RichRenderer(sink=sink)
+    if mode == "rich":
+        from renderer import RichRenderer
+        return RichRenderer(sink=sink)
+    if mode == "pygame":
+        # SLICE 1 visual renderer. Same .live()/.update()/.sink interface the sim drives;
+        # it paces itself (turn_delay), so the sim's own per-turn sleep stays at 0.
+        from renderer.pygame_renderer import PygameRenderer
+        return PygameRenderer(sink=sink, turn_delay=turn_delay)
+    return None
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1167,6 +1184,19 @@ def main(argv: list[str] | None = None) -> None:
     # governs an identical world whether or not the dashboard is on.
     if args.render == "rich":
         import renderer  # noqa: F401  (import-for-side-effect: warm rich before seed)
+
+    # --pygame selects the VISUAL renderer; it overrides --render. Resolve the mode once
+    # and (like rich) warm the optional dependency BEFORE seeding so the import can never
+    # shift the RNG stream — keeping a seeded --pygame run's world identical to a plain
+    # one. Pygame is OPTIONAL: if it isn't installed, fail gracefully with a clear hint
+    # rather than a traceback, and never make the core sim depend on it.
+    render_mode = "pygame" if args.pygame else args.render
+    if render_mode == "pygame":
+        try:
+            import pygame  # noqa: F401  (warm + availability check before seed)
+        except ImportError:
+            print("Pygame is not installed. Install it with:  pip install pygame")
+            return
 
     # Seed BEFORE any world setup so placement + food spawns + provider RNG are all
     # part of the reproducible sequence. --seed wins over AICIV_SEED; absent both, the
@@ -1246,7 +1276,10 @@ def main(argv: list[str] | None = None) -> None:
         focal_budget = DEFAULT_FOCAL_BUDGET
 
     # --log mirrors stdout to a file via a Tee for the whole run, then restores it.
-    if args.log:
+    # The visual --pygame renderer is a live watch tool, so it always takes the no-log
+    # branch below (which suppresses KeyboardInterrupt for a clean window-close); --log
+    # is ignored for it.
+    if args.log and render_mode != "pygame":
         os.makedirs(os.path.dirname(args.log) or ".", exist_ok=True)
         log_file = open(args.log, "w")
         original = sys.stdout
@@ -1275,12 +1308,15 @@ def main(argv: list[str] | None = None) -> None:
             log_file.close()
         print(f"[run] captured to {args.log}")
     else:
-        # No log: rich mode drops the plain per-turn text (devnull) and shows only the
-        # dashboard; the summary prints to the terminal after the run.
-        renderer = _make_renderer(args.render, sink=None)
+        # No log: a renderer (rich/pygame) drops the plain per-turn text (devnull) and
+        # shows only its view; the summary prints to the terminal after the run. The
+        # pygame renderer paces itself (turn_delay below is 0 for it), so closing the
+        # window raises KeyboardInterrupt and ends the run cleanly via the suppress.
+        renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed)
+        sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
-                           renderer=renderer, turn_delay=args.speed,
+                           renderer=renderer, turn_delay=sim_delay,
                            cognition=cognition, focal_budget=focal_budget,
                            agent_specs=agent_specs, grid_size=grid_size, food_cfg=food_cfg,
                            knowledge_seed=knowledge_seed, tech_tree=tech_tree,
