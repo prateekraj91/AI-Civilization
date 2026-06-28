@@ -108,6 +108,35 @@ _FOOD_GLYPH_MIN_CELL = 9      # below this cell size food stays a simple dot (wh
 _HOUSE_MIN_CELL = 8           # below this cell size houses stay implied by the region only
 _MAX_HOUSES = 6               # cap the house glyphs drawn per settlement (keeps a village tidy)
 
+# Slice 5: DETAILED TERRAIN & ATMOSPHERE. A living landscape, drawn FIRST under everything.
+# The grass texture + scattered features (trees/rocks/pond) + vignette + frame are baked ONCE
+# into a cached background surface (built per window/grid size, blitted each frame) — so it
+# costs nothing per turn and never desyncs. ALL procedural variation comes from a pure
+# coordinate HASH (`terrain_noise`), never the global `random` module, so seeded sim runs stay
+# byte-identical. Kept muted so the slice-1..4 foreground (agents/food/buildings) stays legible.
+_GRASS_BASE = (42, 58, 40)    # base grassland — a touch greener than the old flat fill
+_GRASS_VAR = 9                # fine per-tile tonal swing (+/-), the cheap value-noise texture
+_GRASS_PATCH = 12             # low-frequency swing -> broad patches of darker/lighter grass
+_GRASS_SPECK_HI = (60, 86, 54)   # occasional lighter stipple speck
+_GRASS_SPECK_LO = (32, 48, 32)   # occasional darker stipple speck
+_TREE_TRUNK = (74, 52, 34)
+_TREE_CANOPY = (44, 76, 44)
+_TREE_CANOPY_HI = (56, 96, 54)
+_ROCK = (92, 96, 90)
+_ROCK_HI = (122, 126, 118)
+_WATER = (46, 84, 116)
+_WATER_HI = (74, 118, 150)
+_FARMLAND = (110, 82, 50)     # tilled-dirt tint near a settlement (drawn translucent each frame)
+_FARMLAND_FURROW = (84, 60, 38)
+_FARMLAND_ALPHA = 52
+_VIGNETTE_MAX = 92            # edge darkening strength (alpha) for atmospheric depth
+_FRAME_OUTER = (22, 26, 20)   # dark outer frame around the map zone
+_FRAME_INNER = (78, 90, 66)   # a thin lighter inner line, for a framed-map look
+# Feature density thresholds on terrain_noise (sparse, so the map stays readable).
+_TREE_THRESHOLD = 0.93        # ~7% of cells get a tree
+_ROCK_THRESHOLD = 0.965       # ~3.5% of cells get a rock
+_STIPPLE_STEP = 4             # stipple sampling stride in pixels (coarser = cheaper)
+
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
 # Tie-break order matches personality.DOMINANCE_ORDER (curiosity first).
@@ -289,6 +318,25 @@ def agent_role(name: str, state: dict[str, Any]) -> str | None:
     return None
 
 
+def terrain_noise(x: int, y: int, salt: int = 0) -> float:
+    """A deterministic pseudo-random value in [0, 1) from integer coords (Slice 5).
+
+    A pure integer hash (xorshift-style mixing) of (x, y, salt) — NO global `random`, no
+    import, no state. Same input -> same output forever, so the procedural landscape is
+    stable across frames and seeds and can NEVER touch the simulation's seeded RNG stream.
+    `salt` lets independent feature layers (grass tone / trees / rocks / stipple) decorrelate.
+    """
+    h = (x * 374761393 + y * 668265263 + salt * 2147483647) & 0xFFFFFFFF
+    h = (h ^ (h >> 13)) * 1274126177 & 0xFFFFFFFF
+    h ^= (h >> 16)
+    return (h & 0xFFFFFF) / 0x1000000
+
+
+def _shade(color: tuple[int, int, int], delta: int) -> tuple[int, int, int]:
+    """Lighten (delta>0) or darken (delta<0) an RGB colour, clamped to [0, 255]. Pure."""
+    return tuple(max(0, min(255, c + delta)) for c in color)
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -313,6 +361,7 @@ class PygameRenderer:
         self._size = 0
         self.paused = False
         self._last_state: dict[str, Any] | None = None
+        self._terrain_bg: Any = None      # Slice 5: cached landscape, built once per grid size
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -342,6 +391,9 @@ class PygameRenderer:
         self._cell = _cell_size(size)
         grid_px = self._cell * max(1, size)
         self._screen = pygame.display.set_mode((grid_px + _PANEL_W, grid_px + _HUD_H))
+        # Slice 5: bake the procedural landscape ONCE for this grid size (cached, blitted each
+        # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
+        self._terrain_bg = self._build_terrain(grid_px)
 
     # -- the per-turn hook the sim calls -----------------------------------
     def update(self, state: dict[str, Any]) -> None:
@@ -390,14 +442,17 @@ class PygameRenderer:
         cell = self._cell
         grid_px = cell * size
 
-        # Terrain: a flat muted ground, with faint cell lines only when cells are big
-        # enough that lines read as texture rather than noise.
-        screen.fill(_TERRAIN)
-        if cell >= 12:
-            for i in range(size + 1):
-                p = i * cell
-                pygame.draw.line(screen, _GRID_LINE, (p, 0), (p, grid_px))
-                pygame.draw.line(screen, _GRID_LINE, (0, p), (grid_px, p))
+        # Slice 5: the cached LANDSCAPE (textured grass, trees/rocks/pond, vignette + frame)
+        # under everything, blitted not rebuilt. Fallback flat fill if it isn't built yet.
+        screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters; map zone is overdrawn below
+        if self._terrain_bg is not None:
+            screen.blit(self._terrain_bg, (0, 0))
+        else:
+            screen.fill(_GRASS_BASE, (0, 0, grid_px, grid_px))
+
+        # Slice 5: settled land looks CULTIVATED — a translucent tilled-dirt tint (with furrows)
+        # under the slice-2 region. Dynamic (settlements come and go), but cheap. No-op if none.
+        self._draw_settlement_ground(state)
 
         # Slice 2: SETTLEMENTS as soft translucent regions UNDER everything else, so a
         # settlement reads as a background "place" with food and agents sitting on top.
@@ -432,6 +487,133 @@ class PygameRenderer:
         # last so it owns the right zone cleanly; a pure read of state, like everything else.
         self._draw_panel(state, grid_px)
         pygame.display.flip()
+
+    # -- Slice 5: cached procedural landscape (built ONCE; pure hash, no sim RNG) --
+    def _build_terrain(self, grid_px: int) -> Any:
+        """Bake the landscape into a Surface ONCE: textured grass, features, vignette, frame.
+
+        Everything here is deterministic from `terrain_noise` (a pure coordinate hash) — it
+        never calls `random`, so it cannot perturb the seeded sim. Built per grid size and
+        cached, so it is free to blit each frame. Returns the finished background Surface.
+        """
+        if grid_px <= 0:
+            return None
+        cell, size = self._cell, self._size
+        surf = pygame.Surface((grid_px, grid_px))
+        surf.fill(_GRASS_BASE)
+
+        # 1) GROUND texture: per-tile tonal value-noise + a low-frequency patch swing, so the
+        #    grass reads as ground with broad lighter/darker patches rather than a flat colour.
+        tile = max(3, cell // 2)
+        for ty in range(0, grid_px, tile):
+            for tx in range(0, grid_px, tile):
+                fine = terrain_noise(tx // tile, ty // tile, 1) - 0.5
+                patch = terrain_noise(tx // (tile * 5 + 1), ty // (tile * 5 + 1), 2) - 0.5
+                shade = int(fine * 2 * _GRASS_VAR + patch * 2 * _GRASS_PATCH)
+                surf.fill(_shade(_GRASS_BASE, shade), (tx, ty, tile, tile))
+
+        # 2) STIPPLE: sparse light/dark specks for grain (cheap; most samples place nothing).
+        for sy in range(0, grid_px, _STIPPLE_STEP):
+            for sx in range(0, grid_px, _STIPPLE_STEP):
+                h = terrain_noise(sx, sy, 3)
+                if h > 0.90:
+                    surf.set_at((sx, sy), _GRASS_SPECK_HI)
+                elif h < 0.07:
+                    surf.set_at((sx, sy), _GRASS_SPECK_LO)
+
+        # 3) A POND in one deterministic off-centre region (kept clear of the central food arena).
+        self._build_pond(surf, grid_px, cell)
+
+        # 4) Scattered TREES and ROCKS, one chance per world cell (sparse thresholds).
+        for cy in range(size):
+            for cx in range(size):
+                px, py = cx * cell + cell // 2, cy * cell + cell // 2
+                if terrain_noise(cx, cy, 4) > _TREE_THRESHOLD:
+                    self._build_tree(surf, px, py, cell)
+                elif terrain_noise(cx, cy, 5) > _ROCK_THRESHOLD:
+                    self._build_rock(surf, px, py, cell)
+
+        # 5) ATMOSPHERE: a soft edge vignette for depth, and a clean framed border.
+        self._build_vignette(surf, grid_px)
+        pygame.draw.rect(surf, _FRAME_OUTER, (0, 0, grid_px, grid_px), 3)
+        pygame.draw.rect(surf, _FRAME_INNER, (3, 3, grid_px - 6, grid_px - 6), 1)
+        return surf
+
+    def _build_pond(self, surf: Any, grid_px: int, cell: int) -> None:
+        """A still pond in a fixed off-centre spot (deterministic; never the central arena)."""
+        pcx = int(grid_px * 0.22)
+        pcy = int(grid_px * 0.74)
+        rx = max(cell, int(grid_px * 0.10))
+        ry = max(cell, int(grid_px * 0.07))
+        pygame.draw.ellipse(surf, _WATER, (pcx - rx, pcy - ry, 2 * rx, 2 * ry))
+        pygame.draw.ellipse(surf, _WATER_HI, (pcx - rx, pcy - ry, 2 * rx, 2 * ry), 1)
+        pygame.draw.ellipse(surf, _WATER_HI,
+                            (pcx - rx // 2, pcy - ry // 2, rx, ry // 2), 1)  # a faint highlight
+
+    def _build_tree(self, surf: Any, px: int, py: int, cell: int) -> None:
+        """A simple tree: a brown trunk + a rounded green canopy with a lighter top."""
+        r = max(2, int(cell * 0.42))
+        trunk_w = max(1, r // 3)
+        pygame.draw.rect(surf, _TREE_TRUNK, (px - trunk_w // 2, py, trunk_w, r))
+        pygame.draw.circle(surf, _TREE_CANOPY, (px, py), r)
+        pygame.draw.circle(surf, _TREE_CANOPY_HI, (px - r // 4, py - r // 4), max(1, r // 2))
+        pygame.draw.circle(surf, _shade(_TREE_CANOPY, -14), (px, py), r, 1)
+
+    def _build_rock(self, surf: Any, px: int, py: int, cell: int) -> None:
+        """A small boulder: a grey blob with a light top facet."""
+        r = max(2, int(cell * 0.3))
+        pygame.draw.circle(surf, _ROCK, (px, py), r)
+        pygame.draw.circle(surf, _ROCK_HI, (px - r // 4, py - r // 4), max(1, r // 2))
+        pygame.draw.circle(surf, _shade(_ROCK, -18), (px, py), r, 1)
+
+    def _build_vignette(self, surf: Any, grid_px: int) -> None:
+        """Darken the map edges with nested translucent rings for atmospheric depth."""
+        vign = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
+        rings = 26
+        band = max(1, grid_px // (rings * 2))
+        for i in range(rings):
+            a = int(_VIGNETTE_MAX * (1 - i / rings) ** 2)
+            inset = i * band
+            if a > 0 and grid_px - 2 * inset > 0:
+                pygame.draw.rect(vign, (0, 0, 0, a),
+                                 (inset, inset, grid_px - 2 * inset, grid_px - 2 * inset),
+                                 max(1, band))
+        surf.blit(vign, (0, 0))
+
+    def _draw_settlement_ground(self, state: dict[str, Any]) -> None:
+        """Tint settled land toward tilled DIRT (with clipped furrows) — cultivated cue (READ).
+
+        A translucent brown disc per settlement, sized just inside its region, with a few
+        horizontal furrow lines clipped to the disc so it reads as a ploughed field. Drawn
+        under the slice-2 teal region so the two blend. No-op when there are no settlements.
+        """
+        settlements = state.get("settlements")
+        if not settlements:
+            return
+        cell = self._cell
+        grid_px = cell * self._size
+        pos_by_name = {
+            a.name: a.position
+            for a in state.get("agents", [])
+            if getattr(a, "alive", True) and getattr(a, "position", None) is not None
+        }
+        overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
+        for sid in sorted(settlements):
+            center = settlements[sid].get("center")
+            if center is None:
+                continue
+            members = settlements[sid].get("members") or ()
+            mpos = [pos_by_name[n] for n in members if n in pos_by_name]
+            rad = max(cell, int(round(settlement_radius_cells(center, mpos) * cell * 0.85)))
+            cx, cy = self._to_px(int(center[0]), int(center[1]))
+            pygame.draw.circle(overlay, (*_FARMLAND, _FARMLAND_ALPHA), (cx, cy), rad)
+            step = max(3, cell // 2)
+            for fy in range(cy - rad + step, cy + rad, step):    # furrows, clipped to the disc
+                half = int((rad * rad - (fy - cy) ** 2) ** 0.5)
+                if half > 1:
+                    pygame.draw.line(overlay, (*_FARMLAND_FURROW, _FARMLAND_ALPHA),
+                                     (cx - half, fy), (cx + half, fy), 1)
+        self._screen.blit(overlay, (0, 0))
 
     # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
     def _draw_agent_figure(self, cx: int, cy: int, r: int, color: tuple[int, int, int]) -> int:

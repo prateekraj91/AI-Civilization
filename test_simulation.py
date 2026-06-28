@@ -3717,6 +3717,71 @@ def test_pygame_renderer_iconography_draw_is_read_only() -> None:
     print("PASS test_pygame_renderer_iconography_draw_is_read_only")
 
 
+def test_pygame_terrain_noise_is_pure_and_deterministic() -> None:
+    """Slice 5: the terrain hash is deterministic, in [0,1), salt-decorrelated, and RNG-free.
+
+    Pure helpers (terrain_noise + _shade) — testable without a display; the procedural
+    landscape must NEVER touch the global random module (or it would desync the seeded sim).
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import terrain_noise, _shade
+    except ImportError:
+        print("PASS test_pygame_terrain_noise_is_pure_and_deterministic (skipped: no pygame)")
+        return
+    s0 = _random.getstate()
+    vals = [terrain_noise(x, y, salt) for x in range(0, 40) for y in range(0, 40) for salt in range(3)]
+    assert _random.getstate() == s0, "terrain_noise touched the global RNG stream"
+    assert all(0.0 <= v < 1.0 for v in vals), "noise must stay in [0, 1)"
+    assert terrain_noise(7, 3) == terrain_noise(7, 3), "noise must be deterministic"
+    assert terrain_noise(7, 3, 1) != terrain_noise(7, 3, 2), "different salts decorrelate layers"
+    assert len({terrain_noise(i, 0) for i in range(50)}) > 40, "noise varies across coordinates"
+    assert _shade((42, 58, 40), 20) == (62, 78, 60)
+    assert _shade((42, 58, 40), -100) == (0, 0, 0) and _shade((250, 250, 250), 50) == (255, 255, 255)
+    print("PASS test_pygame_terrain_noise_is_pure_and_deterministic")
+
+
+def test_pygame_terrain_cached_built_once_and_read_only() -> None:
+    """Slice 5: the landscape is baked ONCE per grid size (cached, blitted), built RNG-free,
+    and drawing it (with farmland near settlements) never mutates world_state."""
+    import copy, random as _random, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_terrain_cached_built_once_and_read_only (skipped: no pygame)")
+        return
+    state = {
+        "size": 18, "turn": 8,
+        "food": [(3, 3), (10, 12)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": {"A", "B"}, "founded": 2}},
+        "agents": [_FakeAgent("A", "friendly", (6, 6), True, 7.0, 0.0),
+                   _FakeAgent("B", "curious", (7, 6), True, 2.0, 0.0)],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        s0 = _random.getstate()
+        r._ensure_screen(state["size"])
+        assert _random.getstate() == s0, "building terrain touched the global RNG"
+        bg = r._terrain_bg
+        assert bg is not None, "terrain background was baked at window open"
+        # Re-ensuring the SAME size must NOT rebuild (cached); a new size rebuilds.
+        r._ensure_screen(state["size"])
+        assert r._terrain_bg is bg, "terrain must be cached, not rebuilt every call"
+        r._draw(state)
+        r._draw(state)
+        assert r._terrain_bg is bg, "the cached terrain is reused across frames (not regenerated)"
+    finally:
+        pygame.quit()
+    after = {k: state[k] for k in state if k != "agents"}
+    assert after == before, "terrain/farmland draw mutated world_state"
+    print("PASS test_pygame_terrain_cached_built_once_and_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4221,6 +4286,8 @@ def main_runner() -> None:
         test_pygame_renderer_panel_reads_state_does_not_mutate,
         test_pygame_role_and_talk_helpers_read_state,
         test_pygame_renderer_iconography_draw_is_read_only,
+        test_pygame_terrain_noise_is_pure_and_deterministic,
+        test_pygame_terrain_cached_built_once_and_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
