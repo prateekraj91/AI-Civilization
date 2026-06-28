@@ -50,6 +50,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import textwrap
 import time
 from typing import Any
 
@@ -107,8 +108,27 @@ _TRAIT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _TARGET_PX = 760               # aim the grid area near this many pixels on its long edge
 _MIN_CELL = 5                  # floor so a large world still fits a window
 _MAX_CELL = 44                 # ceiling so a tiny world isn't comically huge
-_HUD_H = 26                    # status strip height
+_HUD_H = 26                    # status strip height (under the MAP zone)
 _WEALTH_CEIL = 60.0            # wealth mapped to the largest radius (sqrt ramp below it)
+
+# Slice 3: LEGIBILITY. The window widens into a MAP zone (left, the square grid) and a
+# PANEL zone (right sidebar) holding a state summary above a scrolling EVENT FEED, so the
+# viewer can READ what is happening while watching the map.
+_PANEL_W = 320                 # sidebar width in pixels
+_PANEL_BG = (20, 22, 18)       # panel background — a shade off the terrain so the zones read apart
+_PANEL_DIV = (58, 64, 54)      # thin divider lines inside the panel
+_PANEL_PAD = 10                # inner margin
+_PANEL_TITLE = (150, 210, 205) # section headers (teal, echoing settlements)
+_STAT_LABEL = (138, 144, 130)  # muted stat captions
+_STAT_VALUE = (226, 230, 216)  # bright stat values
+# Light per-type colour coding for the feed (kept readable, never garish).
+_FEED_GOD = (236, 205, 90)     # [GOD] interventions — yellow
+_FEED_WAR = (236, 138, 74)     # conquest / war / breakaway — strong orange
+_FEED_DEATH = (226, 100, 100)  # a death — reddish
+_FEED_TOWN = _SETTLEMENT_EDGE  # settlements forming/growing — teal (matches the map region)
+_FEED_SOCIAL = (122, 200, 132) # alliances / trust / trade / tribute — green
+_FEED_DEFAULT = (170, 176, 164)# routine chatter — muted grey
+_FEED_SCAN = 80                # how many tail events to consider before wrapping to fit
 
 
 def dominant_trait(personality: str | None) -> str:
@@ -175,6 +195,48 @@ def settlement_radius_cells(center: tuple[int, int],
     return max(_SETTLEMENT_MIN_CELLS, spread + 1.0)
 
 
+def event_color(line: str) -> tuple[int, int, int]:
+    """Light per-type colour for one verbatim event-log line (pure string read).
+
+    Classifies the plain-English event string the engine already wrote — never reads or
+    changes events[] content. Order matters: a war/conquest line is coloured before a
+    death (so 'KING X DEFEATED Y ... fell' reads as war), while an individual battle/
+    starvation death ('Z died (fell in battle)') has no war keyword and reads as a death.
+    """
+    low = line.lower()
+    if "[god]" in low or "god-script" in low:
+        return _FEED_GOD
+    if any(k in low for k in ("betrayed", "conquered", "seized", "overthrew", "overthrown",
+                              "subjugated", "defeated", "repelled", "broke away", "war",
+                              "empire", "crown")):
+        return _FEED_WAR
+    if any(k in low for k in ("died", "fell in battle", "starved")):
+        return _FEED_DEATH
+    if any(k in low for k in ("settlement", "settled", "joined", "founded")):
+        return _FEED_TOWN
+    if any(k in low for k in ("alliance", "trust", "ally", "friend", "trade", "tribute",
+                              "wage", "employ", "levied", "redistribut")):
+        return _FEED_SOCIAL
+    return _FEED_DEFAULT
+
+
+def wrap_events(events: list[str], cols: int, max_rows: int) -> list[tuple[str, tuple[int, int, int]]]:
+    """Turn the tail of events[] into (text, colour) rows for the feed (pure, no pygame).
+
+    Each event line is colour-classified (`event_color`) then wrapped to `cols` characters
+    (monospace, so a character budget maps cleanly to pixel width); every wrapped sub-line
+    inherits its event's colour. The last `max_rows` rows are returned, so the NEWEST line
+    sits at the bottom of the feed. Handles empty/short logs (returns [] / what fits). The
+    colour-keyed wrapping is split out here so it can be unit-tested without a display.
+    """
+    rows: list[tuple[str, tuple[int, int, int]]] = []
+    for line in events[-_FEED_SCAN:]:
+        color = event_color(line)
+        for sub in (textwrap.wrap(line, width=max(1, cols)) or [""]):
+            rows.append((sub, color))
+    return rows[-max_rows:] if max_rows > 0 else []
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -216,13 +278,18 @@ class PygameRenderer:
                 self.sink.close()
 
     def _ensure_screen(self, size: int) -> None:
-        """Create (or resize) the window to fit a `size`x`size` world."""
+        """Create (or resize) the window: a square MAP zone on the left + a PANEL on the right.
+
+        Slice 3 widens the window by _PANEL_W for the event-feed sidebar. The MAP keeps its
+        square aspect in the top-left (the slice-1/2 coordinate mapping is unchanged); the
+        HUD strip sits under the map, and the panel spans the full window height on the right.
+        """
         if self._screen is not None and size == self._size:
             return
         self._size = size
         self._cell = _cell_size(size)
         grid_px = self._cell * max(1, size)
-        self._screen = pygame.display.set_mode((grid_px, grid_px + _HUD_H))
+        self._screen = pygame.display.set_mode((grid_px + _PANEL_W, grid_px + _HUD_H))
 
     # -- the per-turn hook the sim calls -----------------------------------
     def update(self, state: dict[str, Any]) -> None:
@@ -303,6 +370,9 @@ class PygameRenderer:
             pygame.draw.circle(screen, agent_color(getattr(agent, "personality", "")), (cx, cy), r)
 
         self._draw_hud(state, grid_px, paused)
+        # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
+        # last so it owns the right zone cleanly; a pure read of state, like everything else.
+        self._draw_panel(state, grid_px)
         pygame.display.flip()
 
     def _draw_settlements(self, state: dict[str, Any]) -> None:
@@ -372,3 +442,74 @@ class PygameRenderer:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)
         screen.blit(label, (8, grid_px + (_HUD_H - label.get_height()) // 2))
+
+    # -- Slice 3: the right sidebar (state summary + event feed) ------------
+    def _stat_lines(self, state: dict[str, Any]) -> list[tuple[str, str]]:
+        """(label, value) rows for the panel's state summary (pure read of `state`).
+
+        Always turn / living / food; then a count for each institution layer PRESENT in
+        world_state ("whatever exists"), so the summary reflects which systems are on.
+        """
+        lines = [
+            ("turn", str(state.get("turn", 0))),
+            ("living", str(sum(1 for a in state.get("agents", []) if getattr(a, "alive", True)))),
+            ("food", str(len(state.get("food", [])))),
+        ]
+        for key, label in (("settlements", "settlements"), ("kingdoms", "kingdoms"),
+                           ("empires", "empires")):
+            if key in state:
+                lines.append((label, str(len(state.get(key) or {}))))
+        return lines
+
+    def _feed_rows(self, state: dict[str, Any], inner_w: int,
+                   max_rows: int) -> list[tuple[str, tuple[int, int, int]]]:
+        """Colour-coded, wrapped event rows sized to the panel (a read of state["events"])."""
+        char_w = max(1, self._font.size("M")[0])
+        cols = max(8, inner_w // char_w)
+        return wrap_events(state.get("events") or [], cols, max_rows)
+
+    def _draw_panel(self, state: dict[str, Any], grid_px: int) -> None:
+        """Draw the right sidebar: a STATE summary above a scrolling EVENT feed (READ only).
+
+        Top block = current-state counts (turn/living/food + settlements/kingdoms/empires
+        where present); below a divider, the EVENTS feed shows the most recent log lines
+        that fit, wrapped to the panel and lightly colour-coded by type, newest at the
+        bottom. Pure read — it never touches world_state.
+        """
+        screen = self._screen
+        font = self._font
+        win_h = grid_px + _HUD_H
+        x0, pad = grid_px, _PANEL_PAD
+        inner_w = _PANEL_W - 2 * pad
+        pygame.draw.rect(screen, _PANEL_BG, (x0, 0, _PANEL_W, win_h))
+        if font is None:
+            return
+        line_h = font.get_height() + 3
+        y = pad
+
+        # STATE summary.
+        screen.blit(font.render("STATE", True, _PANEL_TITLE), (x0 + pad, y))
+        y += line_h + 2
+        for label, value in self._stat_lines(state):
+            screen.blit(font.render(label, True, _STAT_LABEL), (x0 + pad, y))
+            val = font.render(value, True, _STAT_VALUE)
+            screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
+            y += line_h
+
+        # Divider + EVENTS header.
+        y += 5
+        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + _PANEL_W - pad, y))
+        y += 7
+        screen.blit(font.render("EVENTS", True, _PANEL_TITLE), (x0 + pad, y))
+        y += line_h + 2
+
+        # Feed: fill the remaining height, newest at the bottom; graceful when empty.
+        feed_top, feed_bottom = y, win_h - pad
+        max_rows = max(1, (feed_bottom - feed_top) // line_h)
+        rows = self._feed_rows(state, inner_w, max_rows)
+        if not rows:
+            screen.blit(font.render("(no events yet)", True, _FEED_DEFAULT), (x0 + pad, feed_top))
+            return
+        for text, color in rows:
+            screen.blit(font.render(text, True, color), (x0 + pad, feed_top))
+            feed_top += line_h

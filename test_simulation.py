@@ -3384,7 +3384,7 @@ def test_pygame_renderer_imports_only_state_reading_modules() -> None:
     assert not (imported & forbidden), f"pygame renderer imports decision logic: {imported & forbidden}"
     # It may lean on pygame + stdlib only; it draws straight from the snapshot dict, so it
     # needs no project module at all (not even `world`).
-    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "pygame"}
+    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "textwrap", "pygame"}
     assert imported <= allowed, f"pygame renderer imports unexpected modules: {imported - allowed}"
     print("PASS test_pygame_renderer_imports_only_state_reading_modules")
 
@@ -3539,6 +3539,95 @@ def test_pygame_renderer_draws_settlements_read_only() -> None:
     assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
         "settlement draw mutated an agent"
     print("PASS test_pygame_renderer_draws_settlements_read_only")
+
+
+def test_pygame_event_feed_classifies_and_wraps_newest_at_bottom() -> None:
+    """Slice 3: the feed colour-classifies event lines and wraps them, newest at the bottom.
+
+    Pure helpers (event_color + wrap_events) — testable without a display; skips without
+    pygame. Verifies distinct colours per type, graceful handling of empty/short logs,
+    wrapping of long lines, and that the NEWEST event ends up last (bottom of the feed).
+    """
+    try:
+        from renderer.pygame_renderer import (event_color, wrap_events, _FEED_WAR,
+                                              _FEED_DEATH, _FEED_GOD, _FEED_DEFAULT)
+    except ImportError:
+        print("PASS test_pygame_event_feed_classifies_and_wraps_newest_at_bottom (skipped: no pygame)")
+        return
+    # Light colour coding by type (war before death, so a war line with 'fell' reads as war).
+    assert event_color("turn 9: KING X DEFEATED Y in war; 4 fell") == _FEED_WAR
+    assert event_color("turn 7: Kira died (starved)") == _FEED_DEATH
+    assert event_color("turn 3: Z died (fell in battle)") == _FEED_DEATH  # individual battle death
+    assert event_color("turn 6: [GOD] dropped a treasure") == _FEED_GOD
+    assert event_color("turn 2: Alex moved north") == _FEED_DEFAULT
+    # Empty / short logs are graceful.
+    assert wrap_events([], cols=40, max_rows=20) == []
+    assert wrap_events([], cols=40, max_rows=0) == []
+    short = wrap_events(["turn 1: a", "turn 2: b"], cols=40, max_rows=20)
+    assert [t for t, _ in short] == ["turn 1: a", "turn 2: b"], "short log shows just what exists"
+    # Newest at the bottom: the last row comes from the most recent event.
+    rows = wrap_events(["turn 1: oldest", "turn 2: newest"], cols=40, max_rows=20)
+    assert rows[-1][0] == "turn 2: newest", "the newest event sits at the bottom of the feed"
+    # A long line wraps into multiple rows, all keeping the event's colour.
+    longline = "turn 5: " + "word " * 40
+    wrapped = wrap_events([longline], cols=20, max_rows=50)
+    assert len(wrapped) > 1, "a long line wraps to several rows"
+    assert len({c for _, c in wrapped}) == 1, "every wrapped sub-line keeps the event's colour"
+    # max_rows clamps the feed to what fits (the tail).
+    many = [f"turn {i}: e{i}" for i in range(50)]
+    clamped = wrap_events(many, cols=40, max_rows=10)
+    assert len(clamped) == 10 and clamped[-1][0] == "turn 49: e49"
+    print("PASS test_pygame_event_feed_classifies_and_wraps_newest_at_bottom")
+
+
+def test_pygame_renderer_panel_reads_state_does_not_mutate() -> None:
+    """Slice 3: drawing the wider window + side panel (stats + event feed) is a pure READ.
+
+    Builds a state with events and institution dicts (settlements/kingdoms/empires), draws
+    a frame into a headless surface, and asserts world_state is byte-identical afterwards
+    and the window actually widened by the panel. Skips gracefully without pygame.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, _PANEL_W
+    except ImportError:
+        print("PASS test_pygame_renderer_panel_reads_state_does_not_mutate (skipped: no pygame)")
+        return
+    state = {
+        "size": 14, "turn": 11,
+        "food": [(1, 1), (9, 9)],
+        "settlements": {"S001": {"id": "S001", "center": (5, 5), "members": {"A"}, "founded": 4}},
+        "kingdoms": {"A": {"settlements": {"S001"}}},
+        "empires": {},
+        "events": [
+            "turn 4: settlement S001 founded at (5, 5) by 1 settlers (A)",
+            "turn 6: A and B formed an ALLIANCE",
+            "turn 9: B died (starved)",
+            "turn 10: [GOD] plague struck A",
+        ] * 10,  # plenty so the feed must clamp/scroll
+        "agents": [_FakeAgent("A", "curious", (5, 5), True, 12.0, 0.0)],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        win_w, _ = r._screen.get_size()
+        r._draw(state)
+        # Empty-feed path stays graceful too.
+        r._draw({**{k: state[k] for k in state if k != "events"}, "events": []})
+    finally:
+        pygame.quit()
+    assert win_w == r._cell * state["size"] + _PANEL_W, "the window widened by the panel zone"
+    after = {k: state[k] for k in state if k != "agents"}
+    assert after == before, "panel draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "panel draw mutated an agent"
+    print("PASS test_pygame_renderer_panel_reads_state_does_not_mutate")
 
 
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
@@ -4041,6 +4130,8 @@ def main_runner() -> None:
         test_pygame_renderer_draw_does_not_mutate_world_state,
         test_pygame_settlement_region_grows_with_member_spread,
         test_pygame_renderer_draws_settlements_read_only,
+        test_pygame_event_feed_classifies_and_wraps_newest_at_bottom,
+        test_pygame_renderer_panel_reads_state_does_not_mutate,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
