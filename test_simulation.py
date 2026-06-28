@@ -2489,6 +2489,203 @@ def test_kingdoms_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_kingdoms_off_run_is_byte_identical_to_v1")
 
 
+# --- M3.6: inter-kingdom war & empire -------------------------------------
+def _war_world() -> None:
+    """A fresh world with the M3.6 stack (monarchy+kingdoms+empire+leadership) on, dicts cleared."""
+    _fresh_world(); create_world(size=80)
+    for fl in ("monarchy_on", "kingdoms_on", "empire_on", "leadership_on"):
+        world_state[fl] = True
+    for k in ("leaders", "monarchs", "kingdoms", "empires", "settlements"):
+        world_state[k] = {}
+
+
+def _war_mercs(prefix: str, near: tuple[int, int], n: int) -> None:
+    """A private merc pool within muster range of `near` only (well-separated so no double-hire)."""
+    for i in range(n):
+        _combatant(f"{prefix}{i}", (near[0] + (i % 2), near[1] + 2), 0.5)
+
+
+def _war_realm(king: str, kmoney: float, home_c: tuple[int, int],
+               seats: list[tuple[str, tuple[int, int], str]], vassal_loyal: bool) -> None:
+    """A king (monarch of its home) with far-flung vassal lords (loyal or not), for war staging."""
+    import kingdoms
+    home = f"{king}_home"
+    world_state["settlements"][home] = {"id": home, "center": home_c, "members": {king}, "founded": 0}
+    _combatant(king, home_c, kmoney, home)
+    world_state["monarchs"][home] = {"monarch": king, "since": 0, "garrison": set()}
+    setts, vassals = {home}, {}
+    for sid, c, chief in seats:
+        world_state["settlements"][sid] = {"id": sid, "center": c, "members": {chief}, "founded": 0}
+        ch = _combatant(chief, c, 40.0, sid)
+        _trusts(ch, king, kingdoms.LOYAL_TRUST if vassal_loyal else kingdoms.LOYAL_TRUST - 3)
+        world_state["leaders"][sid] = {"leader": chief, "followers": set(), "since": 0}
+        vassals[sid] = chief; setts.add(sid)
+    world_state["kingdoms"][king] = {"king": king, "home": home, "settlements": setts,
+                                     "vassals": vassals, "founded": 0,
+                                     "discontent": {v: 0 for v in vassals.values()}}
+
+
+def _two_war_kingdoms(rich_loyal: bool) -> None:
+    """Rich (wealthy, vassals per flag) adjacent to Poor (modest, LOYAL vassals)."""
+    _war_world()
+    _war_realm("Rich", 500.0, (10, 10), [("RV1", (40, 10), "RC1"), ("RV2", (10, 40), "RC2")], rich_loyal)
+    _war_realm("Poor", 50.0, (18, 10), [("PV1", (50, 10), "PC1"), ("PV2", (18, 40), "PC2")], True)
+    _war_mercs("RKm", (10, 10), 4); _war_mercs("RC1m", (40, 10), 4); _war_mercs("RC2m", (10, 40), 4)
+    _war_mercs("PKm", (18, 10), 3); _war_mercs("PC1m", (50, 10), 3); _war_mercs("PC2m", (18, 40), 3)
+
+
+def test_war_musters_whole_loyal_host_excluding_disloyal_vassals() -> None:
+    """A kingdom's war strength is its LOYAL host: loyal vassals muster, disloyal ones withhold."""
+    import empire
+    _two_war_kingdoms(rich_loyal=False)
+    rich = next(a for a in world_state["agents"] if a.name == "Rich")
+    host = empire.imperial_host(world_state, rich, set())
+    names = {h.name for h in host}
+    assert any(n.startswith("RKm") for n in names), "the king's own contingent musters"
+    assert not any(n.startswith(("RC1m", "RC2m")) for n in names), \
+        "a DISLOYAL vassal's contingent does NOT answer the muster (war strength = LOYAL host)"
+    # Flip the same kingdom loyal: now both vassal contingents join.
+    _two_war_kingdoms(rich_loyal=True)
+    rich = next(a for a in world_state["agents"] if a.name == "Rich")
+    names = {h.name for h in empire.imperial_host(world_state, rich, set())}
+    assert any(n.startswith("RC1m") for n in names) and any(n.startswith("RC2m") for n in names), \
+        "loyal vassals muster their contingents into the royal host"
+    print("PASS test_war_musters_whole_loyal_host_excluding_disloyal_vassals")
+
+
+def test_richer_disloyal_kingdom_loses_then_wins_when_loyal() -> None:
+    """A richer kingdom with DISLOYAL vassals fields a smaller host and LOSES to a poorer-but-loyal
+    one; with its vassals LOYAL the same kingdom fields a full host and WINS. War kills on both sides."""
+    import empire
+    _two_war_kingdoms(rich_loyal=False)
+    rich = next(a for a in world_state["agents"] if a.name == "Rich")
+    poor = next(a for a in world_state["agents"] if a.name == "Poor")
+    assert _wealth(rich) > _wealth(poor), "Rich is the richer kingdom"
+    res = empire.wage_war(world_state, "Poor", "Rich", 1)
+    assert res["won"] and res["att_host"] > res["def_host"], "the poorer-but-LOYAL kingdom wins"
+    assert res["att_dead"] and res["def_dead"], "war kills real agents on BOTH armies"
+    assert "Rich" in world_state["empires"]["Poor"]["subject_kings"], "the richer loser is subjugated"
+    # Same kingdoms, Rich's vassals loyal: Rich now out-fields Poor and wins.
+    _two_war_kingdoms(rich_loyal=True)
+    res2 = empire.wage_war(world_state, "Rich", "Poor", 1)
+    assert res2["won"] and res2["att_host"] > res2["def_host"], "with loyal vassals the richer kingdom wins"
+    assert "Poor" in world_state["empires"]["Rich"]["subject_kings"], "now Rich subjugates Poor"
+    print("PASS test_richer_disloyal_kingdom_loses_then_wins_when_loyal")
+
+
+def test_defeated_king_is_subjugated_into_multilevel_empire() -> None:
+    """On defeat the loser's king becomes a subject-king KEEPING his own realm — a multi-level empire
+    (emperor -> subject-king -> the subject-king's vassal-lords -> settlements)."""
+    import empire
+    _two_war_kingdoms(rich_loyal=True)  # Rich (with its own vassal-lords) will conquer Poor
+    poor_realm_before = dict(world_state["kingdoms"]["Poor"]["vassals"])
+    empire.wage_war(world_state, "Rich", "Poor", 1)
+    emp = world_state["empires"]["Rich"]
+    assert emp["subject_kings"].get("Poor") is not None, "the defeated king is the victor's subject-king"
+    assert world_state["kingdoms"]["Poor"]["vassals"] == poor_realm_before, \
+        "the subject-king KEEPS his own internal realm (his vassal-lords stay under him)"
+    poor = next(a for a in world_state["agents"] if a.name == "Poor")
+    assert poor.relationships["Rich"]["trust"] == __import__("kingdoms").LOYAL_TRUST, \
+        "the subjugated king swears fealty (trust seeded to LOYAL_TRUST)"
+    print("PASS test_defeated_king_is_subjugated_into_multilevel_empire")
+
+
+def test_imperial_tribute_cascades_through_subject_king_and_conserves_wealth() -> None:
+    """Tribute cascades settlement -> lord -> subject-king -> emperor (the new level), conserving
+    total wealth; it reaches the emperor THROUGH the subject-king."""
+    import empire, kingdoms
+    _war_world(); create_world(size=40)
+    world_state["empire_on"] = True; world_state["leadership_on"] = True
+    for k in ("leaders", "monarchs", "kingdoms", "empires", "settlements"):
+        world_state[k] = {}
+    world_state["settlements"]["E"] = {"id": "E", "center": (5, 5), "members": {"Emp"}, "founded": 0}
+    emp = _combatant("Emp", (5, 5), 10.0, "E")
+    world_state["monarchs"]["E"] = {"monarch": "Emp", "since": 0, "garrison": set()}
+    world_state["settlements"]["K"] = {"id": "K", "center": (9, 9), "members": {"King"}, "founded": 0}
+    king = _combatant("King", (9, 9), 10.0, "K")
+    world_state["monarchs"]["K"] = {"monarch": "King", "since": 0, "garrison": set()}
+    world_state["settlements"]["V"] = {"id": "V", "center": (12, 12), "members": {"Chief", "Rich"}, "founded": 0}
+    chief = _combatant("Chief", (12, 12), 10.0, "V"); rich = _combatant("Rich", (12, 13), 40.0, "V")
+    world_state["leaders"]["V"] = {"leader": "Chief", "followers": {"Rich"}, "since": 0}
+    _trusts(chief, "King", kingdoms.LOYAL_TRUST)
+    world_state["kingdoms"]["King"] = {"king": "King", "home": "K", "settlements": {"K", "V"},
+                                       "vassals": {"V": "Chief"}, "founded": 0, "discontent": {"Chief": 0}}
+    world_state["kingdoms"]["Emp"] = {"king": "Emp", "home": "E", "settlements": {"E"},
+                                      "vassals": {}, "founded": 0, "discontent": {}}
+    empire._subjugate(world_state, emp, "King", 0); _trusts(king, "Emp", kingdoms.LOYAL_TRUST)
+    world_state["tribute_rate"] = kingdoms.DEFAULT_KING_SHARE
+    world_state["empire_share"] = empire.DEFAULT_EMPIRE_SHARE
+    total0 = sum(_wealth(a) for a in world_state["agents"] if a.alive)
+    we0 = _wealth(emp)
+    kingdoms.tribute(world_state, 1); empire.tribute(world_state, 1)
+    assert _wealth(rich) < 40.0, "the member is levied (bottom of the cascade)"
+    assert _wealth(emp) > we0, "tribute reaches the EMPEROR through the subject-king level"
+    total1 = sum(_wealth(a) for a in world_state["agents"] if a.alive)
+    assert abs(total1 - total0) < 1e-9, "the whole cascade only MOVES wealth — total conserved"
+    print("PASS test_imperial_tribute_cascades_through_subject_king_and_conserves_wealth")
+
+
+def test_over_imperial_tribute_fragments_subject_king_with_hysteresis_fair_stays() -> None:
+    """A grasping emperor erodes a subject-king's loyalty until he breaks away (not on the first
+    turn — hysteresis); a fairly-treated subject-king stays in the empire."""
+    import empire, kingdoms
+
+    def run(share: float, turns: int) -> list[bool]:
+        _war_world(); create_world(size=40)
+        world_state["empire_on"] = True
+        for k in ("leaders", "monarchs", "kingdoms", "empires", "settlements"):
+            world_state[k] = {}
+        world_state["settlements"]["E"] = {"id": "E", "center": (5, 5), "members": {"Emp"}, "founded": 0}
+        _combatant("Emp", (5, 5), 200.0, "E")
+        world_state["monarchs"]["E"] = {"monarch": "Emp", "since": 0, "garrison": set()}
+        world_state["settlements"]["K"] = {"id": "K", "center": (9, 9), "members": {"King"}, "founded": 0}
+        king = _combatant("King", (9, 9), 40.0, "K")
+        world_state["monarchs"]["K"] = {"monarch": "King", "since": 0, "garrison": set()}
+        world_state["kingdoms"]["King"] = {"king": "King", "home": "K", "settlements": {"K"},
+                                           "vassals": {}, "founded": 0, "discontent": {}}
+        world_state["kingdoms"]["Emp"] = {"king": "Emp", "home": "E", "settlements": {"E"},
+                                          "vassals": {}, "founded": 0, "discontent": {}}
+        world_state["empires"]["Emp"] = {"emperor": "Emp", "subject_kings": {"King": {"since": 0}},
+                                         "founded": 0, "discontent": {"King": 0}}
+        _trusts(king, "Emp", kingdoms.LOYAL_TRUST)
+        _war_mercs("Em", (5, 6), 8)  # a STRONG emperor (only the over-tax path fires, not weakening)
+        world_state["empire_share"] = share
+        in_empire = []
+        for t in range(1, turns + 1):
+            king.money = 40.0
+            empire.tribute(world_state, t); empire._check_fragmentation(world_state, t)
+            in_empire.append("King" in world_state["empires"].get("Emp", {}).get("subject_kings", {}))
+        return in_empire
+
+    grasp = run(0.9, 4)
+    assert grasp[0] is True, "hysteresis: a subject-king must NOT break away on the very first hard turn"
+    assert grasp[-1] is False, "a sufficiently disloyal subject-king must BREAK AWAY (empire fragments)"
+    fair = run(0.25, 4)
+    assert all(fair), "a fairly-treated subject-king (share within consent) stays in the empire"
+    print("PASS test_over_imperial_tribute_fragments_subject_king_with_hysteresis_fair_stays")
+
+
+def test_empire_off_run_is_byte_identical_to_v1() -> None:
+    """empire_on=False (default) leaves the run byte-identical to the no-param run."""
+    def run(flag):
+        llm.PROVIDER = "random"
+        random.seed(43)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if flag is None:
+                main.run_simulation(22, focal_budget=8)
+            else:
+                main.run_simulation(22, focal_budget=8, empire_on=flag)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(None), run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "empire_on=False changed the default run output"
+    print("PASS test_empire_off_run_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -3625,6 +3822,12 @@ def main_runner() -> None:
         test_king_musters_loyal_vassal_but_not_broken_away_one,
         test_over_tribute_breaks_a_vassal_away_with_hysteresis_fair_one_stays,
         test_kingdoms_off_run_is_byte_identical_to_v1,
+        test_war_musters_whole_loyal_host_excluding_disloyal_vassals,
+        test_richer_disloyal_kingdom_loses_then_wins_when_loyal,
+        test_defeated_king_is_subjugated_into_multilevel_empire,
+        test_imperial_tribute_cascades_through_subject_king_and_conserves_wealth,
+        test_over_imperial_tribute_fragments_subject_king_with_hysteresis_fair_stays,
+        test_empire_off_run_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,

@@ -35,6 +35,7 @@ import time
 import alliance
 import conversation
 import economy
+import empire
 import god_mode
 import heuristic
 import kingdoms
@@ -459,6 +460,19 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                               if agent.name in r["vassals"].values()), None)
                 if liege is not None:
                     print(f"Vassal of:       {liege}  [sworn fealty]")
+        # M3.6: read-only empire overlay — printed ONLY when the system is on (default run is
+        # byte-identical to v1). Pure read of world_state["empires"] (renderer/summary read-only).
+        if world_state.get("empire_on"):
+            empires = world_state.get("empires", {})
+            emp = empires.get(agent.name)
+            if emp is not None:
+                print(f"Rules empire:    {len(emp['subject_kings'])} subject-kings "
+                      f"(since turn {emp['founded']})  [imperial crown]")
+            else:
+                overlord = next((e for e, r in sorted(empires.items())
+                                 if agent.name in r["subject_kings"]), None)
+                if overlord is not None:
+                    print(f"Subject-king of: {overlord}  [submitted in war]")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -742,6 +756,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              f"a vassal tolerates the crown and stays loyal; well above it the backlash erodes the "
              f"vassal's trust until it BREAKS AWAY. Only meaningful with --kingdoms.")
     p.add_argument(
+        "--empire", action="store_true",
+        help="V2 M3.6: enable INTER-KINGDOM WAR & EMPIRE (the CLIMAX of Phase 3) — feudal KINGDOMS "
+             "(M3.5) clash. A king opportunistically attacks a NEIGHBOURING kingdom whose defendable "
+             "LOYAL host he can beat; each side musters its WHOLE host (king + LOYAL vassals + loyal "
+             "subject-kings) and the SAME battle resolves it (war kills agents on both sides). The "
+             "KEY coupling: war turns on LOYAL host strength, so a RICHER kingdom with disloyal "
+             "vassals fields a smaller host and LOSES to a POORER one whose vassals all muster — "
+             "governance beats wealth. The defeated king is SUBJUGATED into the victor's realm as a "
+             "high-level vassal (a subject-king), forming a multi-level EMPIRE (emperor -> subject-king "
+             "-> vassal-lords -> settlements); tribute cascades through the new level. Empires FRAGMENT: "
+             "a subject-king's loyalty is conditional, so an over-taxing or weakening emperor loses him "
+             "to a breakaway (with hysteresis) — empires rise AND fall. Implies --kingdoms (+ --monarchy "
+             "+ --settlements); pair with --economy/--labor for army-funding wealth and --leadership for "
+             "vassalable trust-leaders. Set the emperor's cut with --imperial-share. Zero LLM/RNG, "
+             "deterministic under seed. Off by default -> v1 identical. (Vassal defection to the enemy, "
+             "diplomacy/alliances and fiat money are out of scope, later phases.)")
+    p.add_argument(
+        "--imperial-share", type=float, default=None, metavar="R",
+        help=f"V2 M3.6: the EMPEROR's share of a subject-king's wealth taken as imperial tribute each "
+             f"turn (default {empire.DEFAULT_EMPIRE_SHARE}). At or below the consent band "
+             f"({kingdoms.KING_CONSENT}) a subject-king tolerates the emperor and stays loyal; well "
+             f"above it the backlash erodes his trust until he BREAKS AWAY and the empire FRAGMENTS. "
+             f"Only meaningful with --empire.")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -787,7 +825,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    tax_rate: "float | None" = None,
                    monarchy_on: bool = False,
                    kingdoms_on: bool = False,
-                   tribute_rate: "float | None" = None) -> None:
+                   tribute_rate: "float | None" = None,
+                   empire_on: bool = False,
+                   empire_share: "float | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -862,6 +902,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     world_state["kingdoms_on"] = kingdoms_on
     if tribute_rate is not None:
         world_state["tribute_rate"] = tribute_rate
+    # M3.6: the inter-kingdom war / empire institution flag + imperial share. False (default) ->
+    # empire.update never called, empires stays empty -> byte-identical to v1. The share (when given)
+    # is the emperor's cut of a subject-king's wealth; None keeps the documented default.
+    world_state["empire_on"] = empire_on
+    if empire_share is not None:
+        world_state["empire_share"] = empire_share
     # M0.1: `cognition` ("llm" default, or "heuristic" for a zero-LLM mind) is stamped
     # on every agent at setup, so `--cognition heuristic` runs the whole cast call-free
     # with no other change. `agent_specs` lets a harness (e.g. verify_m01) seed a custom
@@ -1031,6 +1077,17 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if kingdoms_on:
             kingdoms.update(world_state, turn)
 
+        # M3.6: inter-kingdom war & empire — the CLIMAX of Phase 3. Feudal KINGDOMS (M3.5) clash:
+        # each musters its WHOLE LOYAL host (king + loyal vassals + loyal subject-kings), the SAME
+        # resolve_battle decides it, and the loser's king is SUBJUGATED into the victor's EMPIRE (a
+        # multi-level hierarchy: emperor -> subject-king -> vassal-lords -> settlements). A subject-
+        # king's loyalty stays CONDITIONAL, so an over-taxing or weakening emperor FRAGMENTS (empires
+        # rise AND fall). Runs AFTER kingdoms.update so this turn's realms/loyalties are the ones that
+        # war, and reuses the SAME fight (resolve_battle). War kills agents on BOTH sides. Zero LLM/RNG;
+        # gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
+        if empire_on:
+            empire.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1161,9 +1218,12 @@ def main(argv: list[str] | None = None) -> None:
     # --settlements). It does NOT force --labor: taxation works on whatever wealth exists, but the
     # inequality it BENDS is the M3.1 spiral, so a user demonstrates the collision with --labor too.
     leadership_on = args.leadership or args.taxation
+    # M3.6: empire BUILDS ON kingdoms (an emperor is a king who conquered another king), so --empire
+    # implies --kingdoms.
+    kingdoms_on = args.kingdoms or args.empire
     # M3.5: kingdoms BUILD ON monarchy (a king is a monarch who expanded), so --kingdoms implies
     # --monarchy; both need a settlement to seize/realm.
-    monarchy_on = args.monarchy or args.kingdoms
+    monarchy_on = args.monarchy or kingdoms_on
     # M3.4/M3.5: conquest needs only a SETTLEMENT to seize (and wealth, which the run may supply via
     # --economy/--labor, and loyalty to collide with via --leadership). So --monarchy/--kingdoms imply
     # --settlements only — they do NOT force the economy or leadership; each can be enabled alone.
@@ -1208,7 +1268,8 @@ def main(argv: list[str] | None = None) -> None:
                            labor_on=args.labor, leadership_on=leadership_on,
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
                            monarchy_on=monarchy_on,
-                           kingdoms_on=args.kingdoms, tribute_rate=args.tribute_rate)
+                           kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
+                           empire_on=args.empire, empire_share=args.imperial_share)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1228,7 +1289,8 @@ def main(argv: list[str] | None = None) -> None:
                            labor_on=args.labor, leadership_on=leadership_on,
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
                            monarchy_on=monarchy_on,
-                           kingdoms_on=args.kingdoms, tribute_rate=args.tribute_rate)
+                           kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
+                           empire_on=args.empire, empire_share=args.imperial_share)
 
 
 if __name__ == "__main__":
