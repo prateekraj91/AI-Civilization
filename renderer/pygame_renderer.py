@@ -80,6 +80,19 @@ _TRAIT_COLOR = {
 }
 _DEFAULT_COLOR = (180, 180, 180)      # grey — unrecognised personality
 
+# Slice 2: SETTLEMENTS. A teal tint, chosen distinct from every personality colour
+# (amber/blue/pink/red) and from food-green, so a settlement reads as its own kind of
+# thing. The region fill is TRANSLUCENT (low alpha) so it stays background context
+# under the agents; a slightly stronger edge ring gives it a soft boundary, and a small
+# centre marker makes the centre identifiable.
+_SETTLEMENT_FILL = (80, 180, 175)     # teal — settlement region tint (drawn translucent)
+_SETTLEMENT_EDGE = (120, 220, 215)    # brighter teal — soft boundary ring + centre marker
+_SETTLEMENT_LABEL = (150, 210, 205)   # muted teal — subtle label
+_SETTLEMENT_FILL_ALPHA = 46           # how opaque the region tint is (0..255; low = subtle)
+_SETTLEMENT_EDGE_ALPHA = 130          # the boundary ring, a touch stronger than the fill
+_SETTLEMENT_MIN_CELLS = 1.6           # smallest region radius, in grid cells
+_SETTLEMENT_LABEL_MIN_CELL = 10       # only draw labels when cells are big enough to stay legible
+
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
 # Tie-break order matches personality.DOMINANCE_ORDER (curiosity first).
@@ -143,6 +156,23 @@ def _cell_size(size: int) -> int:
     if size <= 0:
         return _MAX_CELL
     return max(_MIN_CELL, min(_MAX_CELL, _TARGET_PX // size))
+
+
+def settlement_radius_cells(center: tuple[int, int],
+                            member_positions: list[tuple[int, int]]) -> float:
+    """The settlement region radius, in grid cells, from its CURRENT members' spread.
+
+    A pure geometry read: the region reaches the farthest living member from the centre
+    (plus a one-cell margin), floored at _SETTLEMENT_MIN_CELLS so a tiny/just-founded
+    settlement still reads as a place. With no locatable members it falls back to the
+    floor. Because it is recomputed every frame from the members handed in, a settlement
+    that GROWS simply draws a larger region next frame — no animation/state needed.
+    """
+    cx, cy = center
+    spread = 0.0
+    for px, py in member_positions:
+        spread = max(spread, math.hypot(px - cx, py - cy))
+    return max(_SETTLEMENT_MIN_CELLS, spread + 1.0)
 
 
 class PygameRenderer:
@@ -250,6 +280,11 @@ class PygameRenderer:
                 pygame.draw.line(screen, _GRID_LINE, (p, 0), (p, grid_px))
                 pygame.draw.line(screen, _GRID_LINE, (0, p), (grid_px, p))
 
+        # Slice 2: SETTLEMENTS as soft translucent regions UNDER everything else, so a
+        # settlement reads as a background "place" with food and agents sitting on top.
+        # No-op (slice-1 behaviour) when there are no settlements in world_state.
+        self._draw_settlements(state)
+
         # Food: small green dots.
         food_r = max(1, cell // 6)
         for fx, fy in state.get("food", []):
@@ -270,6 +305,55 @@ class PygameRenderer:
         self._draw_hud(state, grid_px, paused)
         pygame.display.flip()
 
+    def _draw_settlements(self, state: dict[str, Any]) -> None:
+        """Draw each settlement as a translucent teal region + centre marker (READ only).
+
+        For every record in world_state["settlements"] (the M2.1 settlements): size a soft
+        region to the spread of its CURRENT living members, fill it translucently onto a
+        per-frame alpha overlay (so it never paints over the agents opaquely), ring it with
+        a slightly stronger edge, and stamp a small diamond at the centre. A short member-
+        count label is added only when cells are large enough to stay legible. Pure read:
+        agent positions are looked up by name from state["agents"]; nothing is written back.
+        """
+        settlements = state.get("settlements")
+        if not settlements:
+            return  # slice-1 behaviour: nothing extra drawn when no settlements exist
+        screen = self._screen
+        cell = self._cell
+        grid_px = cell * self._size
+        # Map member NAME -> current position (living agents only) for the spread read.
+        pos_by_name = {
+            a.name: a.position
+            for a in state.get("agents", [])
+            if getattr(a, "alive", True) and getattr(a, "position", None) is not None
+        }
+        # One translucent overlay per frame; circles drawn here blend over the terrain
+        # WITHOUT darkening the agents (which are drawn afterwards, straight on the screen).
+        overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
+        markers: list[tuple[tuple[int, int], int, str]] = []
+        for sid in sorted(settlements):
+            rec = settlements[sid]
+            center = rec.get("center")
+            if center is None:
+                continue
+            members = rec.get("members") or ()
+            member_positions = [pos_by_name[n] for n in members if n in pos_by_name]
+            radius_px = int(round(settlement_radius_cells(center, member_positions) * cell))
+            cx, cy = self._to_px(int(center[0]), int(center[1]))
+            pygame.draw.circle(overlay, (*_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA), (cx, cy), radius_px)
+            pygame.draw.circle(overlay, (*_SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA), (cx, cy), radius_px, width=2)
+            markers.append(((cx, cy), len(members), sid))
+        screen.blit(overlay, (0, 0))
+        # Centre markers + optional labels, drawn opaquely on top of the tint (but still
+        # under food/agents, which the caller draws after this method returns).
+        m = max(2, cell // 4)
+        for (cx, cy), count, sid in markers:
+            pygame.draw.polygon(screen, _SETTLEMENT_EDGE,
+                                [(cx, cy - m), (cx + m, cy), (cx, cy + m), (cx - m, cy)])
+            if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
+                label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
+                screen.blit(label, (cx + m + 2, cy - label.get_height() // 2))
+
     def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool) -> None:
         """A one-line status strip under the grid (turn / living / food / pause)."""
         screen = self._screen
@@ -279,7 +363,11 @@ class PygameRenderer:
         turn = state.get("turn", 0)
         living = sum(1 for a in state.get("agents", []) if getattr(a, "alive", True))
         food = len(state.get("food", []))
-        text = f"turn {turn}   living {living}   food {food}   [space] pause  [esc] quit"
+        text = f"turn {turn}   living {living}   food {food}"
+        towns = len(state.get("settlements", {}))
+        if towns:  # only shown once settlements exist, so the slice-1 HUD is unchanged
+            text += f"   towns {towns}"
+        text += "   [space] pause  [esc] quit"
         if paused:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)

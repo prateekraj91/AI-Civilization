@@ -3477,6 +3477,70 @@ def test_pygame_renderer_draw_does_not_mutate_world_state() -> None:
     print("PASS test_pygame_renderer_draw_does_not_mutate_world_state")
 
 
+def test_pygame_settlement_region_grows_with_member_spread() -> None:
+    """Slice 2: the settlement region radius is a pure read that grows with member spread.
+
+    A floor keeps a just-founded settlement visible; a member farther from the centre
+    enlarges the region (so a growing/spreading settlement draws bigger next frame). Pure
+    geometry — skips gracefully without pygame.
+    """
+    try:
+        from renderer.pygame_renderer import settlement_radius_cells, _SETTLEMENT_MIN_CELLS
+    except ImportError:
+        print("PASS test_pygame_settlement_region_grows_with_member_spread (skipped: no pygame)")
+        return
+    center = (10, 10)
+    assert settlement_radius_cells(center, []) == _SETTLEMENT_MIN_CELLS, "empty falls back to the floor"
+    tight = settlement_radius_cells(center, [(10, 10), (11, 10)])
+    wide = settlement_radius_cells(center, [(10, 10), (11, 10), (14, 13)])
+    assert wide > tight, "a farther-flung membership draws a larger region"
+    assert tight >= _SETTLEMENT_MIN_CELLS, "the region never shrinks below the visible floor"
+    print("PASS test_pygame_settlement_region_grows_with_member_spread")
+
+
+def test_pygame_renderer_draws_settlements_read_only() -> None:
+    """Slice 2: drawing settlements is a pure READ — the settlements dict + agents are
+    byte-identical before and after, and a settlement-free state is unchanged (slice 1)."""
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_renderer_draws_settlements_read_only (skipped: no pygame)")
+        return
+    state = {
+        "size": 16, "turn": 9,
+        "food": [(3, 3), (12, 11)],
+        "settlements": {
+            "S001": {"id": "S001", "center": (5, 5), "members": {"Ann", "Bo"}, "founded": 2},
+            "S002": {"id": "S002", "center": (11, 10), "members": {"Cy"}, "founded": 7},
+        },
+        "agents": [
+            _FakeAgent("Ann", "friendly and outgoing", (5, 5), True, 8.0, 0.0),
+            _FakeAgent("Bo", "cautious and territorial", (6, 6), True, 3.0, 0.0),
+            _FakeAgent("Cy", "curious", (11, 10), True, 1.0, 0.0),
+        ],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        r._draw(state)  # draws settlements (region + markers), food, agents
+        # And a state with NO settlements must still draw fine (slice-1 path unchanged).
+        r._draw({k: state[k] for k in state if k != "settlements"})
+    finally:
+        pygame.quit()
+    after = {k: state[k] for k in state if k != "agents"}
+    assert after == before, "settlement draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "settlement draw mutated an agent"
+    print("PASS test_pygame_renderer_draws_settlements_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -3975,6 +4039,8 @@ def main_runner() -> None:
         test_pygame_renderer_imports_only_state_reading_modules,
         test_pygame_renderer_color_by_personality_and_size_by_wealth,
         test_pygame_renderer_draw_does_not_mutate_world_state,
+        test_pygame_settlement_region_grows_with_member_spread,
+        test_pygame_renderer_draws_settlements_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
