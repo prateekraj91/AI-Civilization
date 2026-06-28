@@ -3630,6 +3630,93 @@ def test_pygame_renderer_panel_reads_state_does_not_mutate() -> None:
     print("PASS test_pygame_renderer_panel_reads_state_does_not_mutate")
 
 
+def test_pygame_role_and_talk_helpers_read_state() -> None:
+    """Slice 4: agent_role (EMPEROR>MONARCH>LEADER, degrading when a dict is absent) and
+    talkers_this_turn (derived read-only from the event tail) are pure reads of state."""
+    try:
+        from renderer.pygame_renderer import agent_role, talkers_this_turn
+    except ImportError:
+        print("PASS test_pygame_role_and_talk_helpers_read_state (skipped: no pygame)")
+        return
+    state = {
+        "leaders": {"S001": {"leader": "Lee", "followers": set(), "since": 1}},
+        "monarchs": {"S001": {"monarch": "Ken", "since": 2, "garrison": set()}},
+        "empires": {"Emi": {"emperor": "Emi", "subject_kings": {"Ken": {}}, "discontent": {}}},
+    }
+    assert agent_role("Emi", state) == "emperor"
+    assert agent_role("Ken", state) == "monarch"
+    assert agent_role("Lee", state) == "leader"
+    assert agent_role("Nobody", state) is None
+    # Precedence: someone who is BOTH a leader and an emperor wears the emperor mark.
+    state["leaders"]["S009"] = {"leader": "Emi", "followers": set(), "since": 1}
+    assert agent_role("Emi", state) == "emperor", "EMPEROR outranks LEADER"
+    # Degrades gracefully when an institution dict is entirely absent.
+    assert agent_role("Ken", {"leaders": {}}) is None, "no monarchs dict -> nobody is a monarch"
+    # Talk signal: only the CURRENT turn's speakers, parsed from the contiguous tail.
+    events = ["turn 4: X talked to Y: \"hi\"",          # an earlier turn — must be ignored
+              "turn 5: Ann talked to Bo: \"hello\"",
+              "turn 5: Cy talked to Ann: \"hey\"",
+              "turn 5: Ann levied tribute"]
+    assert talkers_this_turn(events, 5) == {"Ann", "Cy"}, "speakers this turn, from the tail"
+    assert talkers_this_turn(events, 4) == set(), "an earlier turn's tail is not current — no bubbles"
+    assert talkers_this_turn([], 5) == set(), "empty log is graceful"
+    print("PASS test_pygame_role_and_talk_helpers_read_state")
+
+
+def test_pygame_renderer_iconography_draw_is_read_only() -> None:
+    """Slice 4: drawing figures/crowns/star/speech-bubble/wheat/houses is a pure READ.
+
+    Exercises every new glyph path (a leader, a monarch, an emperor, a talker, food, a
+    multi-member settlement, plus a tiny-cell fallback) into a headless surface and asserts
+    world_state is byte-identical afterwards. Skips gracefully without pygame.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_renderer_iconography_draw_is_read_only (skipped: no pygame)")
+        return
+    state = {
+        "size": 16, "turn": 20,
+        "food": [(2, 3), (7, 8)],
+        "settlements": {"S001": {"id": "S001", "center": (5, 5),
+                                 "members": {"Lee", "F1", "F2"}, "founded": 3}},
+        "leaders": {"S001": {"leader": "Lee", "followers": {"F1"}, "since": 3}},
+        "monarchs": {"S001": {"monarch": "Ken", "since": 10, "garrison": set()}},
+        "empires": {"Emi": {"emperor": "Emi", "subject_kings": {"Ken": {}}, "discontent": {}}},
+        "kingdoms": {"Ken": {"settlements": {"S001"}}},
+        "events": ["turn 19: prior", "turn 20: F1 talked to Lee: \"hi\""],
+        "agents": [
+            _FakeAgent("Lee", "friendly and outgoing", (5, 5), True, 9.0, 0.0),
+            _FakeAgent("Ken", "independent and competitive", (8, 8), True, 200.0, 40.0),
+            _FakeAgent("Emi", "cautious and territorial", (10, 10), True, 400.0, 0.0),
+            _FakeAgent("F1", "curious", (6, 5), True, 1.0, 0.0),     # a talker this turn
+            _FakeAgent("F2", "friendly", (4, 6), False, 5.0, 0.0),  # dead -> not drawn
+        ],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        r._draw(state)
+        # Tiny world: cells shrink so figures/food/houses hit their dot/skip fallbacks.
+        big = {**state, "size": 60}
+        r._ensure_screen(60)
+        r._draw(big)
+    finally:
+        pygame.quit()
+    after = {k: state[k] for k in state if k != "agents"}
+    assert after == before, "iconography draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "iconography draw mutated an agent"
+    print("PASS test_pygame_renderer_iconography_draw_is_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4132,6 +4219,8 @@ def main_runner() -> None:
         test_pygame_renderer_draws_settlements_read_only,
         test_pygame_event_feed_classifies_and_wraps_newest_at_bottom,
         test_pygame_renderer_panel_reads_state_does_not_mutate,
+        test_pygame_role_and_talk_helpers_read_state,
+        test_pygame_renderer_iconography_draw_is_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

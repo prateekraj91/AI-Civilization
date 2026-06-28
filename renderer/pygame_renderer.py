@@ -94,6 +94,20 @@ _SETTLEMENT_EDGE_ALPHA = 130          # the boundary ring, a touch stronger than
 _SETTLEMENT_MIN_CELLS = 1.6           # smallest region radius, in grid cells
 _SETTLEMENT_LABEL_MIN_CELL = 10       # only draw labels when cells are big enough to stay legible
 
+# Slice 4: ICONOGRAPHY. Procedural glyphs (no asset files) so the MAP is self-explanatory:
+# agents are little FIGURES, rulers wear CROWNS / a leader STAR, talkers get a SPEECH BUBBLE,
+# food is a WHEAT stalk, and settlements show HOUSE buildings. A handful of primitives each.
+_CROWN = (245, 205, 70)       # gold crown — monarch (king) / emperor
+_STAR = (242, 228, 138)       # pale-gold star — a trust-leader
+_BUBBLE = (236, 239, 231)     # near-white speech bubble (someone is talking this turn)
+_BUBBLE_DOT = (92, 98, 88)    # the "..." inside the bubble
+_HOUSE_WALL = (156, 124, 94)  # warm clay walls of a settlement house
+_HOUSE_ROOF = (120, 84, 68)   # darker roof
+_FIGURE_MIN_R = 3             # below this radius a cell is too small for a figure -> plain dot
+_FOOD_GLYPH_MIN_CELL = 9      # below this cell size food stays a simple dot (wheat won't read)
+_HOUSE_MIN_CELL = 8           # below this cell size houses stay implied by the region only
+_MAX_HOUSES = 6               # cap the house glyphs drawn per settlement (keeps a village tidy)
+
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
 # Tie-break order matches personality.DOMINANCE_ORDER (curiosity first).
@@ -237,6 +251,44 @@ def wrap_events(events: list[str], cols: int, max_rows: int) -> list[tuple[str, 
     return rows[-max_rows:] if max_rows > 0 else []
 
 
+def talkers_this_turn(events: list[str], turn: int) -> set[str]:
+    """Names that SPOKE this turn, derived read-only from the event tail (Slice 4).
+
+    The engine logs a talk as `turn {turn}: {speaker} talked to {target}: "..."`. A turn's
+    lines sit contiguously at the tail of events[], so we scan backwards over the current
+    turn's block (stopping at the first earlier-turn line) and collect each speaker. No new
+    state is added — this is a pure read of the existing log, used to pop a speech bubble
+    over talkers for that frame only.
+    """
+    prefix = f"turn {turn}: "
+    marker = " talked to "
+    out: set[str] = set()
+    for line in reversed(events):
+        if not line.startswith(prefix):
+            break  # reached an earlier turn — the current turn's lines are the contiguous tail
+        rest = line[len(prefix):]
+        idx = rest.find(marker)
+        if idx > 0:
+            out.add(rest[:idx])
+    return out
+
+
+def agent_role(name: str, state: dict[str, Any]) -> str | None:
+    """The highest ruling role `name` holds, or None — a pure read of the institution dicts.
+
+    Precedence EMPEROR > MONARCH (king) > LEADER, so an agent who is several at once wears
+    only its top insignia. Each lookup degrades gracefully when its dict is absent (no
+    empires -> nobody is an emperor, etc.), so the map simply shows fewer markers.
+    """
+    if name in state.get("empires", {}):                      # empires are keyed by emperor name
+        return "emperor"
+    if any(r.get("monarch") == name for r in state.get("monarchs", {}).values()):
+        return "monarch"
+    if any(r.get("leader") == name for r in state.get("leaders", {}).values()):
+        return "leader"
+    return None
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -352,12 +404,15 @@ class PygameRenderer:
         # No-op (slice-1 behaviour) when there are no settlements in world_state.
         self._draw_settlements(state)
 
-        # Food: small green dots.
-        food_r = max(1, cell // 6)
+        # Slice 4: FOOD as a little wheat stalk (a stalk + a few grain strokes), still green
+        # and at the same positions; a plain dot when cells are too small for wheat to read.
         for fx, fy in state.get("food", []):
-            pygame.draw.circle(screen, _FOOD, self._to_px(fx, fy), food_r)
+            self._draw_wheat(*self._to_px(fx, fy), cell)
 
-        # Agents: a colour-by-personality, size-by-wealth circle each (living only).
+        # Slice 4: AGENTS as little FIGURES (head + body) in their personality colour, scaled
+        # by wealth; rulers wear a CROWN/STAR and anyone talking this turn gets a SPEECH
+        # BUBBLE — so a stranger watching ONLY the map can read role and conversation.
+        talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
         for agent in state.get("agents", []):
             if not getattr(agent, "alive", True):
                 continue
@@ -366,14 +421,119 @@ class PygameRenderer:
                 continue
             cx, cy = self._to_px(pos[0], pos[1])
             r = agent_radius(_wealth(agent), cell)
-            pygame.draw.circle(screen, _OUTLINE, (cx, cy), r + 1)
-            pygame.draw.circle(screen, agent_color(getattr(agent, "personality", "")), (cx, cy), r)
+            color = agent_color(getattr(agent, "personality", ""))
+            figure_top = self._draw_agent_figure(cx, cy, r, color)
+            self._draw_role_marker(cx, figure_top, r, agent_role(agent.name, state))
+            if agent.name in talkers:
+                self._draw_speech_bubble(cx + r + 1, figure_top, r)
 
         self._draw_hud(state, grid_px, paused)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
         # last so it owns the right zone cleanly; a pure read of state, like everything else.
         self._draw_panel(state, grid_px)
         pygame.display.flip()
+
+    # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
+    def _draw_agent_figure(self, cx: int, cy: int, r: int, color: tuple[int, int, int]) -> int:
+        """Draw a little person (head circle + trapezoid body) centred on (cx, cy).
+
+        Colour is the personality colour and the whole figure scales with `r` (wealth), so
+        slice-1's two encodings survive the upgrade. Returns the y of the figure's TOP (where
+        a crown/star/bubble is stacked). A tiny cell (r below _FIGURE_MIN_R) falls back to the
+        slice-1 dot so it never collapses into noise.
+        """
+        if r < _FIGURE_MIN_R:
+            pygame.draw.circle(self._screen, _OUTLINE, (cx, cy), r + 1)
+            pygame.draw.circle(self._screen, color, (cx, cy), r)
+            return cy - r
+        screen = self._screen
+        head_r = max(2, round(r * 0.6))
+        hx, hy = cx, cy - head_r                     # head sits in the upper half of the cell
+        bw = max(2, round(r * 0.95))                 # body half-width at the base
+        top, bot = hy + head_r - 1, cy + r           # body spans from under the head to the base
+        body = [(cx - round(bw * 0.5), top), (cx + round(bw * 0.5), top),
+                (cx + bw, bot), (cx - bw, bot)]
+        pygame.draw.polygon(screen, color, body)
+        pygame.draw.polygon(screen, _OUTLINE, body, 1)
+        pygame.draw.circle(screen, color, (hx, hy), head_r)
+        pygame.draw.circle(screen, _OUTLINE, (hx, hy), head_r, 1)
+        return hy - head_r
+
+    def _draw_role_marker(self, cx: int, top_y: int, r: int, role: str | None) -> None:
+        """Stamp a ruler's insignia just above a figure: leader STAR, monarch / emperor CROWN."""
+        if role is None:
+            return
+        gap = max(2, r // 3)
+        base = top_y - gap
+        if role == "leader":
+            self._draw_star(cx, base - max(3, r // 2), max(3, r * 0.7))
+        elif role == "monarch":
+            self._draw_crown(cx, base, max(4, r), double=False)
+        elif role == "emperor":
+            self._draw_crown(cx, base, max(5, int(r * 1.2)), double=True)
+
+    def _draw_crown(self, cx: int, base_y: int, w: int, *, double: bool) -> None:
+        """A gold zig-zag crown sitting on baseline `base_y`; `double` stacks a second (emperor)."""
+        h = max(3, w)
+        pts = [(cx - w, base_y), (cx - w, base_y - h),
+               (cx - w // 2, base_y - h // 3), (cx, base_y - h),
+               (cx + w // 2, base_y - h // 3), (cx + w, base_y - h), (cx + w, base_y)]
+        pygame.draw.polygon(self._screen, _CROWN, pts)
+        pygame.draw.polygon(self._screen, _OUTLINE, pts, 1)
+        if double:                                   # emperor: a smaller crown above the first
+            self._draw_crown(cx, base_y - h - 1, max(2, (w * 2) // 3), double=False)
+
+    def _draw_star(self, cx: int, cy: int, r: float) -> None:
+        """A small five-point star (a trust-leader's mark) centred on (cx, cy)."""
+        pts = []
+        for i in range(10):
+            ang = -math.pi / 2 + i * math.pi / 5
+            rad = r if i % 2 == 0 else r * 0.45
+            pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+        pygame.draw.polygon(self._screen, _STAR, pts)
+        pygame.draw.polygon(self._screen, _OUTLINE, pts, 1)
+
+    def _draw_speech_bubble(self, cx: int, top_y: int, r: int) -> None:
+        """A small rounded speech bubble (with a downward tail + '...') marking a talker."""
+        screen = self._screen
+        w = max(7, r + 4)
+        h = max(5, (r * 3) // 4 + 3)
+        rect = pygame.Rect(cx - w // 2, top_y - h - 2, w, h)
+        rad = max(2, h // 3)
+        pygame.draw.rect(screen, _BUBBLE, rect, border_radius=rad)
+        pygame.draw.rect(screen, _OUTLINE, rect, 1, border_radius=rad)
+        pygame.draw.polygon(screen, _BUBBLE, [(rect.centerx - 2, rect.bottom - 1),
+                                              (rect.centerx + 2, rect.bottom - 1),
+                                              (rect.centerx, rect.bottom + 3)])
+        if w >= 11:                                  # three dots only when the bubble is roomy
+            dy = rect.centery
+            for dx in (-3, 0, 3):
+                pygame.draw.circle(screen, _BUBBLE_DOT, (rect.centerx + dx, dy), 1)
+
+    def _draw_wheat(self, cx: int, cy: int, cell: int) -> None:
+        """Food as a wheat stalk: a vertical stem + a few angled grain strokes (green)."""
+        if cell < _FOOD_GLYPH_MIN_CELL:
+            pygame.draw.circle(self._screen, _FOOD, (cx, cy), max(1, cell // 6))
+            return
+        screen = self._screen
+        s = max(3, cell // 3)
+        base, top = cy + s // 2, cy - s
+        pygame.draw.line(screen, _FOOD, (cx, base), (cx, top), 1)        # the stalk
+        for off in range(0, s + 1, max(2, s // 3)):                      # grain strokes up the stem
+            yy = top + off
+            pygame.draw.line(screen, _FOOD, (cx, yy), (cx - s // 2, yy - s // 3), 1)
+            pygame.draw.line(screen, _FOOD, (cx, yy), (cx + s // 2, yy - s // 3), 1)
+
+    def _draw_house(self, cx: int, cy: int, s: int) -> None:
+        """A simple building: a square wall + a triangular roof, centred on (cx, cy)."""
+        screen = self._screen
+        half = max(2, s // 2)
+        wall = pygame.Rect(cx - half, cy - half + half // 2, 2 * half, half + half // 2)
+        pygame.draw.rect(screen, _HOUSE_WALL, wall)
+        pygame.draw.rect(screen, _OUTLINE, wall, 1)
+        roof = [(cx - half - 1, wall.top), (cx + half + 1, wall.top), (cx, cy - half - half // 2)]
+        pygame.draw.polygon(screen, _HOUSE_ROOF, roof)
+        pygame.draw.polygon(screen, _OUTLINE, roof, 1)
 
     def _draw_settlements(self, state: dict[str, Any]) -> None:
         """Draw each settlement as a translucent teal region + centre marker (READ only).
@@ -400,7 +560,7 @@ class PygameRenderer:
         # One translucent overlay per frame; circles drawn here blend over the terrain
         # WITHOUT darkening the agents (which are drawn afterwards, straight on the screen).
         overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
-        markers: list[tuple[tuple[int, int], int, str]] = []
+        markers: list[tuple[tuple[int, int], int, str, int]] = []
         for sid in sorted(settlements):
             rec = settlements[sid]
             center = rec.get("center")
@@ -412,17 +572,38 @@ class PygameRenderer:
             cx, cy = self._to_px(int(center[0]), int(center[1]))
             pygame.draw.circle(overlay, (*_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA), (cx, cy), radius_px)
             pygame.draw.circle(overlay, (*_SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA), (cx, cy), radius_px, width=2)
-            markers.append(((cx, cy), len(members), sid))
+            markers.append(((cx, cy), len(members), sid, radius_px))
         screen.blit(overlay, (0, 0))
-        # Centre markers + optional labels, drawn opaquely on top of the tint (but still
-        # under food/agents, which the caller draws after this method returns).
+        # Slice 4: HOUSES make the region read as a BUILT place. A handful of square+roof
+        # glyphs (count ~ membership, capped) ring the centre within the region; the slice-2
+        # diamond centre marker + label sit on top. All under food/agents (drawn afterwards).
         m = max(2, cell // 4)
-        for (cx, cy), count, sid in markers:
+        for (cx, cy), count, sid, radius_px in markers:
+            self._draw_settlement_houses(cx, cy, radius_px, count, cell)
             pygame.draw.polygon(screen, _SETTLEMENT_EDGE,
                                 [(cx, cy - m), (cx + m, cy), (cx, cy + m), (cx - m, cy)])
             if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
                 label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
                 screen.blit(label, (cx + m + 2, cy - label.get_height() // 2))
+
+    def _draw_settlement_houses(self, cx: int, cy: int, radius_px: int, count: int, cell: int) -> None:
+        """Ring a settlement's centre with a few HOUSE glyphs (count ~ membership, capped).
+
+        Houses are placed on a deterministic ring (fixed angles, so the picture is stable and
+        RNG-free) inside the region; a single-member hamlet gets one house at the centre. Below
+        _HOUSE_MIN_CELL the region tint alone implies the place (houses won't read that small).
+        """
+        if cell < _HOUSE_MIN_CELL:
+            return
+        n = min(_MAX_HOUSES, max(1, count))
+        house_s = max(4, int(cell * 0.9))
+        if n == 1:
+            self._draw_house(cx, cy, house_s)
+            return
+        ring = max(cell, int(radius_px * 0.5))
+        for i in range(n):
+            ang = -math.pi / 2 + (i / n) * 2 * math.pi
+            self._draw_house(int(cx + ring * math.cos(ang)), int(cy + ring * math.sin(ang)), house_s)
 
     def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool) -> None:
         """A one-line status strip under the grid (turn / living / food / pause)."""
