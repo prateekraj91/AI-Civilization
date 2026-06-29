@@ -137,6 +137,34 @@ _TREE_THRESHOLD = 0.93        # ~7% of cells get a tree
 _ROCK_THRESHOLD = 0.965       # ~3.5% of cells get a rock
 _STIPPLE_STEP = 4             # stipple sampling stride in pixels (coarser = cheaper)
 
+# Slice 6: DETAILED SETTLEMENTS & CASTLES. Villages become clusters of detailed houses that
+# GROW with membership, with civic structure (well/plaza, granary, paths, a wall once big), and
+# a ruler's seat becomes a HALL (leader) or a CASTLE (monarch/king/emperor). Every layout is
+# derived from `terrain_noise` (the pure coordinate hash) — NEVER the sim RNG — and CACHED per
+# settlement, rebuilt only when its membership/ruler/cell changes, so per-frame cost stays low.
+_WALL_TONES = ((156, 128, 96), (172, 150, 118), (140, 116, 90), (178, 160, 128), (150, 132, 104))
+_ROOF_TONES = ((122, 84, 66), (150, 98, 70), (98, 74, 56), (112, 100, 68), (132, 90, 72))
+_DOOR = (66, 46, 32)
+_WINDOW_LIT = (226, 198, 120)     # a warm lit window
+_WINDOW_DARK = (74, 78, 84)       # an unlit window
+_CHIMNEY = (96, 84, 76)
+_PATH = (124, 106, 80)            # dirt road between buildings
+_PLAZA = (140, 120, 88)           # packed-earth market square at the centre
+_WELL_STONE = (148, 148, 146)
+_WELL_WATER = (58, 96, 128)
+_GRANARY_WALL = (180, 148, 102)
+_FENCE = (112, 92, 66)            # the perimeter palisade of a large settlement
+_CROP = (104, 162, 72)            # green crop rows in the farmland
+_CASTLE_STONE = (150, 152, 158)
+_CASTLE_STONE_DK = (114, 116, 124)
+_GATE = (52, 44, 38)
+_DEFAULT_RULER = (170, 150, 205)  # fallback royal tone if the ruler agent can't be found
+_TOWN_MIN_CELL = 8                # below this cell size, fall back to the slice-4 simple houses
+_MIN_TOWN_BUILDINGS = 2
+_MAX_TOWN_BUILDINGS = 16          # cap so a metropolis stays tidy/cheap
+_GRANARY_MIN_MEMBERS = 5          # a granary appears once a settlement is established
+_FENCE_MIN_MEMBERS = 8            # a palisade ring appears once a settlement is large
+
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
 # Tie-break order matches personality.DOMINANCE_ORDER (curiosity first).
@@ -337,6 +365,75 @@ def _shade(color: tuple[int, int, int], delta: int) -> tuple[int, int, int]:
     return tuple(max(0, min(255, c + delta)) for c in color)
 
 
+def _pick(seq: tuple, t: float):
+    """Pick `seq[i]` from a fraction t in [0,1) (deterministic; for hash-driven variety)."""
+    return seq[min(len(seq) - 1, int(t * len(seq)))]
+
+
+def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str | None,
+                    ruler_color: tuple[int, int, int], emperor: bool, cell: int) -> dict[str, Any]:
+    """Lay out a settlement's buildings + civic structure deterministically (pure, no pygame).
+
+    GROWTH: the number of detailed houses scales with `n_members` (a hamlet shows a couple of
+    huts, a town a dense ring of many). Each building's offset, size, roof style and wall/roof
+    tone come from `terrain_noise` keyed to the settlement centre — so the village looks organic
+    yet is STABLE frame to frame (no flicker) and never touches the sim RNG. STRUCTURE: a central
+    well/plaza, a granary once established, a palisade ring once large, and a central `central_kind`
+    seat ('castle' for a monarch, 'hall' for a leader, None for a plain village). Returns a plan of
+    pixel offsets relative to the centre; the renderer caches it and rebuilds only on change. The
+    layout maths is split out here so growth/castle behaviour is unit-testable without a display.
+    """
+    cxh = (int(center[0]) * 7 + 3) & 0xFFFF
+    cyh = (int(center[1]) * 13 + 5) & 0xFFFF
+
+    def nz(i: int, s: int) -> float:                 # deterministic [0,1) per (building i, channel s)
+        return terrain_noise(cxh, cyh, i * 131 + s * 17 + 1)
+
+    n_buildings = min(_MAX_TOWN_BUILDINGS, max(_MIN_TOWN_BUILDINGS, int(n_members)))
+    base_r = cell * 1.15
+    ring_gap = cell * 1.2
+    buildings: list[dict[str, Any]] = []
+    placed, ring = 0, 0
+    while placed < n_buildings:
+        per_ring = 5 + ring * 3                       # outer rings hold more houses
+        for k in range(per_ring):
+            if placed >= n_buildings:
+                break
+            ang = (k / per_ring) * 2 * math.pi + (nz(placed, 1) - 0.5) * 0.7
+            rad = base_r + ring * ring_gap + (nz(placed, 2) - 0.5) * cell * 0.35
+            w = max(5, int(cell * (0.65 + nz(placed, 3) * 0.5)))
+            h = max(5, int(w * (0.7 + nz(placed, 4) * 0.45)))
+            buildings.append({
+                "dx": int(rad * math.cos(ang)), "dy": int(rad * math.sin(ang)),
+                "w": w, "h": h,
+                "wall": _pick(_WALL_TONES, nz(placed, 5)),
+                "roof": _pick(_ROOF_TONES, nz(placed, 6)),
+                "hip": nz(placed, 7) > 0.5,           # hip vs gable roof
+                "lit": nz(placed, 8) > 0.45,          # lit windows
+            })
+            placed += 1
+        ring += 1
+    cluster_r = int(base_r + ring * ring_gap)
+
+    granary = None
+    if n_members >= _GRANARY_MIN_MEMBERS:
+        gang = nz(99, 1) * 2 * math.pi
+        granary = {"dx": int(cluster_r * 0.72 * math.cos(gang)),
+                   "dy": int(cluster_r * 0.72 * math.sin(gang)), "scale": cell}
+    fence_r = cluster_r + int(cell * 0.5) if n_members >= _FENCE_MIN_MEMBERS else None
+    off = int(cell * 0.9) if central_kind else 0     # nudge the well aside when a seat owns the centre
+    return {
+        "buildings": buildings,
+        "central": {"kind": central_kind, "color": ruler_color, "emperor": emperor, "scale": cell},
+        "granary": granary,
+        "fence_r": fence_r,
+        "well": {"dx": off, "dy": off, "scale": max(3, int(cell * 0.7))},
+        "cluster_r": cluster_r,
+        "plaza_r": max(cell, int(base_r * 0.95)),
+        "path_w": max(1, cell // 6),
+    }
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -362,6 +459,7 @@ class PygameRenderer:
         self.paused = False
         self._last_state: dict[str, Any] | None = None
         self._terrain_bg: Any = None      # Slice 5: cached landscape, built once per grid size
+        self._town_plans: dict[str, tuple] = {}  # Slice 6: cached (key, plan) per settlement id
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -394,6 +492,8 @@ class PygameRenderer:
         # Slice 5: bake the procedural landscape ONCE for this grid size (cached, blitted each
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
         self._terrain_bg = self._build_terrain(grid_px)
+        # Slice 6: town plans hold pixel offsets, so a resize (new cell size) invalidates them.
+        self._town_plans = {}
 
     # -- the per-turn hook the sim calls -----------------------------------
     def update(self, state: dict[str, Any]) -> None:
@@ -608,11 +708,17 @@ class PygameRenderer:
             cx, cy = self._to_px(int(center[0]), int(center[1]))
             pygame.draw.circle(overlay, (*_FARMLAND, _FARMLAND_ALPHA), (cx, cy), rad)
             step = max(3, cell // 2)
+            crop_dx = max(4, cell // 2)
             for fy in range(cy - rad + step, cy + rad, step):    # furrows, clipped to the disc
                 half = int((rad * rad - (fy - cy) ** 2) ** 0.5)
-                if half > 1:
-                    pygame.draw.line(overlay, (*_FARMLAND_FURROW, _FARMLAND_ALPHA),
-                                     (cx - half, fy), (cx + half, fy), 1)
+                if half <= 1:
+                    continue
+                pygame.draw.line(overlay, (*_FARMLAND_FURROW, _FARMLAND_ALPHA),
+                                 (cx - half, fy), (cx + half, fy), 1)
+                # Slice 6: CROP ROWS — little green tufts standing along each furrow.
+                for x in range(cx - half + 2, cx + half - 1, crop_dx):
+                    pygame.draw.line(overlay, (*_CROP, _FARMLAND_ALPHA + 40),
+                                     (x, fy), (x, fy - max(2, cell // 6)), 1)
         self._screen.blit(overlay, (0, 0))
 
     # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
@@ -739,10 +845,15 @@ class PygameRenderer:
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        # One translucent overlay per frame; circles drawn here blend over the terrain
-        # WITHOUT darkening the agents (which are drawn afterwards, straight on the screen).
+        # Personality + ruler reads (for a seat's CASTLE/HALL and its colour). Pure dict reads.
+        personality_by_name = {a.name: getattr(a, "personality", "")
+                               for a in state.get("agents", []) if getattr(a, "alive", True)}
+        monarchs, leaders = state.get("monarchs", {}), state.get("leaders", {})
+        empires = state.get("empires", {})
+        # One translucent overlay per frame for the TERRITORY tint; circles drawn here blend over
+        # the terrain WITHOUT darkening the buildings/agents (drawn afterwards, straight on screen).
         overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
-        markers: list[tuple[tuple[int, int], int, str, int]] = []
+        towns: list[tuple] = []
         for sid in sorted(settlements):
             rec = settlements[sid]
             center = rec.get("center")
@@ -754,19 +865,38 @@ class PygameRenderer:
             cx, cy = self._to_px(int(center[0]), int(center[1]))
             pygame.draw.circle(overlay, (*_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA), (cx, cy), radius_px)
             pygame.draw.circle(overlay, (*_SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA), (cx, cy), radius_px, width=2)
-            markers.append(((cx, cy), len(members), sid, radius_px))
+            towns.append((sid, center, cx, cy, len(members), radius_px))
         screen.blit(overlay, (0, 0))
-        # Slice 4: HOUSES make the region read as a BUILT place. A handful of square+roof
-        # glyphs (count ~ membership, capped) ring the centre within the region; the slice-2
-        # diamond centre marker + label sit on top. All under food/agents (drawn afterwards).
-        m = max(2, cell // 4)
-        for (cx, cy), count, sid, radius_px in markers:
-            self._draw_settlement_houses(cx, cy, radius_px, count, cell)
-            pygame.draw.polygon(screen, _SETTLEMENT_EDGE,
-                                [(cx, cy - m), (cx + m, cy), (cx, cy + m), (cx - m, cy)])
+
+        # Slice 6: each settlement is now a detailed, GROWING built place — a cached plan of
+        # houses + civic structure + a ruler's HALL/CASTLE. Drawn under food/agents (which the
+        # caller draws afterwards). Tiny cells fall back to the slice-4 simple-house glyphs.
+        for sid, center, cx, cy, count, radius_px in towns:
+            top_y = cy
+            if cell >= _TOWN_MIN_CELL:
+                mon = monarchs.get(sid, {}).get("monarch")
+                led = leaders.get(sid, {}).get("leader")
+                if mon is not None:
+                    kind, ruler, is_emp = "castle", mon, (mon in empires)
+                elif led is not None:
+                    kind, ruler, is_emp = "hall", led, False
+                else:
+                    kind, ruler, is_emp = None, None, False
+                color = agent_color(personality_by_name.get(ruler, "")) if ruler else _DEFAULT_RULER
+                key = (count, kind, ruler, is_emp, cell)
+                cached = self._town_plans.get(sid)
+                if cached is None or cached[0] != key:          # rebuild ONLY on membership/ruler change
+                    cached = (key, build_town_plan(center, count, kind, color, is_emp, cell))
+                    self._town_plans[sid] = cached
+                self._draw_town(cx, cy, cached[1])
+                top_y = cy - cached[1]["cluster_r"]
+            else:
+                self._draw_settlement_houses(cx, cy, radius_px, count, cell)
             if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
                 label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
-                screen.blit(label, (cx + m + 2, cy - label.get_height() // 2))
+                screen.blit(label, (cx - label.get_width() // 2, top_y - label.get_height() - 2))
+        # Prune plans for settlements that no longer exist (keeps the cache bounded).
+        self._town_plans = {s: v for s, v in self._town_plans.items() if s in settlements}
 
     def _draw_settlement_houses(self, cx: int, cy: int, radius_px: int, count: int, cell: int) -> None:
         """Ring a settlement's centre with a few HOUSE glyphs (count ~ membership, capped).
@@ -786,6 +916,169 @@ class PygameRenderer:
         for i in range(n):
             ang = -math.pi / 2 + (i / n) * 2 * math.pi
             self._draw_house(int(cx + ring * math.cos(ang)), int(cy + ring * math.sin(ang)), house_s)
+
+    # -- Slice 6: detailed settlement rendering from a cached plan (pure drawing) ---
+    def _draw_town(self, cx: int, cy: int, plan: dict[str, Any]) -> None:
+        """Render a settlement from its cached `plan`: plaza, fence, paths, buildings, seat, well.
+
+        Drawables are painted back-to-front (a packed-earth plaza and palisade behind, dirt paths,
+        then every building/granary/seat sorted by ground-y so southern structures overlap northern
+        ones), giving a clustered village real depth. All offsets are pixel deltas from (cx, cy).
+        """
+        screen = self._screen
+        pygame.draw.circle(screen, _PLAZA, (cx, cy), plan["plaza_r"])          # market square ground
+        if plan["fence_r"]:
+            self._draw_fence_ring(cx, cy, plan["fence_r"])
+        for b in plan["buildings"]:                                            # dirt roads to each house
+            pygame.draw.line(screen, _PATH, (cx, cy), (cx + b["dx"], cy + b["dy"]), plan["path_w"])
+
+        ops: list[tuple[int, str, dict]] = [(b["dy"], "house", b) for b in plan["buildings"]]
+        if plan["granary"]:
+            ops.append((plan["granary"]["dy"], "granary", plan["granary"]))
+        if plan["central"]["kind"]:
+            ops.append((0, "central", plan["central"]))
+        for _dy, kind, d in sorted(ops, key=lambda o: o[0]):                   # painter's order by ground-y
+            if kind == "house":
+                self._draw_building(cx + d["dx"], cy + d["dy"], d["w"], d["h"],
+                                    d["wall"], d["roof"], d["hip"], d["lit"])
+            elif kind == "granary":
+                self._draw_granary(cx + d["dx"], cy + d["dy"], d["scale"])
+            elif d["kind"] == "castle":
+                self._draw_castle(cx, cy, d["scale"], d["color"], d["emperor"])
+            else:
+                self._draw_hall(cx, cy, d["scale"], d["color"])
+        w = plan["well"]
+        self._draw_well(cx + w["dx"], cy + w["dy"], w["scale"])
+
+    def _draw_building(self, gx: int, gy: int, w: int, h: int, wall: tuple, roof: tuple,
+                       hip: bool, lit: bool) -> None:
+        """A detailed house at ground-centre (gx, gy): walls, gabled/hip roof + shading, door,
+        windows and a chimney — a recognisable dwelling rather than a plain square."""
+        s = self._screen
+        half = max(2, w // 2)
+        wall_rect = pygame.Rect(gx - half, gy - h, 2 * half, h)
+        pygame.draw.rect(s, wall, wall_rect)
+        pygame.draw.rect(s, _OUTLINE, wall_rect, 1)
+        roof_h = max(3, int(h * 0.7))
+        rtop = wall_rect.top
+        if hip:                                                               # hip roof (trapezoid)
+            pk = max(1, half // 2)
+            roof_pts = [(gx - half - 1, rtop), (gx + half + 1, rtop),
+                        (gx + pk, rtop - roof_h), (gx - pk, rtop - roof_h)]
+            ridge = [(gx - pk, rtop - roof_h), (gx + pk, rtop - roof_h), (gx + half + 1, rtop)]
+        else:                                                                 # gabled roof (peak)
+            roof_pts = [(gx - half - 1, rtop), (gx + half + 1, rtop), (gx, rtop - roof_h)]
+            ridge = [(gx, rtop - roof_h), (gx + half + 1, rtop), (gx, rtop)]
+        pygame.draw.polygon(s, roof, roof_pts)
+        pygame.draw.polygon(s, _shade(roof, -24), ridge)                      # shaded sunless slope
+        pygame.draw.polygon(s, _OUTLINE, roof_pts, 1)
+        dw, dh = max(2, w // 4), max(3, h // 2)                               # door
+        pygame.draw.rect(s, _DOOR, (gx - dw // 2, gy - dh, dw, dh))
+        if w >= 9:                                                            # windows
+            win = _WINDOW_LIT if lit else _WINDOW_DARK
+            wsz = max(2, w // 5)
+            pygame.draw.rect(s, win, (gx - half + 2, gy - h + 2, wsz, wsz))
+            pygame.draw.rect(s, win, (gx + half - 2 - wsz, gy - h + 2, wsz, wsz))
+        if h >= 7:                                                            # chimney
+            cw = max(1, w // 6)
+            pygame.draw.rect(s, _CHIMNEY, (gx + half - cw - 1, rtop - roof_h // 2, cw, roof_h // 2 + 2))
+
+    def _crenellate(self, x: int, top_y: int, width: int, color: tuple) -> None:
+        """A row of merlons (battlement notches) along a tower/keep top edge."""
+        m = max(2, width // 7)
+        n = max(2, width // (2 * m))
+        for i in range(n):
+            mx = x + i * 2 * m
+            if mx + m <= x + width:
+                pygame.draw.rect(self._screen, color, (mx, top_y - m, m, m))
+
+    def _draw_castle(self, cx: int, cy: int, scale: int, color: tuple, emperor: bool) -> None:
+        """A monarch's CASTLE: a tall stone keep with battlements + flanking towers (with conical
+        roofs in the RULER's colour), a gate, and a banner — unmistakably grander than a village.
+        An emperor's seat is taller with a second banner."""
+        s = self._screen
+        kw = max(8, int(scale * 1.7))
+        kh = max(12, int(scale * (2.8 if emperor else 2.3)))
+        tw = max(5, int(scale * 0.95))
+        th = int(kh * 0.82)
+        for sx in (cx - kw // 2 - tw // 2 + 1, cx + kw // 2 + tw // 2 - 1):   # two flanking towers
+            trect = pygame.Rect(sx - tw // 2, cy - th, tw, th)
+            pygame.draw.rect(s, _CASTLE_STONE_DK, trect)
+            pygame.draw.rect(s, _OUTLINE, trect, 1)
+            self._crenellate(trect.left, trect.top, tw, _CASTLE_STONE)
+            pygame.draw.polygon(s, color, [(trect.left - 1, trect.top - 2),  # conical roof in ruler colour
+                                           (trect.right + 1, trect.top - 2),
+                                           (sx, trect.top - tw)])
+        keep = pygame.Rect(cx - kw // 2, cy - kh, kw, kh)                     # the central keep
+        pygame.draw.rect(s, _CASTLE_STONE, keep)
+        pygame.draw.rect(s, _OUTLINE, keep, 1)
+        self._crenellate(keep.left, keep.top, kw, _CASTLE_STONE_DK)
+        gw, gh = max(3, kw // 3), max(4, kh // 3)                             # gate
+        pygame.draw.rect(s, _GATE, (cx - gw // 2, cy - gh, gw, gh))
+        pygame.draw.arc(s, _GATE, (cx - gw // 2, cy - gh - gw // 2, gw, gw), 0, math.pi, 2)
+        for wy in (cy - kh + kh // 3, cy - kh + 2 * kh // 3):                 # arrow-slit windows
+            pygame.draw.rect(s, _WINDOW_DARK, (cx - 1, wy, 2, max(2, kh // 6)))
+        pole_top = keep.top - max(4, scale)                                   # banner pole + pennant
+        pygame.draw.line(s, _OUTLINE, (cx, keep.top), (cx, pole_top), 1)
+        pygame.draw.polygon(s, color, [(cx, pole_top), (cx + scale, pole_top + 2), (cx, pole_top + 5)])
+        if emperor:
+            pygame.draw.polygon(s, _shade(color, 30),
+                                [(cx, pole_top + 5), (cx + scale - 2, pole_top + 7), (cx, pole_top + 10)])
+
+    def _draw_hall(self, cx: int, cy: int, scale: int, color: tuple) -> None:
+        """A trust-leader's HALL: a longhouse larger than a hut, with a big gabled roof, a double
+        door and a small pennant in the leader's colour — between a common house and a castle."""
+        s = self._screen
+        w, h = max(10, int(scale * 1.9)), max(8, int(scale * 1.4))
+        self._draw_building(cx, cy, w, h, _WALL_TONES[1], _ROOF_TONES[3], hip=False, lit=True)
+        dw = max(3, w // 4)                                                   # a grander double door
+        pygame.draw.rect(s, _DOOR, (cx - dw // 2, cy - max(4, h // 2), dw, max(4, h // 2)))
+        pygame.draw.line(s, _shade(_DOOR, 30), (cx, cy - max(4, h // 2)), (cx, cy), 1)
+        peak = cy - h - max(3, int(h * 0.7))
+        pygame.draw.line(s, _OUTLINE, (cx, peak), (cx, peak - max(4, scale)), 1)  # pennant pole
+        pygame.draw.polygon(s, color, [(cx, peak - max(4, scale)),
+                                       (cx + max(4, scale - 1), peak - max(4, scale) + 2),
+                                       (cx, peak - max(4, scale) + 5)])
+
+    def _draw_granary(self, gx: int, gy: int, scale: int) -> None:
+        """A granary: a stout light-walled store with a tall conical roof, set near the fields."""
+        s = self._screen
+        w, h = max(6, int(scale * 0.95)), max(8, int(scale * 1.5))
+        rect = pygame.Rect(gx - w // 2, gy - h, w, h)
+        pygame.draw.rect(s, _GRANARY_WALL, rect)
+        pygame.draw.rect(s, _OUTLINE, rect, 1)
+        for ly in range(rect.top + 2, rect.bottom, max(2, h // 4)):           # plank lines
+            pygame.draw.line(s, _shade(_GRANARY_WALL, -22), (rect.left, ly), (rect.right, ly), 1)
+        pygame.draw.polygon(s, _ROOF_TONES[2], [(rect.left - 2, rect.top), (rect.right + 2, rect.top),
+                                                (gx, rect.top - int(scale * 1.1))])
+        pygame.draw.polygon(s, _OUTLINE, [(rect.left - 2, rect.top), (rect.right + 2, rect.top),
+                                          (gx, rect.top - int(scale * 1.1))], 1)
+
+    def _draw_well(self, gx: int, gy: int, scale: int) -> None:
+        """A stone well with water and a little gabled roof on two posts (the village centre)."""
+        s = self._screen
+        r = max(3, scale // 2)
+        pygame.draw.circle(s, _WELL_STONE, (gx, gy), r)
+        pygame.draw.circle(s, _WELL_WATER, (gx, gy), max(1, r - 2))
+        pygame.draw.circle(s, _OUTLINE, (gx, gy), r, 1)
+        ph = max(4, scale)
+        pygame.draw.line(s, _TREE_TRUNK, (gx - r, gy), (gx - r, gy - ph), 1)
+        pygame.draw.line(s, _TREE_TRUNK, (gx + r, gy), (gx + r, gy - ph), 1)
+        pygame.draw.polygon(s, _ROOF_TONES[0], [(gx - r - 1, gy - ph), (gx + r + 1, gy - ph),
+                                                (gx, gy - ph - r)])
+
+    def _draw_fence_ring(self, cx: int, cy: int, radius: int) -> None:
+        """A palisade: posts joined by rails ringing a large settlement (deterministic spacing)."""
+        s = self._screen
+        n = max(10, int(radius / max(3, self._cell * 0.6)))
+        prev = None
+        for i in range(n + 1):
+            ang = (i / n) * 2 * math.pi
+            x, y = int(cx + radius * math.cos(ang)), int(cy + radius * math.sin(ang))
+            if prev is not None:
+                pygame.draw.line(s, _FENCE, prev, (x, y), 1)
+            pygame.draw.circle(s, _shade(_FENCE, 18), (x, y), 1)
+            prev = (x, y)
 
     def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool) -> None:
         """A one-line status strip under the grid (turn / living / food / pause)."""

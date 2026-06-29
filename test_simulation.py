@@ -3782,6 +3782,92 @@ def test_pygame_terrain_cached_built_once_and_read_only() -> None:
     print("PASS test_pygame_terrain_cached_built_once_and_read_only")
 
 
+def test_pygame_town_plan_grows_with_members_and_is_pure() -> None:
+    """Slice 6: a settlement's building plan GROWS with membership, gains civic structure at
+    thresholds, marks a ruler's seat, and is deterministic + RNG-free (pure hash layout)."""
+    import random as _random
+    try:
+        from renderer.pygame_renderer import (build_town_plan, _MAX_TOWN_BUILDINGS,
+                                              _GRANARY_MIN_MEMBERS, _FENCE_MIN_MEMBERS)
+    except ImportError:
+        print("PASS test_pygame_town_plan_grows_with_members_and_is_pure (skipped: no pygame)")
+        return
+    col = (170, 150, 205)
+    s0 = _random.getstate()
+    small = build_town_plan((6, 6), 2, None, col, False, 16)
+    big = build_town_plan((6, 6), 12, None, col, False, 16)
+    assert _random.getstate() == s0, "building a town plan touched the global RNG"
+    # GROWTH: more members -> more buildings (capped); civic structure appears at thresholds.
+    assert len(big["buildings"]) > len(small["buildings"]), "a town shows more buildings than a hamlet"
+    assert len(build_town_plan((6, 6), 999, None, col, False, 16)["buildings"]) == _MAX_TOWN_BUILDINGS
+    assert small["granary"] is None and small["fence_r"] is None, "a hamlet has no granary/palisade"
+    assert build_town_plan((6, 6), _GRANARY_MIN_MEMBERS, None, col, False, 16)["granary"] is not None
+    assert build_town_plan((6, 6), _FENCE_MIN_MEMBERS, None, col, False, 16)["fence_r"] is not None
+    # A ruler's seat: castle for a monarch, hall for a leader, none for a plain village.
+    assert build_town_plan((6, 6), 6, "castle", col, False, 16)["central"]["kind"] == "castle"
+    assert build_town_plan((6, 6), 6, "hall", col, False, 16)["central"]["kind"] == "hall"
+    assert build_town_plan((6, 6), 6, None, col, False, 16)["central"]["kind"] is None
+    # Deterministic: identical inputs -> identical layout (stable, no flicker); coords decorrelate.
+    assert build_town_plan((6, 6), 8, None, col, False, 16) == build_town_plan((6, 6), 8, None, col, False, 16)
+    assert (build_town_plan((6, 6), 8, None, col, False, 16)["buildings"]
+            != build_town_plan((9, 2), 8, None, col, False, 16)["buildings"]), "different towns differ"
+    print("PASS test_pygame_town_plan_grows_with_members_and_is_pure")
+
+
+def test_pygame_detailed_settlements_cached_and_read_only() -> None:
+    """Slice 6: drawing detailed villages, a leader HALL, a monarch CASTLE and an emperor's seat
+    is read-only; town plans are cached and rebuilt ONLY when membership/ruler changes."""
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_detailed_settlements_cached_and_read_only (skipped: no pygame)")
+        return
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": 18, "turn": 12,
+        "food": [(2, 2)],
+        "settlements": {
+            "S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2},
+            "S002": {"id": "S002", "center": (13, 12), "members": {"K"}, "founded": 5},
+        },
+        "leaders": {"S001": {"leader": "a", "followers": {"b"}, "since": 3}},   # hall
+        "monarchs": {"S002": {"monarch": "K", "since": 8, "garrison": set()}},  # castle
+        "empires": {"K": {"emperor": "K", "subject_kings": {}, "discontent": {}}},  # emperor seat
+        "agents": list(village.values()) + [_FakeAgent("K", "independent and competitive", (13, 12), True, 300.0, 0.0)],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        r._draw(state)
+        plan1 = r._town_plans["S001"][1]
+        r._draw(state)
+        assert r._town_plans["S001"][1] is plan1, "an unchanged settlement reuses its cached plan"
+        assert set(r._town_plans) == {"S001", "S002"}, "both settlements have cached plans"
+        # A new member must invalidate + rebuild that settlement's plan (growth is visible).
+        state["settlements"]["S001"]["members"].add("f")
+        state["agents"].append(_FakeAgent("f", "friendly", (6, 7), True, 1.0, 0.0))
+        r._draw(state)
+        plan2 = r._town_plans["S001"][1]
+        assert plan2 is not plan1, "membership change rebuilds the plan"
+        assert len(plan2["buildings"]) > len(plan1["buildings"]), "the rebuilt village grew"
+        # A vanished settlement is pruned from the cache.
+        del state["settlements"]["S002"]
+        r._draw(state)
+        assert "S002" not in r._town_plans, "a removed settlement is pruned from the plan cache"
+    finally:
+        pygame.quit()
+    after = {k: state[k] for k in state if k not in ("agents", "settlements")}
+    assert after == copy.deepcopy({k: before[k] for k in before if k != "settlements"}), \
+        "detailed-settlement draw mutated world_state"
+    print("PASS test_pygame_detailed_settlements_cached_and_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4288,6 +4374,8 @@ def main_runner() -> None:
         test_pygame_renderer_iconography_draw_is_read_only,
         test_pygame_terrain_noise_is_pure_and_deterministic,
         test_pygame_terrain_cached_built_once_and_read_only,
+        test_pygame_town_plan_grows_with_members_and_is_pure,
+        test_pygame_detailed_settlements_cached_and_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
