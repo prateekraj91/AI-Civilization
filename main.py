@@ -780,6 +780,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              f"above it the backlash erodes his trust until he BREAKS AWAY and the empire FRAGMENTS. "
              f"Only meaningful with --empire.")
     p.add_argument(
+        "--stage", choices=("monarchy", "kingdom", "war"), default=None,
+        help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
+             "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
+             "rulers). It STAGES, it does not fake: it positions agents/wealth and runs the EXISTING "
+             "code paths — 'monarchy' has a wealthy aspirant SEIZE a town via monarchy.attempt_"
+             "conquest (a real MONARCH + castle); 'kingdom' then CONQUERS neighbours via kingdoms."
+             "conquer_neighbour (a real king -> vassal-lords kingdom); 'war' sets up TWO adjacent "
+             "rival kingdoms (one stronger) so the normal empire.update opportunistic-war logic "
+             "CLASHES them and an EMPIRE forms on screen. Implies the matching institutions + "
+             "--settlements, owns the cast, and sizes the world. RNG-free staging -> reproducible "
+             "under --seed. Pair with --pygame to watch. (Off -> byte-identical to before.)")
+    p.add_argument(
         "--focal-budget", type=int, default=None, metavar="N",
         help="V2 M0.2 tiered cognition: the MAX number of agents that may run the "
              f"expensive LLM mind at once (default {DEFAULT_FOCAL_BUDGET}, or 0 when "
@@ -838,7 +850,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    kingdoms_on: bool = False,
                    tribute_rate: "float | None" = None,
                    empire_on: bool = False,
-                   empire_share: "float | None" = None) -> None:
+                   empire_share: "float | None" = None,
+                   stage: "str | None" = None) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -941,6 +954,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
             for agent in world_state["agents"][:count]:
                 knowledge.grant(world_state, agent, item, turn=0)
 
+    # OPTIONAL SCENARIO STAGING (default None -> never imported -> byte-identical to before).
+    # Sets up a monarchy/kingdom/war SCENE using the EXISTING verified institution code paths
+    # (monarchy.attempt_conquest, kingdoms.conquer_neighbour) so the conquest-chain visuals can
+    # be watched; the normal per-turn loop then runs from the staged state. RNG-free, so a staged
+    # run stays reproducible under the seed. This only writes records the engine itself produces.
+    if stage is not None:
+        import scenario
+        scenario.apply(world_state, stage, cognition=cognition)
+
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
     counters: dict[str, int] = {"agent_turns": 0}
@@ -964,6 +986,11 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     sink_cm = (contextlib.redirect_stdout(renderer.sink)
                if renderer is not None else contextlib.nullcontext())
     with live_cm, sink_cm:
+      # For a STAGED run, draw the starting scene ONCE before turn 1 so the viewer sees the
+      # staged kingdoms/castles before the loop begins (e.g. before an inter-kingdom war fires).
+      # Read-only and gated on `stage`, so non-staged runs are completely unaffected.
+      if stage is not None and renderer is not None:
+          renderer.update(world_state)
       for turn in range(1, num_turns + 1):
         world_state["turn"] = turn
 
@@ -1275,6 +1302,24 @@ def main(argv: list[str] | None = None) -> None:
     else:
         focal_budget = DEFAULT_FOCAL_BUDGET
 
+    # DEMO SCENARIO STAGING (--stage). Default None -> nothing below fires -> byte-identical. When
+    # set, it IMPLIES the matching institutions (so their verified per-turn updates run), OWNS the
+    # world (the scenario builds the cast; --agents is ignored), sizes a world big enough for the
+    # scene, and defaults to a call-free heuristic cast so the demo is watchable offline.
+    stage = args.stage
+    empire_on = args.empire
+    if stage is not None:
+        monarchy_on = True
+        kingdoms_on = kingdoms_on or stage in ("kingdom", "war")
+        empire_on = empire_on or stage == "war"
+        settlements_on = True
+        agent_specs = []                       # the scenario constructs the whole cast itself
+        food_cfg = None
+        if grid_size is None:
+            grid_size = 30 if stage == "war" else 24
+        if args.cognition is None:
+            cognition, focal_budget = "heuristic", 0   # no LLM calls for the visual demo
+
     # --log mirrors stdout to a file via a Tee for the whole run, then restores it.
     # The visual --pygame renderer is a live watch tool, so it always takes the no-log
     # branch below (which suppresses KeyboardInterrupt for a clean window-close); --log
@@ -1302,7 +1347,8 @@ def main(argv: list[str] | None = None) -> None:
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
-                           empire_on=args.empire, empire_share=args.imperial_share)
+                           empire_on=empire_on, empire_share=args.imperial_share,
+                           stage=stage)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1326,7 +1372,8 @@ def main(argv: list[str] | None = None) -> None:
                            taxation_on=args.taxation, tax_rate=args.tax_rate,
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
-                           empire_on=args.empire, empire_share=args.imperial_share)
+                           empire_on=empire_on, empire_share=args.imperial_share,
+                           stage=stage)
 
 
 if __name__ == "__main__":

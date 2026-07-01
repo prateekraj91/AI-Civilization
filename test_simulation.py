@@ -2686,6 +2686,90 @@ def test_empire_off_run_is_byte_identical_to_v1() -> None:
     print("PASS test_empire_off_run_is_byte_identical_to_v1")
 
 
+# --- DEMO scenario staging (scenario.py) ----------------------------------
+def test_staged_monarchy_produces_a_real_monarch_record() -> None:
+    """`scenario.apply(..., 'monarchy')` runs the REAL monarchy.attempt_conquest, so it leaves a
+    genuine world_state["monarchs"] record (shape {monarch, since, garrison}) — RNG-free."""
+    import random as _random, scenario
+    _fresh_world(); create_world(size=24)
+    for k in ("monarchs", "leaders", "kingdoms", "empires", "settlements"):
+        world_state[k] = {}
+    world_state["settlement_seq"] = 0
+    s0 = _random.getstate()
+    scenario.apply(world_state, "monarchy")
+    assert _random.getstate() == s0, "staging must be RNG-free (reproducible under seed)"
+    monarchs = world_state["monarchs"]
+    assert monarchs, "staged monarchy must install a real monarch"
+    sid, rec = next(iter(monarchs.items()))
+    assert rec["monarch"] and "garrison" in rec and "since" in rec, "record matches an organic monarch"
+    assert sid in world_state["settlements"], "the monarch rules a real settlement (castle can render)"
+    print("PASS test_staged_monarchy_produces_a_real_monarch_record")
+
+
+def test_staged_kingdom_produces_a_real_multi_settlement_kingdom() -> None:
+    """`scenario.apply(..., 'kingdom')` uses the REAL kingdoms.conquer_neighbour, producing a
+    multi-settlement feudal kingdom (king -> vassal lords) in world_state["kingdoms"]."""
+    import scenario
+    _fresh_world(); create_world(size=24)
+    for k in ("monarchs", "leaders", "kingdoms", "empires", "settlements"):
+        world_state[k] = {}
+    world_state["settlement_seq"] = 0
+    scenario.apply(world_state, "kingdom")
+    kingdoms_rec = world_state["kingdoms"]
+    assert kingdoms_rec, "staged kingdom must form a real kingdom"
+    king, rec = next(iter(kingdoms_rec.items()))
+    assert len(rec["settlements"]) >= 2, "a kingdom spans multiple settlements"
+    assert rec["vassals"], "the conquered local rulers became vassal lords"
+    # The vassal settlements KEEP their local leadership (organic vassalage), and the capital a monarch.
+    for sid, lord in rec["vassals"].items():
+        assert world_state["leaders"].get(sid, {}).get("leader") == lord, "vassal keeps local leadership"
+    assert world_state["monarchs"], "the king is still a monarch of its seat (castle renders)"
+    print("PASS test_staged_kingdom_produces_a_real_multi_settlement_kingdom")
+
+
+def test_staged_war_forms_an_empire_via_the_real_loop() -> None:
+    """A staged two-kingdom run lets the EXISTING empire.update opportunistic-war logic fire during
+    the NORMAL loop, clashing real loyal hosts and subjugating the loser into an empire."""
+    def run():
+        llm.PROVIDER = "random"; random.seed(5)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(6, renderer=None, stage="war", monarchy_on=True,
+                                kingdoms_on=True, empire_on=True, settlements=True,
+                                cognition="heuristic", focal_budget=0, grid_size=30)
+        return {e: sorted(r["subject_kings"]) for e, r in world_state.get("empires", {}).items()}
+    saved = llm.PROVIDER
+    try:
+        empires_a = run()
+        empires_b = run()
+    finally:
+        llm.PROVIDER = saved
+    assert empires_a, "the staged war must form an empire (a king subjugated via the real loop)"
+    assert any(subjects for subjects in empires_a.values()), "the empire holds a subject-king"
+    assert empires_a == empires_b, "a staged run is reproducible under the seed"
+    print("PASS test_staged_war_forms_an_empire_via_the_real_loop")
+
+
+def test_staging_off_is_byte_identical_to_v1() -> None:
+    """stage=None (default) leaves run_simulation byte-identical to a run with no stage param."""
+    def run(staged):
+        llm.PROVIDER = "random"; random.seed(43)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            if staged:
+                main.run_simulation(20, focal_budget=8, stage=None)
+            else:
+                main.run_simulation(20, focal_budget=8)
+        return buf.getvalue()
+    saved = llm.PROVIDER
+    try:
+        base, off = run(False), run(True)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "passing stage=None changed the default run"
+    print("PASS test_staging_off_is_byte_identical_to_v1")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -4336,6 +4420,10 @@ def main_runner() -> None:
         test_imperial_tribute_cascades_through_subject_king_and_conserves_wealth,
         test_over_imperial_tribute_fragments_subject_king_with_hysteresis_fair_stays,
         test_empire_off_run_is_byte_identical_to_v1,
+        test_staged_monarchy_produces_a_real_monarch_record,
+        test_staged_kingdom_produces_a_real_multi_settlement_kingdom,
+        test_staged_war_forms_an_empire_via_the_real_loop,
+        test_staging_off_is_byte_identical_to_v1,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,
