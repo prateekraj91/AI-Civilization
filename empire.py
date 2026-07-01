@@ -359,7 +359,10 @@ def _kingdom_neighbours(state: dict[str, Any], king_name: str) -> list[str]:
     mine = [sets[s]["center"] for s in _realm_settlements(state, king_name) if s in sets]
     out = []
     for other in sorted(state.get("kingdoms", {})):
-        if other == king_name or not is_sovereign(state, other):
+        # Skip self, subject-kings (already inside an empire), and any king whose agent is no longer
+        # living — a dead king's realm is not a war target (mirrors the attacker aliveness guard in
+        # `update`), and admitting one would later NoneType-crash the host-size dry runs.
+        if other == king_name or not is_sovereign(state, other) or _find(state, other) is None:
             continue
         theirs = [sets[s]["center"] for s in _realm_settlements(state, other) if s in sets]
         if any(monarchy._chebyshev(a, b) <= kingdoms.KINGDOM_REACH for a in mine for b in theirs):

@@ -385,6 +385,12 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state.setdefault("kingdoms", {}).clear()
     world_state["kingdoms_on"] = False
     world_state["tribute_rate"] = 0.25
+    # M3.6: empire records are per-simulation too (a stale empire must not leak across runs, or a
+    # fresh run in the same process would inherit ghost subject-kings) — clear them and reset the
+    # flag OFF + imperial share to default so a fresh run is v1 unless run_simulation opts in.
+    world_state.setdefault("empires", {}).clear()
+    world_state["empire_on"] = False
+    world_state["empire_share"] = 0.25
     return world_state["grid"]
 
 

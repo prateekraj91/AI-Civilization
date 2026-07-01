@@ -57,13 +57,27 @@ _RULER = "ambitious, independent and competitive"
 _LORD = "friendly and outgoing"
 _FOLK = "cautious and territorial"
 
+# VIABILITY (the whole point of the staging fix): a demo realm must FEED ITSELF for the whole
+# run, not collapse into a ghost town. Every staged inhabitant is seeded as a self-sufficient
+# PRODUCER — it KNOWS how to farm and hunt (and cooks with fire, for a bigger meal), so the
+# per-turn knowledge.farm/knowledge.hunt loops keep regrowing the food the town eats. This is
+# NOT a mechanics cheat: farming/hunting are ordinary seeded knowledge (the same items
+# --seed-knowledge grants), and food is only ever grown by the VERIFIED knowledge loops from a
+# FED producer — a starving one forages instead. Seeding the skill just guarantees the demo
+# starts with the producers an organic world would have had to evolve.
+_PRODUCER = frozenset({"fire", "tools", "farming", "hunting"})
+
 
 def _place(state: dict[str, Any], name: str, pos: tuple[int, int], personality: str,
            cognition: str, money: float = 0.0, stockpile: float = 0.0,
-           sid: str | None = None) -> Agent:
-    """Create + place a living agent through the SAME world layer the engine uses (no RNG)."""
+           sid: str | None = None, knowledge: "frozenset[str] | set[str]" = _PRODUCER) -> Agent:
+    """Create + place a living agent through the SAME world layer the engine uses (no RNG).
+
+    `knowledge` defaults to the self-feeding _PRODUCER skill set so a staged inhabitant sustains
+    itself (and the town) across the whole run; pass an empty set for a genuinely skill-less body.
+    """
     a = Agent(name=name, personality=personality, goals={"survive": 8, "wealth": 4},
-              cognition=cognition)
+              cognition=cognition, knowledge=set(knowledge))
     size = state.get("size", 0) or 1
     x = max(0, min(size - 1, pos[0]))
     y = max(0, min(size - 1, pos[1]))
@@ -85,13 +99,17 @@ def _settlement(state: dict[str, Any], sid: str, center: tuple[int, int],
 
 
 def _food_around(state: dict[str, Any], center: tuple[int, int], radius: int) -> None:
-    """Drop food cells around a settlement so its inhabitants survive long enough to watch."""
+    """Fill a solid food FIELD around a settlement so its inhabitants can always reach a meal.
+
+    A filled square (not a thin diamond) gives the town a dense, walkable larder to bootstrap on;
+    from there the per-turn knowledge.farm/hunt loops keep it topped up (they cap the world's food
+    at a sustainable per-capita abundance, so this seed does not runaway). This is what lets a
+    staged capital stay POPULATED — residents eat here rather than wandering off to starve.
+    """
     cx, cy = center
     size = state.get("size", 0)
     for dx in range(-radius, radius + 1):
         for dy in range(-radius, radius + 1):
-            if abs(dx) + abs(dy) > radius:
-                continue
             x, y = cx + dx, cy + dy
             if 0 <= x < size and 0 <= y < size and (x, y) not in state["food"]:
                 state["food"].append((x, y))
@@ -103,11 +121,15 @@ def _mercs(state: dict[str, Any], prefix: str, near: tuple[int, int], n: int, co
 
     Spread across distinct cells (within MUSTER_RADIUS), wealth below MERC_MAX_WEALTH so the
     EXISTING muster (monarchy.muster) will hire them. These are real agents who fight and die.
+
+    VIABILITY: a mercenary is a self-feeding _PRODUCER (default) and carries a small food buffer,
+    so the SURVIVING garrison it forms after the conquest can feed itself standing watch instead of
+    starving by turn 30. The buffer keeps wealth < monarchy.MERC_MAX_WEALTH so muster still hires it.
     """
     for i in range(n):
         x = near[0] + (i % 4) - 2
         y = near[1] + (i // 4) - 1
-        _place(state, f"{prefix}{i}", (x, y), _FOLK, cognition, money=0.5)
+        _place(state, f"{prefix}{i}", (x, y), _FOLK, cognition, money=0.5, stockpile=3.5)
 
 
 # --- Level 1: a real MONARCHY (a CASTLE appears) ---------------------------
@@ -124,11 +146,13 @@ def stage_monarchy(state: dict[str, Any], cognition: str, center: tuple[int, int
     members = []
     for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1), (-1, 0), (0, -1)]):
         members.append(_place(state, f"Town{i}", (cx + dx, cy + dy), _FOLK, cognition,
-                              money=12.0, stockpile=30.0, sid=sid).name)
+                              money=8.0, stockpile=14.0, sid=sid).name)
     _settlement(state, sid, (cx, cy), members)
-    _food_around(state, (cx, cy), 3)
-    aspirant = _place(state, "Rex", (cx, cy - 3), _RULER, cognition, money=200.0, stockpile=60.0)
-    _mercs(state, "RexM", (cx, cy - 5), 9, cognition)
+    _food_around(state, (cx, cy), 4)
+    # Aspirant + mercs sit INSIDE the town's food field (a few cells north) so the garrison the
+    # conquest leaves behind stands watch ON reliable food and feeds itself, not on a barren ridge.
+    aspirant = _place(state, "Rex", (cx, cy - 2), _RULER, cognition, money=200.0, stockpile=60.0)
+    _mercs(state, "RexM", (cx, cy - 3), 9, cognition)
     monarchy.attempt_conquest(state, aspirant, sid, 0)      # THE REAL CONQUEST -> monarchs[S001]=Rex
     return aspirant
 
@@ -144,21 +168,26 @@ def stage_kingdom(state: dict[str, Any], cognition: str, center: tuple[int, int]
     """
     king = stage_monarchy(state, cognition, center)
     cx, cy = center
+    # Each vassal town is a VIABLE settlement in its own right — a lord plus several producer
+    # followers on a food field of its own — so the whole feudal realm stays alive and populated
+    # (not a capital ringed by two collapsing hamlets). Followers trust the chief (FORM_TRUST) so
+    # the conquered town keeps its local leadership as an organic vassalage.
     for sid, (tx, ty), chief_name, fol in (
-        ("S002", (cx + 6, cy - 1), "Chief2", ["F2a", "F2b"]),
-        ("S003", (cx - 1, cy + 6), "Chief3", ["F3a", "F3b"]),
+        ("S002", (cx + 7, cy - 1), "Chief2", ["F2a", "F2b", "F2c", "F2d"]),
+        ("S003", (cx - 1, cy + 7), "Chief3", ["F3a", "F3b", "F3c", "F3d"]),
     ):
         chief = _place(state, chief_name, (tx, ty), _LORD, cognition, money=10.0, stockpile=30.0, sid=sid)
         members = [chief.name]
         for j, fn in enumerate(fol):
-            f = _place(state, fn, (tx, ty + 1 + j), _FOLK, cognition, money=8.0, stockpile=20.0, sid=sid)
+            f = _place(state, fn, (tx + (j % 2), ty + 1 + j // 2), _FOLK, cognition,
+                       money=8.0, stockpile=20.0, sid=sid)
             f.relationships[chief_name] = {"trust": leadership.FORM_TRUST, "interactions": 1, "grudge": False}
             members.append(fn)
         _settlement(state, sid, (tx, ty), members)
         state.setdefault("leaders", {})[sid] = {"leader": chief_name, "followers": set(fol), "since": 0}
-        _food_around(state, (tx, ty), 2)
+        _food_around(state, (tx, ty), 3)
         king.money = 30.0                                   # a war chest sized to muster ~6 fighters
-        _mercs(state, sid + "M", (king.position[0], king.position[1] - 2), 6, cognition)
+        _mercs(state, sid + "M", (king.position[0], king.position[1] - 3), 6, cognition)
         kingdoms.conquer_neighbour(state, king.name, sid, 0)  # THE REAL CONQUEST -> vassalage
     king.money, king.stockpile = 60.0, 90.0
     return king
@@ -177,24 +206,28 @@ def _stage_realm(state: dict[str, Any], cognition: str, prefix: str, king_name: 
     """
     members = []
     for i, (dx, dy) in enumerate([(0, 0), (1, 0), (0, 1), (1, 1), (-1, 0), (0, -1)]):
+        # Commoners are self-feeding _PRODUCERS but kept POOR (wealth < MIN_WAR_CHEST) so they are
+        # never war-chest aspirants — the kings + vassal lords stay the only armed parties, which is
+        # what keeps the staged inter-kingdom war clean. Farming (not a cash buffer) is what feeds them.
         members.append(_place(state, f"{prefix}T{i}", (home_center[0] + dx, home_center[1] + dy),
                               _FOLK, cognition, money=4.0, stockpile=5.0, sid=home_sid).name)
     _settlement(state, home_sid, home_center, members)
     _food_around(state, home_center, 3)
     king = _place(state, king_name, king_pos, _RULER, cognition, money=120.0, stockpile=90.0)
+    _food_around(state, king_pos, 2)                        # the king's seat has its own larder
     _mercs(state, f"{prefix}KM", (king_pos[0], king_pos[1] - 2), 9, cognition)
     monarchy.attempt_conquest(state, king, home_sid, 0)     # REAL: king seizes its capital
 
     chief = _place(state, vassal_chief, vassal_center, _LORD, cognition, money=10.0, stockpile=30.0, sid=vassal_sid)
     vmem = [chief.name]
-    for j in range(2):
-        f = _place(state, f"{prefix}V{j}", (vassal_center[0], vassal_center[1] + 1 + j),
+    for j in range(4):
+        f = _place(state, f"{prefix}V{j}", (vassal_center[0] + (j % 2), vassal_center[1] + 1 + j // 2),
                    _FOLK, cognition, money=3.0, stockpile=5.0, sid=vassal_sid)
         f.relationships[vassal_chief] = {"trust": leadership.FORM_TRUST, "interactions": 1, "grudge": False}
         vmem.append(f.name)
     _settlement(state, vassal_sid, vassal_center, vmem)
     state.setdefault("leaders", {})[vassal_sid] = {"leader": vassal_chief, "followers": set(vmem[1:]), "since": 0}
-    _food_around(state, vassal_center, 2)
+    _food_around(state, vassal_center, 3)
     king.money = 30.0
     _mercs(state, f"{prefix}VM", (king_pos[0], king_pos[1] - 2), 6, cognition)
     kingdoms.conquer_neighbour(state, king_name, vassal_sid, 0)  # REAL: vassalise the neighbour

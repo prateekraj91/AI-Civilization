@@ -1313,6 +1313,13 @@ def main(argv: list[str] | None = None) -> None:
         kingdoms_on = kingdoms_on or stage in ("kingdom", "war")
         empire_on = empire_on or stage == "war"
         settlements_on = True
+        # A LIVING demo needs storage ON: well-fed producers bank a surplus and DRAW IT DOWN to
+        # weather a shock (a levied town, a far-seated king), so the realm survives instead of
+        # starving out within ~40 turns. The money economy is deliberately left OFF for staging:
+        # minting would steadily enrich commoners into fresh conquerors, whose churn dissolves the
+        # very kingdom/empire the demo is meant to SHOW. Storage + the seeded producers keep the
+        # staged realm both alive and STRUCTURALLY STABLE for the whole run.
+        storage_on = True
         agent_specs = []                       # the scenario constructs the whole cast itself
         food_cfg = None
         if grid_size is None:

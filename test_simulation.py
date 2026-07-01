@@ -2770,6 +2770,47 @@ def test_staging_off_is_byte_identical_to_v1() -> None:
     print("PASS test_staging_off_is_byte_identical_to_v1")
 
 
+def test_staged_realm_stays_alive_and_populated_after_150_turns() -> None:
+    """VIABILITY regression: a staged realm must SURVIVE POPULATED for the whole demo, not collapse
+    into a ghost town. Runs the monarchy and kingdom scenes head-less for 150 turns on the SAME
+    flags the --stage CLI uses (storage ON, economy OFF, seeded producer cast) and asserts the town
+    is still inhabited AND the feudal structure is intact — so the castle/kingdom visuals sit in a
+    living world. Also checks reproducibility. Guards against a regression to the starve-out demo."""
+    def run(stage, turns, grid):
+        llm.PROVIDER = "random"; random.seed(5)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(turns, renderer=None, stage=stage, monarchy_on=True,
+                                kingdoms_on=(stage in ("kingdom", "war")), settlements=True,
+                                storage_on=True, cognition="heuristic", focal_budget=0,
+                                grid_size=grid)
+        living = {a.name for a in world_state["agents"] if a.alive}
+        setts = world_state.get("settlements", {})
+        sett_alive = {sid: len(rec["members"] & living) for sid, rec in setts.items()}
+        return len(living), sett_alive, world_state.get("kingdoms", {}), world_state.get("monarchs", {})
+
+    saved = llm.PROVIDER
+    try:
+        # MONARCHY: the capital under the castle is still inhabited (not a lone hoarding king).
+        m_live, m_setts, _, m_mon = run("monarchy", 150, 24)
+        m_live_b, m_setts_b, _, _ = run("monarchy", 150, 24)
+        assert m_mon, "the staged monarch must persist (a castle to render)"
+        assert m_live >= 4, f"staged monarchy starved out: only {m_live} living at turn 150"
+        assert m_setts.get("S001", 0) >= 3, f"the capital emptied: S001 had {m_setts} living members"
+        assert (m_live, m_setts) == (m_live_b, m_setts_b), "a staged run must be reproducible"
+
+        # KINGDOM: king + BOTH vassal settlements alive, and the kingdom record still spans them.
+        k_live, k_setts, k_kingdoms, _ = run("kingdom", 150, 24)
+        assert k_live >= 6, f"staged kingdom starved out: only {k_live} living at turn 150"
+        assert sum(1 for v in k_setts.values() if v > 0) >= 3, \
+            f"the feudal realm depopulated: settlements alive = {k_setts}"
+        assert k_kingdoms and max(len(r["settlements"]) for r in k_kingdoms.values()) >= 3, \
+            f"the kingdom dissolved into a lone monarchy: {k_kingdoms}"
+    finally:
+        llm.PROVIDER = saved
+    print("PASS test_staged_realm_stays_alive_and_populated_after_150_turns")
+
+
 # --- Conversation / talk (Day 8) ------------------------------------------
 def test_talk_delivers_next_turn_and_reaction() -> None:
     """A talks to adjacent B; B receives NEXT turn and reacts; both remember it."""
@@ -4424,6 +4465,7 @@ def main_runner() -> None:
         test_staged_kingdom_produces_a_real_multi_settlement_kingdom,
         test_staged_war_forms_an_empire_via_the_real_loop,
         test_staging_off_is_byte_identical_to_v1,
+        test_staged_realm_stays_alive_and_populated_after_150_turns,
         test_talk_delivers_next_turn_and_reaction,
         test_talk_out_of_range_is_noop,
         test_reaction_is_personality_driven,
