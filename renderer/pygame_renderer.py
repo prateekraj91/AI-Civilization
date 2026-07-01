@@ -16,8 +16,10 @@ Opens a window and draws ONE FRAME from a `world_state` snapshot:
           (clamped to a sane min/max so nobody vanishes or fills the screen).
   Dead agents are not drawn.
 
-A tiny HUD line shows turn / living / food. Later slices add settlements, leaders,
-monarchs, kingdoms and war — NOT here.
+A tiny HUD line shows turn / living / food. Later slices added settlements (2), the
+event-feed panel (3), iconography (4), detailed terrain (5), detailed towns & castles
+(6), and — slice 8 — WAR & MOTION: a realm-colour territory layer, battles replayed
+as short read-only cinematics, and smooth inter-turn agent movement.
 
 ARCHITECTURE RULE (same boundary as the text renderer, obeyed strictly)
 -----------------------------------------------------------------------
@@ -164,6 +166,43 @@ _MIN_TOWN_BUILDINGS = 2
 _MAX_TOWN_BUILDINGS = 16          # cap so a metropolis stays tidy/cheap
 _GRANARY_MIN_MEMBERS = 5          # a granary appears once a settlement is established
 _FENCE_MIN_MEMBERS = 8            # a palisade ring appears once a settlement is large
+
+# Slice 8: WAR & MOTION. The sim resolves a battle INSTANTLY inside one turn (wage_war /
+# conquer_neighbour / attempt_conquest are pure state maths) — so the renderer REPLAYS each battle
+# as a short five-beat CINEMATIC (muster -> march -> clash -> casualties -> aftermath) rebuilt from
+# data the sim already emitted: the event log names who fought, who fell BY NAME, who won and what
+# changed hands, and a renderer-local SNAPSHOT of last turn supplies where everyone stood before.
+# Presentation (dust, jitter, flashes) is invented; outcomes never are. While a scene plays the sim
+# is simply not stepped (the renderer already owns pacing), and all visual randomness comes from
+# `terrain_noise` keyed on frame+position — the seeded sim RNG is never touched. A REALM layer
+# colours owned settlements by their TOP ruler (emperor > king > lone monarch) so conquest is
+# readable as territory: on a won battle the loser's tint LERPS to the victor's colour instead of
+# snapping. Smooth motion: every living agent LERPs from last turn's cell to this turn's across
+# the inter-turn delay (with a subtle walk bob) — nobody teleports.
+_REALM_PALETTE = (                # distinct banner hues, hashed per ruler name; none food/teal
+    (196, 84, 70),                # rust red
+    (86, 132, 214),               # royal blue
+    (206, 168, 66),               # gold
+    (146, 96, 198),               # purple
+    (88, 172, 108),               # green
+    (214, 116, 162),              # rose
+    (150, 190, 90),               # olive-lime
+    (222, 138, 72),               # ember orange
+)
+_REALM_FILL_ALPHA = 62            # realm territory tint (a touch stronger than plain teal)
+_REALM_EDGE_ALPHA = 150
+_SPEAR = (208, 206, 198)          # a soldier's spear shaft
+_DUST = (150, 138, 112)           # dust puffs behind a marching host
+_FLASH = (255, 250, 235)          # the white clash-flash bursts
+_FALLEN = (148, 148, 142)         # a fallen soldier's gray marker
+_BANNER_BG = (14, 13, 10)         # the aftermath banner band
+_BANNER_FG = (242, 232, 204)
+_BATTLE_CHIP = (236, 138, 74)     # the small HUD "BATTLE" indicator (matches the feed's war orange)
+_MAX_SOLDIER_GLYPHS = 12          # cap the figures PER SIDE (the true counts live in the banner/log)
+# The five beats, in seconds (~4s total; ANY key skips a scene to its end-state).
+_CIN_MUSTER, _CIN_MARCH, _CIN_CLASH, _CIN_FALL, _CIN_AFTER = 0.5, 1.0, 1.0, 0.6, 1.0
+_CIN_TOTAL = _CIN_MUSTER + _CIN_MARCH + _CIN_CLASH + _CIN_FALL + _CIN_AFTER
+_WALK_BOB = 0.09                  # walk-bob amplitude as a fraction of a cell
 
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
@@ -434,6 +473,240 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
     }
 
 
+# --- Slice 8: pure helpers (snapshot / motion / realms / battle detection) --------------
+def ease(t: float) -> float:
+    """Smoothstep easing on [0,1] — gentle in/out for motion and colour lerps (pure)."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def lerp_color(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """Linear RGB interpolation, clamped to [0,1] — endpoints are exact (pure)."""
+    t = max(0.0, min(1.0, t))
+    return tuple(int(round(c1[i] + (c2[i] - c1[i]) * t)) for i in range(3))
+
+
+def realm_color(name: Any) -> tuple[int, int, int]:
+    """A stable banner colour for ruler `name`: a pure string hash into _REALM_PALETTE.
+
+    Same name -> same colour forever (across frames, seeds and runs); no RNG. Distinct realms
+    usually land on distinct hues (8 slots), and the staged rivals (Aldric/Borin) provably do.
+    """
+    h = 5381
+    for ch in str(name):
+        h = (h * 131 + ord(ch)) & 0xFFFFFFFF
+    return _REALM_PALETTE[h % len(_REALM_PALETTE)]
+
+
+def settlement_realm(sid: str, state: dict[str, Any]) -> str | None:
+    """The TOP ruler whose realm settlement `sid` belongs to, or None — a pure institution read.
+
+    A settlement inside a kingdom is coloured by its king — unless that king is (or serves) an
+    EMPEROR, in which case the whole realm wears the empire's colour (so a subjugated kingdom
+    visibly changes hands). A monarch-held town outside any kingdom wears its monarch's colour.
+    Degrades gracefully when any institution dict is absent (an unowned town keeps the teal).
+    """
+    kingdoms = state.get("kingdoms", {})
+    empires = state.get("empires", {})
+    for king in sorted(kingdoms):
+        if sid in (kingdoms[king].get("settlements") or ()):
+            for emp in sorted(empires):
+                if king == emp or king in (empires[emp].get("subject_kings") or {}):
+                    return emp
+            return king
+    mon = state.get("monarchs", {}).get(sid)
+    return mon.get("monarch") if mon else None
+
+
+def take_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    """A renderer-local snapshot of the just-drawn turn, for diffing when the NEXT turn arrives.
+
+    Pure READ, fresh containers (mutating the snapshot can never touch world_state): living
+    agents' positions (motion lerp + where the soon-to-be-dead stood), each settlement's TOP
+    realm ruler (territory colour before a conquest), and each king's home seat (a war's anchor).
+    """
+    return {
+        "turn": int(state.get("turn", 0)),
+        "positions": {a.name: (a.position[0], a.position[1])
+                      for a in state.get("agents", [])
+                      if getattr(a, "alive", True) and getattr(a, "position", None)},
+        "realms": {sid: settlement_realm(sid, state) for sid in state.get("settlements", {})},
+        "homes": {k: (state["kingdoms"][k] or {}).get("home")
+                  for k in state.get("kingdoms", {})},
+    }
+
+
+def turn_events(events: list[str], turn: int) -> list[str]:
+    """THIS turn's event lines, oldest first — the same contiguous-tail read as talkers_this_turn."""
+    prefix = f"turn {turn}: "
+    out: list[str] = []
+    for line in reversed(events):
+        if not line.startswith(prefix):
+            break
+        out.append(line)
+    out.reverse()
+    return out
+
+
+def _fell_counts(rest: str) -> tuple[int, int]:
+    """Parse '; {x}+{y} fell' from a battle summary -> (attacker_dead, defender_dead) or (0, 0)."""
+    idx = rest.rfind(" fell)")
+    if idx < 0:
+        return (0, 0)
+    pair = rest[:idx].rpartition("; ")[2]
+    a, plus, b = pair.partition("+")
+    if plus and a.strip().isdigit() and b.strip().isdigit():
+        return int(a), int(b)
+    return (0, 0)
+
+
+def _host_counts(rest: str) -> tuple[int, int]:
+    """Parse '({n} ... vs {m} ...' from a battle summary -> (attacker_host, defender_host)."""
+    i, j = rest.find("("), rest.find(";")
+    seg = rest[i + 1:j] if 0 <= i < j else ""
+    nums = [int(tok) for tok in seg.split() if tok.isdigit()]
+    return (nums[0], nums[1]) if len(nums) >= 2 else (0, 0)
+
+
+def _agent_pos(name: str, state: dict[str, Any]) -> tuple[int, int] | None:
+    """A living agent's current cell by name, or None (pure read)."""
+    for a in state.get("agents", []):
+        if getattr(a, "name", None) == name and getattr(a, "position", None):
+            return (a.position[0], a.position[1])
+    return None
+
+
+def _center_of(sid: str, state: dict[str, Any]) -> tuple[int, int] | None:
+    """A settlement's centre cell, or None (pure read)."""
+    center = state.get("settlements", {}).get(sid, {}).get("center")
+    return (int(center[0]), int(center[1])) if center else None
+
+
+def _seat_of(name: str, prev: dict[str, Any], state: dict[str, Any]) -> tuple[int, int] | None:
+    """A king's capital cell: his kingdom's home settlement, else where he stood/stands (pure)."""
+    home = (state.get("kingdoms", {}).get(name, {}) or {}).get("home") \
+        or (prev.get("homes") or {}).get(name)
+    center = _center_of(home, state) if home else None
+    if center is not None:
+        return center
+    return (prev.get("positions") or {}).get(name) or _agent_pos(name, state)
+
+
+def _battle_summary(rest: str, prev: dict[str, Any],
+                    state: dict[str, Any]) -> dict[str, Any] | None:
+    """Classify ONE prefix-stripped event line as a battle summary -> a partial timeline, or None.
+
+    Recognises exactly the summary strings the engine writes: an inter-kingdom war won/FAILED
+    (empire.wage_war), a realm conquest CONQUERED/REPELLED (kingdoms.conquer_neighbour), and a
+    settlement seizure '-> MONARCH of'/REPELLED assault (monarchy.attempt_conquest). Everything in
+    the returned dict is read off the line + snapshots — attacker, defender, anchors, outcome,
+    banner wording, and (for a won battle) the territory that changes hands with its OLD colour.
+    """
+    prev_realms = prev.get("realms") or {}
+
+    def old_tint(sid: str) -> tuple[int, int, int]:
+        top = prev_realms.get(sid)
+        return realm_color(top) if top else _SETTLEMENT_FILL
+
+    if rest.startswith("KING ") and " DEFEATED " in rest and " in war " in rest:
+        a, _, tail = rest[len("KING "):].partition(" DEFEATED ")
+        b = tail.split(" in war ")[0]
+        sids = sorted(s for s, top in prev_realms.items() if top == b)
+        return {"kind": "war", "attacker": a, "defender": b, "won": "SUBJUGATED" in rest,
+                "att_pos": _seat_of(a, prev, state), "def_pos": _seat_of(b, prev, state),
+                "banner": f"{a} DEFEATS {b} — {b} subjugated as vassal",
+                "att_color": realm_color(a), "def_color": realm_color(b),
+                "territory": [(s, old_tint(s)) for s in sids]}
+    if rest.startswith("KING ") and "'s war on " in rest and " FAILED" in rest:
+        a = rest[len("KING "):rest.index("'s war on ")]
+        b = rest[rest.index("'s war on ") + len("'s war on "):rest.index(" FAILED")]
+        return {"kind": "war", "attacker": a, "defender": b, "won": False,
+                "att_pos": _seat_of(a, prev, state), "def_pos": _seat_of(b, prev, state),
+                "banner": f"{a}'s war on {b} FAILS — the kingdom holds",
+                "att_color": realm_color(a), "def_color": realm_color(b), "territory": []}
+    if rest.startswith("KING ") and " CONQUERED " in rest and " into the realm" in rest:
+        a = rest[len("KING "):rest.index(" CONQUERED ")]
+        sid = rest[rest.index(" CONQUERED ") + len(" CONQUERED "):rest.index(" into the realm")]
+        return {"kind": "realm", "attacker": a, "defender": sid, "won": True,
+                "att_pos": _seat_of(a, prev, state), "def_pos": _center_of(sid, state),
+                "banner": f"KING {a} CONQUERS {sid} into the realm",
+                "att_color": realm_color(a), "def_color": old_tint(sid),
+                "territory": [(sid, old_tint(sid))]}
+    if rest.startswith("KING ") and "'s host was REPELLED at " in rest:
+        cut = rest.index("'s host was REPELLED at ")
+        a = rest[len("KING "):cut]
+        sid = rest[cut + len("'s host was REPELLED at "):].split(" ")[0]
+        return {"kind": "realm", "attacker": a, "defender": sid, "won": False,
+                "att_pos": _seat_of(a, prev, state), "def_pos": _center_of(sid, state),
+                "banner": f"KING {a} REPELLED at {sid}",
+                "att_color": realm_color(a), "def_color": old_tint(sid), "territory": []}
+    if " by force (" in rest and "-> MONARCH of " in rest:
+        a = rest.split(" ", 1)[0]
+        sid = rest[rest.index("-> MONARCH of ") + len("-> MONARCH of "):].strip()
+        return {"kind": "conquest", "attacker": a, "defender": sid, "won": True,
+                "att_pos": (prev.get("positions") or {}).get(a) or _agent_pos(a, state),
+                "def_pos": _center_of(sid, state),
+                "banner": f"{a} SEIZES {sid} — MONARCH by force",
+                "att_color": realm_color(a), "def_color": old_tint(sid),
+                "territory": [(sid, old_tint(sid))]}
+    if "'s assault on " in rest and " was REPELLED " in rest:
+        a = rest[:rest.index("'s assault on ")]
+        sid = rest[rest.index("'s assault on ") + len("'s assault on "):rest.index(" was REPELLED")]
+        return {"kind": "conquest", "attacker": a, "defender": sid, "won": False,
+                "att_pos": (prev.get("positions") or {}).get(a) or _agent_pos(a, state),
+                "def_pos": _center_of(sid, state),
+                "banner": f"{a}'s assault on {sid} REPELLED",
+                "att_color": realm_color(a), "def_color": old_tint(sid), "territory": []}
+    return None
+
+
+def battle_scenes(events_this_turn: list[str], prev_snapshot: dict[str, Any] | None,
+                  state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Detect this turn's battles and build a cinematic TIMELINE for each (pure, unit-testable).
+
+    Walks the turn's lines in order. Individual '{name} died (fell in battle)' lines accumulate;
+    when a battle SUMMARY arrives, its '{x}+{y} fell' counts claim the x+y most recent fallen —
+    the first x fell attacking, the next y defending (the engine kills attacker-side casualties
+    first, then defender-side, THEN writes the summary, so the split is exact). Fallen positions
+    come from the PREV snapshot (they are dead in current state). Nothing is invented: attacker,
+    defender, host counts, the fallen's names, the outcome line and the territory that changed
+    hands are all read from what the sim wrote. Multiple battles in a turn -> a queue, in order.
+    """
+    prev = prev_snapshot or {}
+    scenes: list[dict[str, Any]] = []
+    pending: list[str] = []                       # battle deaths not yet claimed by a summary
+    for line in events_this_turn:
+        rest = line.split(": ", 1)[1] if ": " in line else line
+        if rest.endswith(" died (fell in battle)"):
+            pending.append(rest[:-len(" died (fell in battle)")])
+            continue
+        scene = _battle_summary(rest, prev, state)
+        if scene is None:
+            continue
+        x, y = _fell_counts(rest)
+        claimed = pending[-(x + y):] if (x + y) else []
+        del pending[len(pending) - len(claimed):]
+        pos = prev.get("positions") or {}
+        scene["att_dead"] = [(n, pos.get(n)) for n in claimed[:x]]
+        scene["def_dead"] = [(n, pos.get(n)) for n in claimed[x:x + y]]
+        scene["n_att"], scene["n_def"] = _host_counts(rest)
+        if scene["def_pos"] is None:
+            scene["def_pos"] = scene["att_pos"]
+        if scene["att_pos"] is None:
+            scene["att_pos"] = scene["def_pos"]
+        if scene["att_pos"] is None:
+            continue                              # nowhere on the map to stage it — skip honestly
+        scenes.append(scene)
+    return scenes
+
+
+def battle_scene(events_this_turn: list[str], prev_snapshot: dict[str, Any] | None,
+                 state: dict[str, Any]) -> dict[str, Any] | None:
+    """The FIRST battle timeline this turn, or None on a peaceful turn (pure)."""
+    scenes = battle_scenes(events_this_turn, prev_snapshot, state)
+    return scenes[0] if scenes else None
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -460,6 +733,10 @@ class PygameRenderer:
         self._last_state: dict[str, Any] | None = None
         self._terrain_bg: Any = None      # Slice 5: cached landscape, built once per grid size
         self._town_plans: dict[str, tuple] = {}  # Slice 6: cached (key, plan) per settlement id
+        # Slice 8: ALL animation state lives HERE, renderer-local — never in world_state.
+        self._prev_snapshot: dict[str, Any] | None = None  # last turn: positions/realms/homes
+        self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
+        self._big_font: Any = None                         # the aftermath banner face
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -469,6 +746,8 @@ class PygameRenderer:
         pygame.display.set_caption("AI Civilization — live")
         with contextlib.suppress(Exception):
             self._font = pygame.font.SysFont("menlo,monospace", 14)
+        with contextlib.suppress(Exception):
+            self._big_font = pygame.font.SysFont("menlo,monospace", 22, bold=True)
         try:
             yield self
         finally:
@@ -497,12 +776,23 @@ class PygameRenderer:
 
     # -- the per-turn hook the sim calls -----------------------------------
     def update(self, state: dict[str, Any]) -> None:
-        """Draw one frame for the just-resolved turn, then pace/handle input (READ only)."""
+        """Draw the just-resolved turn: replay its battles as cinematics, then animate motion.
+
+        Slice 8. The sim calls this AFTER the turn is fully resolved and advances itself only
+        when we return — so a playing cinematic merely delays the next step call; the sim's
+        sequence is byte-identical whether or not scenes play. Battle detection diffs this
+        turn's events against the renderer-local snapshot of LAST turn; the snapshot is
+        retaken last, ready for the next diff. READ only throughout.
+        """
         self._last_state = state
         self._ensure_screen(int(state.get("size", 0)) or 1)
         self._pump_events()
-        self._draw(state)
-        self._pace(state)
+        if self._prev_snapshot is not None and self.turn_delay > 0:
+            lines = turn_events(state.get("events") or [], int(state.get("turn", 0)))
+            for scene in battle_scenes(lines, self._prev_snapshot, state):
+                self._play_cinematic(scene, state)
+        self._animate_turn(state)
+        self._prev_snapshot = take_snapshot(state)
 
     # -- input -------------------------------------------------------------
     def _pump_events(self) -> None:
@@ -516,17 +806,43 @@ class PygameRenderer:
                 if event.key == pygame.K_SPACE:
                     self.paused = not self.paused
 
-    def _pace(self, state: dict[str, Any]) -> None:
-        """Wait out the per-turn delay, staying responsive; block here while paused."""
-        deadline = time.monotonic() + self.turn_delay
+    def _pump_cinema_events(self) -> bool:
+        """Input during a cinematic: quit/ESC still ends the run; ANY other key SKIPS the scene."""
+        skip = False
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                raise KeyboardInterrupt
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    raise KeyboardInterrupt
+                skip = True
+        return skip
+
+    def _animate_turn(self, state: dict[str, Any]) -> None:
+        """Pace the per-turn delay while LERPing every mover from last turn's cell to its new one.
+
+        Slice 8's replacement for the old static wait: the same responsive loop (SPACE pauses,
+        resume restarts the delay), but each frame is drawn with a motion fraction so agents WALK
+        to their new cells instead of teleporting. Zero delay (tests / --speed 0) draws exactly
+        one settled frame and returns without blocking — the old slice-1 behaviour.
+        """
+        prev_pos = (self._prev_snapshot or {}).get("positions") or {}
+        if self.turn_delay <= 0:
+            self._draw(state)
+            return
+        start = time.monotonic()
         while True:
             self._pump_events()
             if self.paused:
                 self._draw(state, paused=True)
-                deadline = time.monotonic() + self.turn_delay  # don't fast-forward on resume
-            elif time.monotonic() >= deadline:
+                start = time.monotonic()      # resume restarts the walk (the old deadline reset)
+                time.sleep(0.01)
+                continue
+            t = min(1.0, (time.monotonic() - start) / self.turn_delay)
+            self._draw(state, motion=(prev_pos, t))
+            if t >= 1.0:
                 return
-            time.sleep(0.01)
+            time.sleep(1 / 60)
 
     # -- drawing (pure reads of `state`) -----------------------------------
     def _to_px(self, x: int, y: int) -> tuple[int, int]:
@@ -534,7 +850,11 @@ class PygameRenderer:
         c = self._cell
         return (x * c + c // 2, y * c + c // 2)
 
-    def _draw(self, state: dict[str, Any], *, paused: bool = False) -> None:
+    def _draw(self, state: dict[str, Any], *, paused: bool = False,
+              motion: tuple[dict[str, tuple], float] | None = None,
+              battle: tuple[dict[str, Any], float] | None = None) -> None:
+        """One frame. `motion`=(prev_positions, t) lerps agents mid-walk; `battle`=(scene,
+        elapsed) overlays a cinematic beat. Both default off -> the slice-1..7 static frame."""
         screen = self._screen
         if screen is None:
             return
@@ -574,7 +894,7 @@ class PygameRenderer:
             pos = getattr(agent, "position", None)
             if not pos:
                 continue
-            cx, cy = self._to_px(pos[0], pos[1])
+            cx, cy = self._agent_px(agent, motion)  # slice 8: mid-walk lerp when motion plays
             r = agent_radius(_wealth(agent), cell)
             color = agent_color(getattr(agent, "personality", ""))
             figure_top = self._draw_agent_figure(cx, cy, r, color)
@@ -582,11 +902,36 @@ class PygameRenderer:
             if agent.name in talkers:
                 self._draw_speech_bubble(cx + r + 1, figure_top, r)
 
-        self._draw_hud(state, grid_px, paused)
+        # Slice 8: the battle cinematic overlay (soldiers/dust/clash/fallen/banner), drawn over
+        # the map but under the HUD/panel so the feed stays readable while a scene plays.
+        if battle is not None:
+            self._draw_battle_overlay(*battle)
+
+        self._draw_hud(state, grid_px, paused, in_battle=battle is not None)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
         # last so it owns the right zone cleanly; a pure read of state, like everything else.
         self._draw_panel(state, grid_px)
         pygame.display.flip()
+
+    def _agent_px(self, agent: Any, motion: tuple[dict[str, tuple], float] | None) -> tuple[int, int]:
+        """The agent's on-screen pixel centre — lerped from LAST turn's cell while motion plays.
+
+        Slice 8. A mover glides (smoothstep) from its previous cell to the current one with a
+        subtle walk bob; a newly spawned agent (no previous cell) appears at its cell with no
+        lerp-from-nowhere; a stationary agent (or a settled frame, t>=1) sits exactly on-cell.
+        """
+        pos = agent.position
+        cx, cy = self._to_px(pos[0], pos[1])
+        if motion is None:
+            return cx, cy
+        prev_pos, t = motion
+        pp = prev_pos.get(agent.name)
+        if pp is None or (pp[0], pp[1]) == (pos[0], pos[1]) or t >= 1.0:
+            return cx, cy
+        px, py = self._to_px(int(pp[0]), int(pp[1]))
+        e = ease(t)
+        bob = abs(math.sin(t * math.pi * 3.0)) * max(1.0, self._cell * _WALK_BOB)
+        return int(round(px + (cx - px) * e)), int(round(py + (cy - py) * e - bob))
 
     # -- Slice 5: cached procedural landscape (built ONCE; pure hash, no sim RNG) --
     def _build_terrain(self, grid_px: int) -> Any:
@@ -863,8 +1208,19 @@ class PygameRenderer:
             member_positions = [pos_by_name[n] for n in members if n in pos_by_name]
             radius_px = int(round(settlement_radius_cells(center, member_positions) * cell))
             cx, cy = self._to_px(int(center[0]), int(center[1]))
-            pygame.draw.circle(overlay, (*_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA), (cx, cy), radius_px)
-            pygame.draw.circle(overlay, (*_SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA), (cx, cy), radius_px, width=2)
+            # Slice 8: the REALM layer — an owned settlement wears its TOP ruler's banner colour
+            # (emperor > king > lone monarch); during a battle's aftermath, _territory_lerp holds
+            # the mid-fade tint instead, so conquered land BLEEDS to the victor's colour rather
+            # than snapping. Unowned settlements keep the slice-2 teal exactly as before.
+            owner = settlement_realm(sid, state)
+            tint = self._territory_lerp.get(sid) or (realm_color(owner) if owner is not None else None)
+            if tint is not None:
+                fill, fill_a, edge, edge_a = tint, _REALM_FILL_ALPHA, _shade(tint, 45), _REALM_EDGE_ALPHA
+            else:
+                fill, fill_a, edge, edge_a = (_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA,
+                                              _SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA)
+            pygame.draw.circle(overlay, (*fill, fill_a), (cx, cy), radius_px)
+            pygame.draw.circle(overlay, (*edge, edge_a), (cx, cy), radius_px, width=2)
             towns.append((sid, center, cx, cy, len(members), radius_px))
         screen.blit(overlay, (0, 0))
 
@@ -1080,8 +1436,9 @@ class PygameRenderer:
             pygame.draw.circle(s, _shade(_FENCE, 18), (x, y), 1)
             prev = (x, y)
 
-    def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool) -> None:
-        """A one-line status strip under the grid (turn / living / food / pause)."""
+    def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool,
+                  in_battle: bool = False) -> None:
+        """A one-line status strip under the grid (turn / living / food / pause / battle)."""
         screen = self._screen
         pygame.draw.rect(screen, _HUD_BG, (0, grid_px, grid_px, _HUD_H))
         if self._font is None:
@@ -1098,6 +1455,10 @@ class PygameRenderer:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)
         screen.blit(label, (8, grid_px + (_HUD_H - label.get_height()) // 2))
+        if in_battle:  # slice 8: a small indicator while a battle cinematic plays
+            chip = self._font.render("BATTLE — any key skips", True, _BATTLE_CHIP)
+            screen.blit(chip, (grid_px - chip.get_width() - 8,
+                               grid_px + (_HUD_H - chip.get_height()) // 2))
 
     # -- Slice 3: the right sidebar (state summary + event feed) ------------
     def _stat_lines(self, state: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1169,3 +1530,196 @@ class PygameRenderer:
         for text, color in rows:
             screen.blit(font.render(text, True, color), (x0 + pad, feed_top))
             feed_top += line_h
+
+    # -- Slice 8: the battle cinematic (playback + overlay drawing) ---------
+    def _play_cinematic(self, scene: dict[str, Any], state: dict[str, Any]) -> None:
+        """REPLAY one already-resolved battle as a five-beat scene; ANY key skips to the end.
+
+        The sim is NOT stepped while this plays — the renderer owns pacing, and this loop simply
+        does not return control to the caller's turn loop until the scene ends. Everything shown
+        comes from the scene timeline (parsed from the event log + last turn's snapshot); the
+        only inventions are presentation (dust/jitter/flashes), hashed off frame+position via
+        terrain_noise — never the sim RNG. During the AFTERMATH beat, _territory_lerp fades the
+        conquered settlements from their old realm colour to the victor's; it is cleared on exit
+        so the map settles onto the true current colours (also the skip-key end-state).
+        """
+        start = time.monotonic()
+        after_start = _CIN_TOTAL - _CIN_AFTER
+        try:
+            while True:
+                if self._pump_cinema_events():
+                    return                        # skipped -> next frame is the settled end-state
+                el = time.monotonic() - start
+                if el >= _CIN_TOTAL:
+                    return
+                frac = 0.0 if el < after_start else (el - after_start) / _CIN_AFTER
+                self._territory_lerp = self._territory_colors(scene, frac, state)
+                self._draw(state, battle=(scene, el))
+                time.sleep(1 / 60)
+        finally:
+            self._territory_lerp = {}
+
+    def _territory_colors(self, scene: dict[str, Any], frac: float,
+                          state: dict[str, Any]) -> dict[str, tuple]:
+        """sid -> the mid-lerp realm tint: the loser's OLD colour easing to the current owner's.
+
+        The 'to' colour is read live from the CURRENT state (the sim already applied the
+        conquest), so at frac=1 the lerp lands exactly on what the realm layer will draw anyway
+        — clearing the override afterwards is seamless. Empty when no territory changed hands.
+        """
+        out: dict[str, tuple] = {}
+        for sid, from_c in scene.get("territory") or ():
+            owner = settlement_realm(sid, state)
+            to_c = realm_color(owner) if owner is not None else _SETTLEMENT_FILL
+            out[sid] = lerp_color(from_c, to_c, ease(frac))
+        return out
+
+    def _formation(self, n: int, ux: float, uy: float, salt: int) -> list[tuple[float, float]]:
+        """Rank-and-file pixel offsets for `n` soldiers facing (ux, uy) — deterministic ranks of
+        four with a small per-soldier hash jitter (terrain_noise), so a host reads as a host."""
+        px_, py_ = -uy, ux                        # the across-the-line direction
+        cell = self._cell
+        out = []
+        for i in range(n):
+            row, col = divmod(i, 4)
+            across = (col - 1.5) * cell * 0.62
+            back = row * cell * 0.55
+            jx = (terrain_noise(i, salt, 11) - 0.5) * cell * 0.25
+            jy = (terrain_noise(i, salt, 12) - 0.5) * cell * 0.25
+            out.append((across * px_ - back * ux + jx, across * py_ - back * uy + jy))
+        return out
+
+    def _draw_soldier(self, x: float, y: float, color: tuple, facing_right: bool) -> None:
+        """An armed soldier: the slice-4 figure in its side's realm colour, carrying a spear."""
+        r = max(3, int(self._cell * 0.30))
+        top = self._draw_agent_figure(int(x), int(y), r, color)
+        sx = int(x) + (r + 1 if facing_right else -(r + 1))
+        tip_y = top - max(2, r // 2)
+        pygame.draw.line(self._screen, _SPEAR, (sx, int(y) + r), (sx, tip_y), 1)
+        pygame.draw.polygon(self._screen, _SPEAR,
+                            [(sx - 2, tip_y), (sx + 2, tip_y), (sx, tip_y - max(3, r // 2))])
+
+    def _draw_fallen(self, x: float, y: float, name: str, tip: float) -> None:
+        """A casualty going down: the figure TIPS over (tip 0->1), then lies as a gray marker
+        with its NAME above — the named dead are real agents the battle killed, not extras."""
+        cell = self._cell
+        r = max(3, int(cell * 0.30))
+        if tip < 1.0:                             # mid-fall: a gray body rotating to the ground
+            ang = ease(tip) * (math.pi / 2)
+            hx = x + math.sin(ang) * 2 * r
+            hy = y + r - math.cos(ang) * 2 * r
+            pygame.draw.line(self._screen, _FALLEN, (int(x), int(y + r)), (int(hx), int(hy)),
+                             max(2, r // 2))
+            pygame.draw.circle(self._screen, _FALLEN, (int(hx), int(hy)), max(2, r // 2))
+        else:                                     # down: a lying marker
+            w, h = max(6, int(cell * 0.62)), max(3, int(cell * 0.24))
+            rect = pygame.Rect(int(x - w / 2), int(y + r - h), w, h)
+            pygame.draw.ellipse(self._screen, _FALLEN, rect)
+            pygame.draw.ellipse(self._screen, _OUTLINE, rect, 1)
+        if self._font is not None and self._cell >= _SETTLEMENT_LABEL_MIN_CELL:
+            lab = self._font.render(name, True, _FALLEN)
+            self._screen.blit(lab, (int(x) - lab.get_width() // 2,
+                                    int(y) - r * 3 - lab.get_height()))
+
+    def _draw_banner(self, text: str, fade: float) -> None:
+        """The aftermath outcome banner: a translucent band across the map with the verdict."""
+        grid_px = self._cell * self._size
+        band_h = max(36, self._cell * 2)
+        y0 = (grid_px - band_h) // 2
+        band = pygame.Surface((grid_px, band_h), pygame.SRCALPHA)
+        band.fill((*_BANNER_BG, int(210 * max(0.0, min(1.0, fade)))))
+        self._screen.blit(band, (0, y0))
+        pygame.draw.line(self._screen, _CROWN, (6, y0), (grid_px - 6, y0), 1)
+        pygame.draw.line(self._screen, _CROWN, (6, y0 + band_h), (grid_px - 6, y0 + band_h), 1)
+        font = self._big_font or self._font
+        if font is None:
+            return
+        label = font.render(text, True, _BANNER_FG)
+        if label.get_width() > grid_px - 16 and self._font is not None:
+            label = self._font.render(text, True, _BANNER_FG)   # long verdicts drop to the small face
+        self._screen.blit(label, ((grid_px - label.get_width()) // 2,
+                                  y0 + (band_h - label.get_height()) // 2))
+
+    def _draw_battle_overlay(self, scene: dict[str, Any], el: float) -> None:
+        """One frame of the cinematic at elapsed `el`: muster -> march -> clash -> fall -> banner.
+
+        Pure drawing from the scene timeline. Beat boundaries are the _CIN_* constants; all
+        scatter (dust, melee jitter, flash placement) comes from terrain_noise keyed on the
+        30Hz frame index + element index, so playback is deterministic and RNG-free.
+        """
+        cell = self._cell
+        screen = self._screen
+        ax, ay = self._to_px(*scene["att_pos"])
+        bx, by = self._to_px(*scene["def_pos"])
+        dist = math.hypot(bx - ax, by - ay) or 1.0
+        ux, uy = (bx - ax) / dist, (by - ay) / dist
+        # The clash line sits at the DEFENDER settlement's edge, pulled toward the attacker.
+        m = (bx - ux * min(dist * 0.5, cell * 2.4), by - uy * min(dist * 0.5, cell * 2.4))
+        meet_a = (m[0] - ux * cell * 0.55, m[1] - uy * cell * 0.55)
+        meet_d = (m[0] + ux * cell * 0.55, m[1] + uy * cell * 0.55)
+        n_a = max(1, min(_MAX_SOLDIER_GLYPHS, int(scene.get("n_att") or 1)))
+        n_d = max(0, min(_MAX_SOLDIER_GLYPHS, int(scene.get("n_def") or 0)))
+        form_a = self._formation(n_a, ux, uy, salt=1)
+        form_d = self._formation(n_d, -ux, -uy, salt=2)
+        frame = int(el * 30)
+        t1, t2, t3 = _CIN_MUSTER, _CIN_MUSTER + _CIN_MARCH, _CIN_MUSTER + _CIN_MARCH + _CIN_CLASH
+        t4 = t3 + _CIN_FALL
+
+        # Beat state: where each host stands, how many have mustered, and the melee jitter.
+        if el < t1:                                       # MUSTER at the attacker's capital
+            a_c, d_c = (float(ax), float(ay)), meet_d
+            vis_a = max(1, int(math.ceil(n_a * (el / t1))))
+            vis_d = int(math.ceil(n_d * (el / t1)))
+            jit = 0.0
+        elif el < t2:                                     # MARCH on the defender's settlement
+            p = ease((el - t1) / _CIN_MARCH)
+            a_c = (ax + (meet_a[0] - ax) * p, ay + (meet_a[1] - ay) * p)
+            d_c, vis_a, vis_d, jit = meet_d, n_a, n_d, 0.0
+            for k in range(5):                            # dust puffs behind the moving host
+                if terrain_noise(frame, k, 31) > 0.35:
+                    back = cell * (0.8 + terrain_noise(frame, k, 32) * 1.6)
+                    side = (terrain_noise(frame, k, 33) - 0.5) * cell * 1.5
+                    pygame.draw.circle(
+                        screen, _DUST,
+                        (int(a_c[0] - ux * back - uy * side), int(a_c[1] - uy * back + ux * side)),
+                        max(1, int(terrain_noise(frame, k, 34) * cell * 0.22)))
+        else:                                             # CLASH / FALL / AFTERMATH at the line
+            a_c, d_c, vis_a, vis_d = meet_a, meet_d, n_a, n_d
+            jit = cell * 0.30 if el < t3 else 0.0
+
+        # The named dead hold the FIRST slots of their side; each falls at its own moment.
+        dead = [(nm, True) for nm, _p in scene.get("att_dead") or ()] + \
+               [(nm, False) for nm, _p in scene.get("def_dead") or ()]
+        fall_at = {}
+        for j, (nm, att_side) in enumerate(dead):
+            fall_at[(att_side, nm)] = t3 + _CIN_FALL * (j + 0.4) / max(1, len(dead))
+
+        for side_dead, center, form, vis, color, facing in (
+                ([nm for nm, s in dead if s], a_c, form_a, vis_a, scene["att_color"], ux >= 0),
+                ([nm for nm, s in dead if not s], d_c, form_d, vis_d, scene["def_color"], ux < 0)):
+            att_side = form is form_a
+            for i in range(vis):
+                ox, oy = form[i]
+                x, y = center[0] + ox, center[1] + oy
+                if jit > 0:                       # melee: position shake + brief lunges
+                    x += (terrain_noise(frame, i, 41 if att_side else 43) - 0.5) * jit * 2
+                    y += (terrain_noise(frame, i, 42 if att_side else 44) - 0.5) * jit * 2
+                if i < len(side_dead):
+                    nm = side_dead[i]
+                    at = fall_at[(att_side, nm)]
+                    if el >= at:
+                        self._draw_fallen(x, y, nm, tip=(el - at) / 0.25)
+                        continue
+                self._draw_soldier(x, y, color, facing)
+
+        if t2 <= el < t3:                                 # white clash-flash bursts at the line
+            for k in range(3):
+                if terrain_noise(frame, k, 21) > 0.45:
+                    fx = m[0] + (terrain_noise(frame, k, 22) - 0.5) * cell * 1.8
+                    fy = m[1] + (terrain_noise(frame, k, 23) - 0.5) * cell * 1.2
+                    fr = 2 + int(terrain_noise(frame, k, 24) * cell * 0.4)
+                    pygame.draw.circle(screen, _FLASH, (int(fx), int(fy)), fr)
+                    pygame.draw.circle(screen, _shade(_FLASH, -70), (int(fx), int(fy)), fr, 1)
+
+        if el >= t4:                                      # AFTERMATH: the verdict, prominently
+            self._draw_banner(scene["banner"], fade=(el - t4) / 0.25)

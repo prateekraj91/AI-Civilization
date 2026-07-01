@@ -3993,6 +3993,193 @@ def test_pygame_detailed_settlements_cached_and_read_only() -> None:
     print("PASS test_pygame_detailed_settlements_cached_and_read_only")
 
 
+def test_pygame_battle_scene_detects_battles_and_names_casualties() -> None:
+    """Slice 8: battle_scene reconstructs a battle ONLY from events + the prev snapshot (pure).
+
+    A staged war's summary line yields a timeline whose attacker/defender/hosts/outcome come off
+    the line, whose capitals come from the kings' home seats, whose casualty NAMES are the turn's
+    'fell in battle' deaths split per side by the summary's x+y counts (attacker-side deaths are
+    logged first), and whose positions come from the PREV snapshot (they are dead now). Peaceful
+    turns give None; multiple battles give an ordered queue with casualties claimed per battle.
+    """
+    try:
+        from renderer.pygame_renderer import (battle_scene, battle_scenes, take_snapshot,
+                                              turn_events, _SETTLEMENT_FILL)
+    except ImportError:
+        print("PASS test_pygame_battle_scene_detects_battles_and_names_casualties (skipped: no pygame)")
+        return
+    prev_state = {
+        "turn": 9, "size": 30,
+        "agents": [_FakeAgent(n, "cautious", p, True, 1.0, 0.0) for n, p in
+                   (("Aldric", (8, 6)), ("Borin", (22, 6)), ("AWK1", (8, 4)), ("BWK1", (22, 4)))],
+        "settlements": {"S0A1": {"center": (8, 18), "members": set()},
+                        "S0B1": {"center": (22, 18), "members": set()}},
+        "kingdoms": {"Aldric": {"home": "S0A1", "settlements": {"S0A1"}},
+                     "Borin": {"home": "S0B1", "settlements": {"S0B1"}}},
+        "empires": {},
+    }
+    prev = take_snapshot(prev_state)
+    assert prev["realms"] == {"S0A1": "Aldric", "S0B1": "Borin"}, "snapshot records realm owners"
+    cur = {**prev_state, "turn": 10,
+           "agents": [a for a in prev_state["agents"] if a.name not in ("AWK1", "BWK1")],
+           "empires": {"Aldric": {"emperor": "Aldric", "subject_kings": {"Borin": {}},
+                                  "discontent": {}}}}
+    events = ["turn 9: earlier line",
+              "turn 10: AWK1 died (fell in battle)",
+              "turn 10: BWK1 died (fell in battle)",
+              "turn 10: KING Aldric DEFEATED Borin in war (8 loyal host vs 4; 1+1 fell) -> "
+              "Borin SUBJUGATED as a subject-king; an EMPIRE rises"]
+    tl = battle_scene(turn_events(events, 10), prev, cur)
+    assert tl is not None and tl["attacker"] == "Aldric" and tl["defender"] == "Borin" and tl["won"]
+    assert tl["att_pos"] == (8, 18) and tl["def_pos"] == (22, 18), "anchored at the kings' capitals"
+    assert tl["att_dead"] == [("AWK1", (8, 4))] and tl["def_dead"] == [("BWK1", (22, 4))], \
+        "the named dead, per side, at their PREV-snapshot cells"
+    assert tl["n_att"] == 8 and tl["n_def"] == 4, "host sizes read off the summary line"
+    assert [s for s, _ in tl["territory"]] == ["S0B1"], "the loser's realm changes hands"
+    # Peaceful turn -> None; a starvation death is NOT a battle.
+    assert battle_scene(['turn 10: A talked to B: "hi"', "turn 10: C died (starved)"],
+                        prev, cur) is None
+    # Multiple battles in one turn -> an ordered queue; each summary claims ITS casualties.
+    st2 = {"turn": 3, "agents": [],
+           "settlements": {"S001": {"center": (6, 6)}, "S002": {"center": (10, 10)}},
+           "monarchs": {"S001": {"monarch": "Rex", "garrison": set()}}}
+    prev2 = {"turn": 2, "positions": {"Rex": (4, 4), "M1": (4, 5), "D1": (10, 11), "Kai": (9, 9)},
+             "realms": {}, "homes": {}}
+    ev2 = ["turn 3: M1 died (fell in battle)",
+           "turn 3: Rex seized S001 by force (5 fighters vs 3 defenders; 1+0 fell) -> MONARCH of S001",
+           "turn 3: D1 died (fell in battle)",
+           "turn 3: Kai's assault on S002 was REPELLED (2 fighters vs 4 defenders; 0+1 fell) — militia held"]
+    q = battle_scenes(ev2, prev2, st2)
+    assert len(q) == 2, "two battles -> a queue of two timelines, in log order"
+    assert q[0]["kind"] == "conquest" and q[0]["attacker"] == "Rex" and q[0]["won"]
+    assert q[0]["att_pos"] == (4, 4), "a lone aspirant marches from his PREV cell"
+    assert q[0]["att_dead"] == [("M1", (4, 5))] and q[0]["def_dead"] == []
+    assert q[0]["territory"] == [("S001", _SETTLEMENT_FILL)], "unowned land fades teal -> crown"
+    assert q[1]["won"] is False and q[1]["def_dead"] == [("D1", (10, 11))] and q[1]["territory"] == []
+    print("PASS test_pygame_battle_scene_detects_battles_and_names_casualties")
+
+
+def test_pygame_snapshot_lerp_and_realm_helpers_pure() -> None:
+    """Slice 8: take_snapshot / settlement_realm / realm_color / lerp helpers are pure + RNG-free.
+
+    The snapshot copies (mutating it never touches state), the realm read ranks emperor > king >
+    lone monarch, realm colours are stable per name (and distinct for the staged rivals), and the
+    motion/colour lerps hit their endpoints exactly. None of it touches the global RNG stream.
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import (take_snapshot, settlement_realm, realm_color,
+                                              lerp_color, ease, turn_events)
+    except ImportError:
+        print("PASS test_pygame_snapshot_lerp_and_realm_helpers_pure (skipped: no pygame)")
+        return
+    state = {
+        "turn": 7,
+        "agents": [_FakeAgent("A", "curious", (1, 2), True, 1.0, 0.0),
+                   _FakeAgent("Dead", "curious", (3, 3), False, 1.0, 0.0)],
+        "settlements": {"S001": {"center": (5, 5)}, "S002": {"center": (9, 9)},
+                        "S003": {"center": (2, 8)}},
+        "kingdoms": {"Ken": {"home": "S001", "settlements": {"S001"}}},
+        "empires": {"Emi": {"emperor": "Emi", "subject_kings": {"Ken": {}}}},
+        "monarchs": {"S002": {"monarch": "Rex", "garrison": set()}},
+    }
+    s0 = _random.getstate()
+    snap = take_snapshot(state)
+    assert _random.getstate() == s0, "take_snapshot touched the global RNG stream"
+    assert snap["positions"] == {"A": (1, 2)}, "living agents only, positions copied"
+    assert snap["realms"] == {"S001": "Emi", "S002": "Rex", "S003": None}, \
+        "empire outranks kingdom; a lone monarch owns his town; unowned is None"
+    assert snap["homes"] == {"Ken": "S001"}
+    snap["positions"]["X"] = (0, 0)  # the snapshot is a fresh container, not a view
+    assert all(getattr(a, "name") != "X" for a in state["agents"])
+    assert settlement_realm("S001", {"kingdoms": {"Ken": {"settlements": {"S001"}}}}) == "Ken", \
+        "no empires dict degrades to the king"
+    assert realm_color("Aldric") == realm_color("Aldric"), "realm colour is stable per name"
+    assert realm_color("Aldric") != realm_color("Borin"), "the staged rivals wear distinct colours"
+    assert _random.getstate() == s0, "realm_color touched the global RNG stream"
+    assert lerp_color((0, 0, 0), (100, 200, 50), 0.0) == (0, 0, 0)
+    assert lerp_color((0, 0, 0), (100, 200, 50), 1.0) == (100, 200, 50)
+    assert lerp_color((0, 0, 0), (100, 200, 50), 0.5) == (50, 100, 25)
+    assert ease(0.0) == 0.0 and ease(1.0) == 1.0 and 0.0 < ease(0.3) < ease(0.7) < 1.0
+    assert ease(-1.0) == 0.0 and ease(2.0) == 1.0, "easing clamps out-of-range inputs"
+    events = ["turn 4: old", "turn 5: a", "turn 5: b"]
+    assert turn_events(events, 5) == ["turn 5: a", "turn 5: b"], "this turn's tail, oldest first"
+    assert turn_events(events, 4) == [] and turn_events([], 5) == []
+    print("PASS test_pygame_snapshot_lerp_and_realm_helpers_pure")
+
+
+def test_pygame_cinematic_state_is_renderer_local_and_draw_read_only() -> None:
+    """Slice 8: every cinematic/motion frame is a pure READ, and all animation state lives on
+    the renderer (snapshot/territory-lerp), never in world_state; zero delay never blocks.
+
+    Draws overlay frames across all five beats (muster/march/clash/casualties/aftermath with the
+    territory lerp engaged) plus mid-walk motion frames into a headless surface, then runs
+    update() at turn_delay=0 — asserting world_state is byte-identical throughout, gains no new
+    keys, and that the zero-delay path returns immediately (no cinematic playback in tests).
+    """
+    import copy, time as _time, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, battle_scene, turn_events
+    except ImportError:
+        print("PASS test_pygame_cinematic_state_is_renderer_local_and_draw_read_only (skipped: no pygame)")
+        return
+    state = {
+        "size": 30, "turn": 10, "food": [(3, 3)],
+        "agents": [_FakeAgent("Aldric", "independent and competitive", (8, 6), True, 200.0, 0.0),
+                   _FakeAgent("Borin", "independent and competitive", (22, 6), True, 100.0, 0.0),
+                   _FakeAgent("T1", "cautious", (8, 18), True, 2.0, 0.0)],
+        "settlements": {"S0A1": {"id": "S0A1", "center": (8, 18), "members": {"T1"}, "founded": 0},
+                        "S0B1": {"id": "S0B1", "center": (22, 18), "members": set(), "founded": 0}},
+        "kingdoms": {"Aldric": {"home": "S0A1", "settlements": {"S0A1"}, "vassals": {}},
+                     "Borin": {"home": "S0B1", "settlements": {"S0B1"}, "vassals": {}}},
+        "empires": {"Aldric": {"emperor": "Aldric", "subject_kings": {"Borin": {}}, "discontent": {}}},
+        "monarchs": {}, "leaders": {},
+        "events": ["turn 10: AWK1 died (fell in battle)",
+                   "turn 10: BWK1 died (fell in battle)",
+                   "turn 10: KING Aldric DEFEATED Borin in war (8 loyal host vs 4; 1+1 fell) -> "
+                   "Borin SUBJUGATED as a subject-king; an EMPIRE rises"],
+    }
+    prev = {"turn": 9,
+            "positions": {"Aldric": (8, 6), "Borin": (22, 6), "AWK1": (8, 4), "BWK1": (22, 4),
+                          "T1": (7, 17)},
+            "realms": {"S0A1": "Aldric", "S0B1": "Borin"},
+            "homes": {"Aldric": "S0A1", "Borin": "S0B1"}}
+    keys_before = set(state)
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        tl = battle_scene(turn_events(state["events"], 10), prev, state)
+        assert tl is not None, "the war line must be detected"
+        # Every beat of the overlay (0.1 muster, 0.9 march, 2.0 clash, 2.8 casualties mid-tip,
+        # 3.6/4.0 aftermath+banner), with the territory lerp engaged as the real playback does.
+        for el, frac in ((0.1, 0.0), (0.9, 0.0), (2.0, 0.0), (2.8, 0.0), (3.6, 0.5), (4.0, 1.0)):
+            r._territory_lerp = r._territory_colors(tl, frac, state)
+            r._draw(state, battle=(tl, el))
+        r._territory_lerp = {}
+        # Smooth motion: mid-walk and settled frames (T1 lerps (7,17)->(8,18); Aldric stands).
+        r._draw(state, motion=(prev["positions"], 0.4))
+        r._draw(state, motion=(prev["positions"], 1.0))
+        # update() at zero delay: draws once, keeps the snapshot RENDERER-LOCAL, never blocks.
+        t0 = _time.monotonic()
+        r.update(state)
+        assert _time.monotonic() - t0 < 1.0, "zero-delay update must not play a cinematic"
+        assert r._prev_snapshot is not None and r._prev_snapshot["turn"] == 10
+        assert r._territory_lerp == {}, "no territory override lingers outside a cinematic"
+    finally:
+        pygame.quit()
+    assert set(state) == keys_before, "cinematic wrote a new key into world_state"
+    assert {k: state[k] for k in state if k != "agents"} == before, "cinematic draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "cinematic draw mutated an agent"
+    print("PASS test_pygame_cinematic_state_is_renderer_local_and_draw_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4506,6 +4693,9 @@ def main_runner() -> None:
         test_pygame_terrain_cached_built_once_and_read_only,
         test_pygame_town_plan_grows_with_members_and_is_pure,
         test_pygame_detailed_settlements_cached_and_read_only,
+        test_pygame_battle_scene_detects_battles_and_names_casualties,
+        test_pygame_snapshot_lerp_and_realm_helpers_pure,
+        test_pygame_cinematic_state_is_renderer_local_and_draw_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
