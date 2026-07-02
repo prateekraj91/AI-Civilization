@@ -3747,7 +3747,9 @@ def test_pygame_renderer_panel_reads_state_does_not_mutate() -> None:
         r._draw({**{k: state[k] for k in state if k != "events"}, "events": []})
     finally:
         pygame.quit()
-    assert win_w == r._cell * state["size"] + _PANEL_W, "the window widened by the panel zone"
+    # Slice 9: the map zone is the grid PLUS the full-bleed wilderness margin on both sides.
+    assert win_w == r._map_px + _PANEL_W, "the window is the map zone plus the panel zone"
+    assert r._map_px > r._cell * state["size"], "a wilderness margin extends past the grid"
     after = {k: state[k] for k in state if k != "agents"}
     assert after == before, "panel draw mutated world_state"
     assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
@@ -4178,6 +4180,144 @@ def test_pygame_cinematic_state_is_renderer_local_and_draw_read_only() -> None:
     assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
         "cinematic draw mutated an agent"
     print("PASS test_pygame_cinematic_state_is_renderer_local_and_draw_read_only")
+
+
+def test_pygame_palette_is_centralized_and_scene_constants_derive() -> None:
+    """Slice 9: ONE central PALETTE defines the scene; the slice constants derive from it.
+
+    The look is tunable in one place: grass/food/settlement/structure tones are PALETTE
+    entries; commoner figures are drawn DESATURATED from their palette bases (they sit in the
+    world) while the crown keeps full chroma (important things pop); the old teal settlement
+    ring is retired for a near-neutral earth tint that cannot fight the realm hues.
+    """
+    try:
+        from renderer.pygame_renderer import (PALETTE, _desat, _TRAIT_DESAT, _TRAIT_COLOR,
+                                              _GRASS_BASE, _FOOD, _SETTLEMENT_FILL, _CROWN,
+                                              _WATER, _FARMLAND, _CROP)
+    except ImportError:
+        print("PASS test_pygame_palette_is_centralized_and_scene_constants_derive (skipped: no pygame)")
+        return
+    assert isinstance(PALETTE, dict) and len(PALETTE) >= 30, "one central palette, richly keyed"
+    assert all(isinstance(v, tuple) and len(v) == 3 and all(0 <= c <= 255 for c in v)
+               for v in PALETTE.values()), "every palette entry is a sane RGB triple"
+    # The slice constants DERIVE from the palette (tune PALETTE -> the whole scene follows).
+    assert _GRASS_BASE == PALETTE["grass_base"] and _WATER == PALETTE["water"]
+    assert _FOOD == PALETTE["wheat"] and _CROP == PALETTE["crop"]
+    assert _SETTLEMENT_FILL == PALETTE["settlement_fill"] and _CROWN == PALETTE["crown"]
+    assert _FARMLAND == PALETTE["farmland"]
+    # _desat is pure: identity at 0, its own luma gray at 1, monotone in between.
+    assert _desat((200, 40, 40), 0.0) == (200, 40, 40)
+    gray = _desat((200, 40, 40), 1.0)
+    assert gray[0] == gray[1] == gray[2], "full desaturation lands on a gray"
+    # Figures are drawn desaturated from their saturated palette bases — and stay distinct.
+    for trait in ("curiosity", "caution", "friendliness", "independence"):
+        assert _TRAIT_COLOR[trait] == _desat(PALETTE[trait], _TRAIT_DESAT)
+    assert len(set(_TRAIT_COLOR.values())) == 4, "desaturation keeps the four hues apart"
+    # The settlement tint is near-neutral (low chroma) so realm colours own the map.
+    r, g, b = PALETTE["settlement_fill"]
+    assert max(r, g, b) - min(r, g, b) < 60, "the settlement ring no longer screams teal"
+    print("PASS test_pygame_palette_is_centralized_and_scene_constants_derive")
+
+
+def test_pygame_ambient_helpers_pure_bounded_and_rng_free() -> None:
+    """Slice 9: the ambient-life helpers (smoke, birds) are pure frame functions — zero RNG.
+
+    smoke_puffs: deterministic per (frame, hearth), three puffs that RISE (dy < 0), stay small,
+    and FADE (alpha bounded, reaching low values late in the cycle); phase differs per hearth.
+    ambient_birds: deterministic, at most two birds, OCCASIONAL (some windows fly, most don't),
+    kept in the sky band. Neither touches the global random stream.
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import smoke_puffs, ambient_birds, _BIRD_WINDOW
+    except ImportError:
+        print("PASS test_pygame_ambient_helpers_pure_bounded_and_rng_free (skipped: no pygame)")
+        return
+    s0 = _random.getstate()
+    assert smoke_puffs(100, 5, 7) == smoke_puffs(100, 5, 7), "smoke is a pure frame function"
+    for frame in (0, 33, 100, 999):
+        puffs = smoke_puffs(frame, 5, 7)
+        assert len(puffs) == 3, "three staggered puffs per hearth"
+        for dx, dy, r, alpha in puffs:
+            assert dy < 0, "smoke rises"
+            assert 1 <= r <= 4 and 0 <= alpha <= 90 and abs(dx) <= 10, "puffs stay small and soft"
+    assert smoke_puffs(100, 5, 7) != smoke_puffs(100, 50, 70), "hearths puff out of lockstep"
+    assert ambient_birds(500, 800) == ambient_birds(500, 800), "birds are a pure frame function"
+    flew = sum(1 for w in range(40) if ambient_birds(w * _BIRD_WINDOW + 120, 800))
+    assert 0 < flew < 40, f"birds are OCCASIONAL — {flew}/40 windows flew"
+    for w in range(40):
+        for x, y, spread in ambient_birds(w * _BIRD_WINDOW + 120, 800):
+            assert -10 <= x <= 810 and 0 <= y <= 800 * 0.75, "birds cross the upper sky"
+            assert 0.5 <= spread <= 5.0, "wingspan stays tiny"
+    assert _random.getstate() == s0, "ambient helpers touched the global RNG stream"
+    print("PASS test_pygame_ambient_helpers_pure_bounded_and_rng_free")
+
+
+def test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only() -> None:
+    """Slice 9: the map zone is FULL-BLEED (wilderness margin + east coast baked into the
+    cached terrain), shadows/ambient/grade draw per frame, and it is all still a pure READ.
+
+    Asserts the geometry (map zone = grid + margin ring; terrain surface covers it; window
+    sized to it), that the outer-east margin reads as WATER in the baked terrain, that shadow
+    stamps are cached (same size -> same object), and that several animated frames (smoke,
+    sway, shimmer, birds, flicker, castle flutter, label chips, agent shadows) plus a mid-walk
+    motion frame leave world_state byte-identical. Skips gracefully without pygame.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, _MARGIN_CELLS, _PANEL_W, _HUD_H
+    except ImportError:
+        print("PASS test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only (skipped: no pygame)")
+        return
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0)
+               for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": 24, "turn": 12, "food": [(2, 2), (9, 9)],
+        "settlements": {
+            "S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2},
+            "S002": {"id": "S002", "center": (13, 12), "members": {"K"}, "founded": 5},
+        },
+        "leaders": {"S001": {"leader": "a", "followers": {"b"}, "since": 3}},
+        "monarchs": {"S002": {"monarch": "K", "since": 8, "garrison": set()}},   # castle + pennant
+        "kingdoms": {"K": {"home": "S002", "settlements": {"S002"}, "vassals": {}}},
+        "empires": {},
+        "events": ["turn 12: a talked to b: \"hi\""],
+        "agents": list(village.values()) + [
+            _FakeAgent("K", "independent and competitive", (13, 12), True, 300.0, 0.0)],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        # Geometry: full-bleed map zone = playable grid + the wilderness margin ring.
+        assert r._map_px == r._cell * (state["size"] + 2 * _MARGIN_CELLS)
+        assert r._terrain_bg is not None and r._terrain_bg.get_size() == (r._map_px, r._map_px), \
+            "the baked landscape covers the WHOLE map zone — no black void"
+        assert r._screen.get_size() == (r._map_px + _PANEL_W, r._map_px + _HUD_H)
+        # The east margin is SEA in the baked terrain (bluish wins over red at the far edge).
+        samples = [r._terrain_bg.get_at((r._map_px - 3, y))
+                   for y in range(10, r._map_px - 10, 31)]
+        assert all(c.b > c.r for c in samples), "an east coast runs the margin, edge to edge"
+        # Shadow stamps are cached per size — the second request is the SAME surface.
+        s1 = r._shadow_stamp(20, 8)
+        assert r._shadow_stamp(20, 8) is s1, "shadow stamps must be cached, not rebuilt"
+        # Several ANIMATED frames (the ambient clock advances) + a mid-walk motion frame.
+        for _ in range(5):
+            r._draw(state)
+        r._draw(state, motion=({"a": (6, 5), "K": (12, 12)}, 0.5))
+        assert r._grade is not None, "the warm daylight grade is cached and applied"
+    finally:
+        pygame.quit()
+    assert {k: state[k] for k in state if k != "agents"} == before, \
+        "slice-9 lit/ambient draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "slice-9 draw mutated an agent"
+    print("PASS test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only")
 
 
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
@@ -4696,6 +4836,9 @@ def main_runner() -> None:
         test_pygame_battle_scene_detects_battles_and_names_casualties,
         test_pygame_snapshot_lerp_and_realm_helpers_pure,
         test_pygame_cinematic_state_is_renderer_local_and_draw_read_only,
+        test_pygame_palette_is_centralized_and_scene_constants_derive,
+        test_pygame_ambient_helpers_pure_bounded_and_rng_free,
+        test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

@@ -18,8 +18,13 @@ Opens a window and draws ONE FRAME from a `world_state` snapshot:
 
 A tiny HUD line shows turn / living / food. Later slices added settlements (2), the
 event-feed panel (3), iconography (4), detailed terrain (5), detailed towns & castles
-(6), and — slice 8 — WAR & MOTION: a realm-colour territory layer, battles replayed
-as short read-only cinematics, and smooth inter-turn agent movement.
+(6), slice 8 — WAR & MOTION: a realm-colour territory layer, battles replayed as short
+read-only cinematics, and smooth inter-turn agent movement — and slice 9 — VISUAL
+POLISH: a full-bleed landscape (wilderness margin + coast, no black void), one
+top-left sun with ground shadows and lit/shaded building faces, a single central
+PALETTE (calm earthy base; rulers/war stay saturated and pop), ambient life (chimney
+smoke, wheat sway, water shimmer, birds, banner flutter, window flicker) on a
+renderer-local frame clock, and a warm daylight grade tying the scene together.
 
 ARCHITECTURE RULE (same boundary as the text renderer, obeyed strictly)
 -----------------------------------------------------------------------
@@ -65,41 +70,98 @@ except ImportError as exc:  # pragma: no cover - exercised only without pygame i
 
 
 # --- Palette (RGB) ---------------------------------------------------------
-# Muted flat terrain and a green food dot; agent colours below are keyed to the
-# dominant PERSONALITY trait so a viewer can read temperament at a glance.
-_TERRAIN = (38, 42, 36)        # muted dark olive — a calm flat ground
+# Slice 9: ONE central PALETTE for every scene-defining colour, so the whole look is tunable
+# in one place. Design intent: a calm, earthy base (grass/soil/wood/water), figures slightly
+# DESATURATED to sit *in* the world, and the IMPORTANT things — rulers, realm banners, battle
+# effects — kept saturated so they pop against it. The module-level constant names the slices
+# already use are kept, but each is now DERIVED from PALETTE (UI chrome — panel/HUD/feed —
+# stays beside its slice: it frames the scene rather than being part of it).
+def _desat(color: tuple[int, int, int], f: float) -> tuple[int, int, int]:
+    """Desaturate by fraction f in [0,1]: lerp toward the colour's own luma gray (pure)."""
+    g = int(0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2])
+    return tuple(int(round(c + (g - c) * max(0.0, min(1.0, f)))) for c in color)
+
+
+PALETTE: dict[str, tuple[int, int, int]] = {
+    # ground & water
+    "grass_base": (44, 58, 40),        # the grassland base tone
+    "grass_speck_hi": (60, 86, 54),
+    "grass_speck_lo": (32, 48, 32),
+    "sand": (146, 132, 98),            # the shoreline strip
+    "water": (46, 84, 116),
+    "water_shallow": (58, 104, 132),
+    "water_hi": (92, 136, 166),        # ripple/shimmer highlights
+    "farmland": (110, 82, 50),
+    "farmland_furrow": (84, 60, 38),
+    "crop": (118, 156, 80),
+    "wheat": (176, 184, 106),          # food — a soft gold-green that belongs to the grass
+    # nature features
+    "tree_trunk": (74, 52, 34),
+    "tree_canopy": (44, 76, 44),
+    "tree_canopy_hi": (58, 96, 56),
+    "rock": (92, 96, 90),
+    "rock_hi": (122, 126, 118),
+    # settlements & structures (the old teal ring is retired for a warm, desaturated earth
+    # tint that never fights the realm hues)
+    "settlement_fill": (164, 152, 118),
+    "settlement_edge": (186, 174, 138),
+    "settlement_label": (206, 198, 170),
+    "path": (124, 106, 80),
+    "plaza": (140, 120, 88),
+    "door": (66, 46, 32),
+    "window_lit": (226, 198, 120),
+    "window_dark": (74, 78, 84),
+    "chimney": (96, 84, 76),
+    "granary": (180, 148, 102),
+    "fence": (112, 92, 66),
+    "well_stone": (148, 148, 146),
+    "well_water": (58, 96, 128),
+    "castle_stone": (154, 156, 160),
+    "castle_stone_dk": (112, 114, 122),
+    "gate": (52, 44, 38),
+    # figures: SATURATED bases; what is drawn is _desat(base, _TRAIT_DESAT) so commoners sit
+    # in the landscape while rulers/war (crown/realm/flash) keep full chroma and pop
+    "curiosity": (240, 198, 70),       # amber — the explorer
+    "caution": (92, 146, 230),         # blue — the careful/territorial
+    "friendliness": (236, 112, 178),   # pink — the social
+    "independence": (220, 84, 84),     # red — the competitive/aloof
+    "crown": (245, 205, 70),           # stays saturated: royalty must pop
+    # atmosphere & ambient life
+    "shadow": (10, 12, 8),             # the ground-shadow tone (drawn translucent)
+    "smoke": (206, 202, 194),
+    "bird": (52, 56, 50),
+    "daylight": (255, 214, 156),       # the warm full-scene grade (very low alpha)
+}
+_TRAIT_DESAT = 0.22                    # how far commoner figures step toward the earth tones
+
+_TERRAIN = (38, 42, 36)        # muted dark olive — a calm flat ground (pre-slice-5 fallback)
 _GRID_LINE = (48, 53, 46)      # barely-there cell lines (drawn only when cells are large)
-_FOOD = (96, 200, 96)          # food dots
+_FOOD = PALETTE["wheat"]       # food glyphs — toned to the grass, no longer neon
 _HUD_BG = (24, 26, 22)
 _HUD_FG = (210, 214, 200)
 _OUTLINE = (16, 18, 14)        # thin dark ring around each agent for contrast
 
-# Dominant trait -> colour. Distinct hues, none of them food-green.
-_TRAIT_COLOR = {
-    "curiosity": (240, 198, 70),      # amber — the explorer
-    "caution": (92, 146, 230),        # blue — the careful/territorial
-    "friendliness": (236, 112, 178),  # pink — the social
-    "independence": (220, 84, 84),    # red — the competitive/aloof
-}
+# Dominant trait -> DRAWN colour (desaturated from the palette base; still four distinct hues).
+_TRAIT_COLOR = {t: _desat(PALETTE[t], _TRAIT_DESAT)
+                for t in ("curiosity", "caution", "friendliness", "independence")}
 _DEFAULT_COLOR = (180, 180, 180)      # grey — unrecognised personality
 
-# Slice 2: SETTLEMENTS. A teal tint, chosen distinct from every personality colour
-# (amber/blue/pink/red) and from food-green, so a settlement reads as its own kind of
-# thing. The region fill is TRANSLUCENT (low alpha) so it stays background context
-# under the agents; a slightly stronger edge ring gives it a soft boundary, and a small
-# centre marker makes the centre identifiable.
-_SETTLEMENT_FILL = (80, 180, 175)     # teal — settlement region tint (drawn translucent)
-_SETTLEMENT_EDGE = (120, 220, 215)    # brighter teal — soft boundary ring + centre marker
-_SETTLEMENT_LABEL = (150, 210, 205)   # muted teal — subtle label
-_SETTLEMENT_FILL_ALPHA = 46           # how opaque the region tint is (0..255; low = subtle)
-_SETTLEMENT_EDGE_ALPHA = 130          # the boundary ring, a touch stronger than the fill
+# Slice 2 (re-toned in slice 9): SETTLEMENTS. The region tint is now a warm desaturated
+# earth (see PALETTE) — a settled place reads as worked ground rather than a teal stamp,
+# and the subtle ring no longer fights the slice-8 realm colours. Still TRANSLUCENT (low
+# alpha) so it stays background context under the agents.
+_SETTLEMENT_FILL = PALETTE["settlement_fill"]
+_SETTLEMENT_EDGE = PALETTE["settlement_edge"]
+_SETTLEMENT_LABEL = PALETTE["settlement_label"]
+_SETTLEMENT_FILL_ALPHA = 38           # how opaque the region tint is (0..255; low = subtle)
+_SETTLEMENT_EDGE_ALPHA = 110          # the boundary ring, a touch stronger than the fill
 _SETTLEMENT_MIN_CELLS = 1.6           # smallest region radius, in grid cells
 _SETTLEMENT_LABEL_MIN_CELL = 10       # only draw labels when cells are big enough to stay legible
 
 # Slice 4: ICONOGRAPHY. Procedural glyphs (no asset files) so the MAP is self-explanatory:
 # agents are little FIGURES, rulers wear CROWNS / a leader STAR, talkers get a SPEECH BUBBLE,
 # food is a WHEAT stalk, and settlements show HOUSE buildings. A handful of primitives each.
-_CROWN = (245, 205, 70)       # gold crown — monarch (king) / emperor
+_CROWN = PALETTE["crown"]     # gold crown — monarch (king) / emperor (kept saturated)
 _STAR = (242, 228, 138)       # pale-gold star — a trust-leader
 _BUBBLE = (236, 239, 231)     # near-white speech bubble (someone is talking this turn)
 _BUBBLE_DOT = (92, 98, 88)    # the "..." inside the bubble
@@ -116,26 +178,29 @@ _MAX_HOUSES = 6               # cap the house glyphs drawn per settlement (keeps
 # costs nothing per turn and never desyncs. ALL procedural variation comes from a pure
 # coordinate HASH (`terrain_noise`), never the global `random` module, so seeded sim runs stay
 # byte-identical. Kept muted so the slice-1..4 foreground (agents/food/buildings) stays legible.
-_GRASS_BASE = (42, 58, 40)    # base grassland — a touch greener than the old flat fill
+_GRASS_BASE = PALETTE["grass_base"]
 _GRASS_VAR = 9                # fine per-tile tonal swing (+/-), the cheap value-noise texture
 _GRASS_PATCH = 12             # low-frequency swing -> broad patches of darker/lighter grass
-_GRASS_SPECK_HI = (60, 86, 54)   # occasional lighter stipple speck
-_GRASS_SPECK_LO = (32, 48, 32)   # occasional darker stipple speck
-_TREE_TRUNK = (74, 52, 34)
-_TREE_CANOPY = (44, 76, 44)
-_TREE_CANOPY_HI = (56, 96, 54)
-_ROCK = (92, 96, 90)
-_ROCK_HI = (122, 126, 118)
-_WATER = (46, 84, 116)
-_WATER_HI = (74, 118, 150)
-_FARMLAND = (110, 82, 50)     # tilled-dirt tint near a settlement (drawn translucent each frame)
-_FARMLAND_FURROW = (84, 60, 38)
+_GRASS_SPECK_HI = PALETTE["grass_speck_hi"]   # occasional lighter stipple speck
+_GRASS_SPECK_LO = PALETTE["grass_speck_lo"]   # occasional darker stipple speck
+_TREE_TRUNK = PALETTE["tree_trunk"]
+_TREE_CANOPY = PALETTE["tree_canopy"]
+_TREE_CANOPY_HI = PALETTE["tree_canopy_hi"]
+_ROCK = PALETTE["rock"]
+_ROCK_HI = PALETTE["rock_hi"]
+_WATER = PALETTE["water"]
+_WATER_SHALLOW = PALETTE["water_shallow"]
+_WATER_HI = PALETTE["water_hi"]
+_SAND = PALETTE["sand"]
+_FARMLAND = PALETTE["farmland"]   # tilled-dirt tint near a settlement (translucent each frame)
+_FARMLAND_FURROW = PALETTE["farmland_furrow"]
 _FARMLAND_ALPHA = 52
-_VIGNETTE_MAX = 92            # edge darkening strength (alpha) for atmospheric depth
+_VIGNETTE_MAX = 48            # slice 9: softened — depth without the old black-edged stage
 _FRAME_OUTER = (22, 26, 20)   # dark outer frame around the map zone
 _FRAME_INNER = (78, 90, 66)   # a thin lighter inner line, for a framed-map look
 # Feature density thresholds on terrain_noise (sparse, so the map stays readable).
-_TREE_THRESHOLD = 0.93        # ~7% of cells get a tree
+_TREE_THRESHOLD = 0.93        # ~7% of PLAYABLE cells get a tree
+_TREE_THRESHOLD_WILD = 0.80   # the wilderness fringe is denser (~20%) — the forest closes in
 _ROCK_THRESHOLD = 0.965       # ~3.5% of cells get a rock
 _STIPPLE_STEP = 4             # stipple sampling stride in pixels (coarser = cheaper)
 
@@ -146,20 +211,20 @@ _STIPPLE_STEP = 4             # stipple sampling stride in pixels (coarser = che
 # settlement, rebuilt only when its membership/ruler/cell changes, so per-frame cost stays low.
 _WALL_TONES = ((156, 128, 96), (172, 150, 118), (140, 116, 90), (178, 160, 128), (150, 132, 104))
 _ROOF_TONES = ((122, 84, 66), (150, 98, 70), (98, 74, 56), (112, 100, 68), (132, 90, 72))
-_DOOR = (66, 46, 32)
-_WINDOW_LIT = (226, 198, 120)     # a warm lit window
-_WINDOW_DARK = (74, 78, 84)       # an unlit window
-_CHIMNEY = (96, 84, 76)
-_PATH = (124, 106, 80)            # dirt road between buildings
-_PLAZA = (140, 120, 88)           # packed-earth market square at the centre
-_WELL_STONE = (148, 148, 146)
-_WELL_WATER = (58, 96, 128)
-_GRANARY_WALL = (180, 148, 102)
-_FENCE = (112, 92, 66)            # the perimeter palisade of a large settlement
-_CROP = (104, 162, 72)            # green crop rows in the farmland
-_CASTLE_STONE = (150, 152, 158)
-_CASTLE_STONE_DK = (114, 116, 124)
-_GATE = (52, 44, 38)
+_DOOR = PALETTE["door"]
+_WINDOW_LIT = PALETTE["window_lit"]   # a warm lit window (flickers gently, slice 9)
+_WINDOW_DARK = PALETTE["window_dark"]
+_CHIMNEY = PALETTE["chimney"]
+_PATH = PALETTE["path"]           # dirt road between buildings
+_PLAZA = PALETTE["plaza"]         # packed-earth market square at the centre
+_WELL_STONE = PALETTE["well_stone"]
+_WELL_WATER = PALETTE["well_water"]
+_GRANARY_WALL = PALETTE["granary"]
+_FENCE = PALETTE["fence"]         # the perimeter palisade of a large settlement
+_CROP = PALETTE["crop"]           # crop rows in the farmland (muted to sit with the grass)
+_CASTLE_STONE = PALETTE["castle_stone"]
+_CASTLE_STONE_DK = PALETTE["castle_stone_dk"]
+_GATE = PALETTE["gate"]
 _DEFAULT_RULER = (170, 150, 205)  # fallback royal tone if the ruler agent can't be found
 _TOWN_MIN_CELL = 8                # below this cell size, fall back to the slice-4 simple houses
 _MIN_TOWN_BUILDINGS = 2
@@ -203,6 +268,27 @@ _MAX_SOLDIER_GLYPHS = 12          # cap the figures PER SIDE (the true counts li
 _CIN_MUSTER, _CIN_MARCH, _CIN_CLASH, _CIN_FALL, _CIN_AFTER = 0.5, 1.0, 1.0, 0.6, 1.0
 _CIN_TOTAL = _CIN_MUSTER + _CIN_MARCH + _CIN_CLASH + _CIN_FALL + _CIN_AFTER
 _WALK_BOB = 0.09                  # walk-bob amplitude as a fraction of a cell
+
+# Slice 9: VISUAL POLISH — light, palette, ambient life. The map zone becomes FULL-BLEED: a
+# wilderness MARGIN ring (rougher tones, denser trees) around the playable grid and an east
+# COAST across the margin, all baked into the cached terrain like slice 5 (coordinate hash,
+# never sim RNG). One consistent SUN from the TOP-LEFT: ground shadows (translucent ellipse
+# stamps, cached per size; static ones baked, only agents'/soldiers' move) fall to the
+# bottom-right, and buildings get a lit left face / shaded right face. AMBIENT LIFE breathes
+# on a renderer-local frame counter + terrain_noise: chimney smoke, wheat/crop sway, water
+# shimmer, occasional birds, banner flutter, window flicker — each deliberately subtle. A
+# very light warm DAYLIGHT grade (cached full-map tint) ties the scene together.
+_MARGIN_CELLS = 3                 # wilderness ring width, in cells, around the playable grid
+_SHADOW = PALETTE["shadow"]
+_SHADOW_ALPHA = 54                # ground-shadow opacity (soft, not inky)
+_SMOKE = PALETTE["smoke"]
+_BIRD = PALETTE["bird"]
+_GRADE_ALPHA = 12                 # the warm daylight grade — barely-there
+_SMOKE_CYCLE = 48                 # frames for one chimney puff to rise and fade
+_BIRD_WINDOW = 240                # frames per bird-flight window (~4s at 60fps)
+_BIRD_CHANCE = 0.72               # noise threshold: most windows have NO birds ("every so often")
+_FACE_SHADE = -14                 # how much a building's sun-away face darkens
+_FACE_LIGHT = 16                  # how much its sun-side edge lightens
 
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
@@ -273,19 +359,25 @@ def agent_radius(wealth: float, cell: int) -> int:
 
     A sqrt ramp (so differences read at the low/common end of wealth) between a
     cell-relative minimum and maximum. The richest agents are visibly larger without
-    overflowing their cell into illegibility.
+    overflowing their cell into illegibility. Slice 9 trims both bounds so PEOPLE read
+    smaller than BUILDINGS — a town should dwarf its townsfolk.
     """
-    r_min = max(2.0, cell * 0.26)
-    r_max = max(r_min + 1.0, cell * 0.58)
+    r_min = max(2.0, cell * 0.21)
+    r_max = max(r_min + 1.0, cell * 0.46)
     frac = max(0.0, min(1.0, math.sqrt(max(0.0, wealth) / _WEALTH_CEIL)))
     return int(round(r_min + frac * (r_max - r_min)))
 
 
 def _cell_size(size: int) -> int:
-    """Pixels per grid cell so a `size`x`size` world fits near _TARGET_PX (clamped)."""
+    """Pixels per grid cell so grid + wilderness margin fit near _TARGET_PX (clamped).
+
+    Slice 9: the map zone is the playable grid PLUS a _MARGIN_CELLS wilderness ring on every
+    side (the full-bleed landscape), so the budget divides by size + 2*margin — the whole
+    scene, not just the grid, stays near the target and the window height stays laptop-sane.
+    """
     if size <= 0:
         return _MAX_CELL
-    return max(_MIN_CELL, min(_MAX_CELL, _TARGET_PX // size))
+    return max(_MIN_CELL, min(_MAX_CELL, _TARGET_PX // (size + 2 * _MARGIN_CELLS)))
 
 
 def settlement_radius_cells(center: tuple[int, int],
@@ -707,6 +799,47 @@ def battle_scene(events_this_turn: list[str], prev_snapshot: dict[str, Any] | No
     return scenes[0] if scenes else None
 
 
+# --- Slice 9: pure ambient-life helpers (frame-counter + hash driven, zero sim RNG) -------
+def smoke_puffs(frame: int, sx: int, sy: int) -> list[tuple[int, int, int, int]]:
+    """Chimney smoke for the hearth at (sx, sy): three staggered puffs -> (dx, dy, r, alpha).
+
+    Each puff cycles over _SMOKE_CYCLE frames: it RISES (dy grows more negative), drifts
+    gently with a sine wind, swells (r grows) and FADES (alpha -> 0). Phase is offset by the
+    hearth's own coordinates so a street of chimneys never puffs in lockstep. Pure function of
+    (frame, sx, sy) — deterministic, RNG-free, unit-testable.
+    """
+    out = []
+    for i in range(3):
+        ph = (frame * 0.9 + i * (_SMOKE_CYCLE / 3) + (sx * 13 + sy * 7) % _SMOKE_CYCLE) % _SMOKE_CYCLE
+        drift = math.sin(frame * 0.05 + i * 2.1 + sx * 0.3) * 1.5 + ph * 0.12
+        r = 1 + int(ph / 16)
+        alpha = max(0, int(80 * (1.0 - ph / _SMOKE_CYCLE)))
+        out.append((int(drift), -int(2 + ph * 0.55), r, alpha))
+    return out
+
+
+def ambient_birds(frame: int, map_px: int) -> list[tuple[float, float, float]]:
+    """The birds crossing the sky this frame -> (x, y, wing_spread); usually an empty list.
+
+    Time is cut into _BIRD_WINDOW-frame windows; a window hosts a bird only when its hash
+    clears _BIRD_CHANCE (so flights are OCCASIONAL, not constant). Within its window the bird
+    crosses the whole map (direction hashed), bobbing slightly, wings flapping via the spread
+    oscillation. Pure function of (frame, map_px) — deterministic, RNG-free.
+    """
+    out = []
+    window = frame // _BIRD_WINDOW
+    p = (frame % _BIRD_WINDOW) / _BIRD_WINDOW
+    for k in range(2):
+        if terrain_noise(window, k, 77) <= _BIRD_CHANCE:
+            continue
+        ltr = terrain_noise(window, k, 78) > 0.5
+        x = (p if ltr else 1.0 - p) * map_px
+        y = map_px * (0.10 + 0.55 * terrain_noise(window, k, 79)) + math.sin(frame * 0.2 + k * 3.1) * 3
+        spread = 2.5 + 1.5 * math.sin(frame * 0.45 + k)
+        out.append((x, y, spread))
+    return out
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -737,6 +870,13 @@ class PygameRenderer:
         self._prev_snapshot: dict[str, Any] | None = None  # last turn: positions/realms/homes
         self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
         self._big_font: Any = None                         # the aftermath banner face
+        # Slice 9: full-bleed geometry + light/ambient caches (all renderer-local).
+        self._margin_px = 0                                # the wilderness ring, in pixels
+        self._map_px = 0                                   # full map zone = margin + grid + margin
+        self._frame = 0                                    # ambient-life clock (per drawn frame)
+        self._stamps: dict[tuple, Any] = {}                # cached shadow/smoke alpha stamps
+        self._pond: tuple | None = None                    # baked pond geometry, for the shimmer
+        self._grade: Any = None                            # cached warm daylight tint overlay
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -767,10 +907,15 @@ class PygameRenderer:
         self._size = size
         self._cell = _cell_size(size)
         grid_px = self._cell * max(1, size)
-        self._screen = pygame.display.set_mode((grid_px + _PANEL_W, grid_px + _HUD_H))
-        # Slice 5: bake the procedural landscape ONCE for this grid size (cached, blitted each
+        # Slice 9: the MAP zone is full-bleed — a wilderness margin rings the playable grid.
+        self._margin_px = _MARGIN_CELLS * self._cell
+        self._map_px = grid_px + 2 * self._margin_px
+        self._screen = pygame.display.set_mode((self._map_px + _PANEL_W, self._map_px + _HUD_H))
+        # Slice 5/9: bake the procedural landscape ONCE for this grid size (cached, blitted each
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
-        self._terrain_bg = self._build_terrain(grid_px)
+        self._terrain_bg = self._build_terrain()
+        self._grade = self._build_grade()
+        self._stamps = {}
         # Slice 6: town plans hold pixel offsets, so a resize (new cell size) invalidates them.
         self._town_plans = {}
 
@@ -846,9 +991,10 @@ class PygameRenderer:
 
     # -- drawing (pure reads of `state`) -----------------------------------
     def _to_px(self, x: int, y: int) -> tuple[int, int]:
-        """Centre of grid cell (x, y) in pixels."""
+        """Centre of grid cell (x, y) in pixels (offset past the slice-9 wilderness margin)."""
         c = self._cell
-        return (x * c + c // 2, y * c + c // 2)
+        m = self._margin_px
+        return (m + x * c + c // 2, m + y * c + c // 2)
 
     def _draw(self, state: dict[str, Any], *, paused: bool = False,
               motion: tuple[dict[str, tuple], float] | None = None,
@@ -858,17 +1004,20 @@ class PygameRenderer:
         screen = self._screen
         if screen is None:
             return
-        size = self._size
         cell = self._cell
-        grid_px = cell * size
+        map_px = self._map_px
+        # Slice 9: the ambient-life clock — one tick per DRAWN frame (renderer-local; the sim
+        # never sees it), driving smoke/sway/shimmer/birds/flutter/flicker phases.
+        self._frame = (self._frame + 1) % (1 << 20)
 
-        # Slice 5: the cached LANDSCAPE (textured grass, trees/rocks/pond, vignette + frame)
-        # under everything, blitted not rebuilt. Fallback flat fill if it isn't built yet.
+        # Slice 5/9: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
+        # coast + pond + vignette) under everything, blitted not rebuilt. Fallback flat fill.
         screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters; map zone is overdrawn below
         if self._terrain_bg is not None:
             screen.blit(self._terrain_bg, (0, 0))
         else:
-            screen.fill(_GRASS_BASE, (0, 0, grid_px, grid_px))
+            screen.fill(_GRASS_BASE, (0, 0, map_px, map_px))
+        self._draw_water_shimmer()  # slice 9: ripple glints on the baked pond + coast
 
         # Slice 5: settled land looks CULTIVATED — a translucent tilled-dirt tint (with furrows)
         # under the slice-2 region. Dynamic (settlements come and go), but cheap. No-op if none.
@@ -897,6 +1046,7 @@ class PygameRenderer:
             cx, cy = self._agent_px(agent, motion)  # slice 8: mid-walk lerp when motion plays
             r = agent_radius(_wealth(agent), cell)
             color = agent_color(getattr(agent, "personality", ""))
+            self._blit_shadow(cx, cy + r, r * 2.1, max(2, int(r * 0.8)))  # slice 9: grounded
             figure_top = self._draw_agent_figure(cx, cy, r, color)
             self._draw_role_marker(cx, figure_top, r, agent_role(agent.name, state))
             if agent.name in talkers:
@@ -907,10 +1057,16 @@ class PygameRenderer:
         if battle is not None:
             self._draw_battle_overlay(*battle)
 
-        self._draw_hud(state, grid_px, paused, in_battle=battle is not None)
+        # Slice 9: occasional birds over everything, then the warm daylight grade tying the
+        # whole scene (terrain, towns, figures, even a playing battle) into one light.
+        self._draw_birds()
+        if self._grade is not None:
+            screen.blit(self._grade, (0, 0))
+
+        self._draw_hud(state, map_px, paused, in_battle=battle is not None)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
         # last so it owns the right zone cleanly; a pure read of state, like everything else.
-        self._draw_panel(state, grid_px)
+        self._draw_panel(state, map_px)
         pygame.display.flip()
 
     def _agent_px(self, agent: Any, motion: tuple[dict[str, tuple], float] | None) -> tuple[int, int]:
@@ -933,83 +1089,195 @@ class PygameRenderer:
         bob = abs(math.sin(t * math.pi * 3.0)) * max(1.0, self._cell * _WALK_BOB)
         return int(round(px + (cx - px) * e)), int(round(py + (cy - py) * e - bob))
 
-    # -- Slice 5: cached procedural landscape (built ONCE; pure hash, no sim RNG) --
-    def _build_terrain(self, grid_px: int) -> Any:
-        """Bake the landscape into a Surface ONCE: textured grass, features, vignette, frame.
+    # -- Slice 5/9: cached procedural landscape (built ONCE; pure hash, no sim RNG) --
+    def _coast_x(self, y: int) -> int:
+        """The shoreline x for pixel row y: the sea fills the outer EAST margin, meandering.
 
-        Everything here is deterministic from `terrain_noise` (a pure coordinate hash) — it
-        never calls `random`, so it cannot perturb the seeded sim. Built per grid size and
-        cached, so it is free to blit each frame. Returns the finished background Surface.
+        A per-cell-row hash, linearly smoothed between rows, keeps the water strictly inside
+        the wilderness margin (width 0.37..0.72 of it) — the playable grid never gets wet.
+        Deterministic, so the baked coast and the per-frame shimmer agree forever.
         """
-        if grid_px <= 0:
+        m, cell, map_px = self._margin_px, self._cell, self._map_px
+        if m <= 0:
+            return map_px
+        row, t = divmod(max(0, y), max(1, cell))
+        a = terrain_noise(row, 9, 91)
+        b = terrain_noise(row + 1, 9, 91)
+        wiggle = (a + (b - a) * (t / max(1, cell))) - 0.5
+        return int(map_px - m * (0.55 + 0.35 * wiggle))
+
+    def _build_terrain(self) -> Any:
+        """Bake the FULL-BLEED landscape ONCE: grass, wilderness fringe, coast, features, light.
+
+        Slice 9 extends slice 5 edge to edge: the ground texture covers the whole map zone; the
+        margin ring beyond the playable grid darkens/roughens into WILDERNESS with denser trees;
+        an EAST COAST (sand -> shallow -> open water) meanders across the margin; every tree and
+        rock casts a soft baked shadow from the top-left sun. Still 100% terrain_noise — it never
+        calls `random`, so it cannot perturb the seeded sim. Cached per grid size, free to blit.
+        """
+        map_px, cell, size, m = self._map_px, self._cell, self._size, self._margin_px
+        if map_px <= 0:
             return None
-        cell, size = self._cell, self._size
-        surf = pygame.Surface((grid_px, grid_px))
+        grid_px = cell * size
+        surf = pygame.Surface((map_px, map_px))
         surf.fill(_GRASS_BASE)
 
-        # 1) GROUND texture: per-tile tonal value-noise + a low-frequency patch swing, so the
-        #    grass reads as ground with broad lighter/darker patches rather than a flat colour.
+        # 1) GROUND texture over the WHOLE zone: per-tile value-noise + broad patches; tiles in
+        #    the margin darken and roughen smoothly with distance past the playable edge.
         tile = max(3, cell // 2)
-        for ty in range(0, grid_px, tile):
-            for tx in range(0, grid_px, tile):
+        for ty in range(0, map_px, tile):
+            for tx in range(0, map_px, tile):
                 fine = terrain_noise(tx // tile, ty // tile, 1) - 0.5
                 patch = terrain_noise(tx // (tile * 5 + 1), ty // (tile * 5 + 1), 2) - 0.5
                 shade = int(fine * 2 * _GRASS_VAR + patch * 2 * _GRASS_PATCH)
+                d = max(m - tx, tx + tile - (m + grid_px), m - ty, ty + tile - (m + grid_px), 0)
+                if d > 0:                          # the wilderness fringe: darker, rougher
+                    w = min(1.0, d / max(1.0, 1.5 * cell))
+                    shade += int((-10 + fine * 14) * w)
                 surf.fill(_shade(_GRASS_BASE, shade), (tx, ty, tile, tile))
 
-        # 2) STIPPLE: sparse light/dark specks for grain (cheap; most samples place nothing).
-        for sy in range(0, grid_px, _STIPPLE_STEP):
-            for sx in range(0, grid_px, _STIPPLE_STEP):
+        # 2) STIPPLE grain across the whole zone (cheap; most samples place nothing).
+        for sy in range(0, map_px, _STIPPLE_STEP):
+            for sx in range(0, map_px, _STIPPLE_STEP):
                 h = terrain_noise(sx, sy, 3)
                 if h > 0.90:
                     surf.set_at((sx, sy), _GRASS_SPECK_HI)
                 elif h < 0.07:
                     surf.set_at((sx, sy), _GRASS_SPECK_LO)
 
-        # 3) A POND in one deterministic off-centre region (kept clear of the central food arena).
+        # 3) The EAST COAST: for each pixel row, sand strip -> sunlit shallow -> open water.
+        for y in range(map_px):
+            wx = self._coast_x(y)
+            if wx < map_px - 1:
+                pygame.draw.line(surf, _WATER, (wx, y), (map_px - 1, y), 1)
+                pygame.draw.line(surf, _WATER_SHALLOW, (wx, y), (min(wx + 3, map_px - 1), y), 1)
+                if wx >= 4:
+                    pygame.draw.line(surf, _SAND, (wx - 4, y), (wx - 1, y), 1)
+
+        # 4) A POND in one deterministic off-centre spot inside the playable land.
         self._build_pond(surf, grid_px, cell)
 
-        # 4) Scattered TREES and ROCKS, one chance per world cell (sparse thresholds).
-        for cy in range(size):
-            for cx in range(size):
-                px, py = cx * cell + cell // 2, cy * cell + cell // 2
-                if terrain_noise(cx, cy, 4) > _TREE_THRESHOLD:
+        # 5) TREES and ROCKS over the EXTENDED cell range (margin included) — denser at the
+        #    fringe so the forest visibly closes in; nothing planted in the sea.
+        for cy in range(-_MARGIN_CELLS, size + _MARGIN_CELLS):
+            for cx in range(-_MARGIN_CELLS, size + _MARGIN_CELLS):
+                px = m + cx * cell + cell // 2
+                py = m + cy * cell + cell // 2
+                if not (0 <= px < map_px and 0 <= py < map_px) or px > self._coast_x(py) - cell:
+                    continue
+                fringe = not (0 <= cx < size and 0 <= cy < size)
+                if terrain_noise(cx, cy, 4) > (_TREE_THRESHOLD_WILD if fringe else _TREE_THRESHOLD):
                     self._build_tree(surf, px, py, cell)
                 elif terrain_noise(cx, cy, 5) > _ROCK_THRESHOLD:
                     self._build_rock(surf, px, py, cell)
 
-        # 5) ATMOSPHERE: a soft edge vignette for depth, and a clean framed border.
-        self._build_vignette(surf, grid_px)
-        pygame.draw.rect(surf, _FRAME_OUTER, (0, 0, grid_px, grid_px), 3)
-        pygame.draw.rect(surf, _FRAME_INNER, (3, 3, grid_px - 6, grid_px - 6), 1)
+        # 6) ATMOSPHERE: the (slice-9 softened) vignette and a thin border — a landscape that
+        #    continues past the frame, not a stage floating in blackness.
+        self._build_vignette(surf, map_px)
+        pygame.draw.rect(surf, _FRAME_OUTER, (0, 0, map_px, map_px), 2)
         return surf
 
+    def _build_grade(self) -> Any:
+        """The cached warm DAYLIGHT grade: one very-low-alpha tint blitted over the map zone."""
+        if self._map_px <= 0:
+            return None
+        grade = pygame.Surface((self._map_px, self._map_px), pygame.SRCALPHA)
+        grade.fill((*PALETTE["daylight"], _GRADE_ALPHA))
+        return grade
+
     def _build_pond(self, surf: Any, grid_px: int, cell: int) -> None:
-        """A still pond in a fixed off-centre spot (deterministic; never the central arena)."""
-        pcx = int(grid_px * 0.22)
-        pcy = int(grid_px * 0.74)
+        """A still pond in a fixed off-centre spot (deterministic; never the central arena).
+
+        Slice 9: offset past the margin, with a sun-side highlight rim; its geometry is kept
+        (renderer-local) so the per-frame water shimmer knows where to glint.
+        """
+        pcx = self._margin_px + int(grid_px * 0.22)
+        pcy = self._margin_px + int(grid_px * 0.74)
         rx = max(cell, int(grid_px * 0.10))
         ry = max(cell, int(grid_px * 0.07))
+        self._pond = (pcx, pcy, rx, ry)
         pygame.draw.ellipse(surf, _WATER, (pcx - rx, pcy - ry, 2 * rx, 2 * ry))
         pygame.draw.ellipse(surf, _WATER_HI, (pcx - rx, pcy - ry, 2 * rx, 2 * ry), 1)
         pygame.draw.ellipse(surf, _WATER_HI,
-                            (pcx - rx // 2, pcy - ry // 2, rx, ry // 2), 1)  # a faint highlight
+                            (pcx - rx // 2, pcy - ry // 2, rx, ry // 2), 1)  # sun-side rim
 
     def _build_tree(self, surf: Any, px: int, py: int, cell: int) -> None:
-        """A simple tree: a brown trunk + a rounded green canopy with a lighter top."""
+        """A simple tree: baked ground shadow, brown trunk, rounded canopy with a lit top-left."""
         r = max(2, int(cell * 0.42))
         trunk_w = max(1, r // 3)
+        self._blit_shadow(px, py + r, r * 2.4, max(2, int(r * 0.7)), target=surf)  # slice 9
         pygame.draw.rect(surf, _TREE_TRUNK, (px - trunk_w // 2, py, trunk_w, r))
         pygame.draw.circle(surf, _TREE_CANOPY, (px, py), r)
         pygame.draw.circle(surf, _TREE_CANOPY_HI, (px - r // 4, py - r // 4), max(1, r // 2))
         pygame.draw.circle(surf, _shade(_TREE_CANOPY, -14), (px, py), r, 1)
 
     def _build_rock(self, surf: Any, px: int, py: int, cell: int) -> None:
-        """A small boulder: a grey blob with a light top facet."""
+        """A small boulder: baked ground shadow, grey blob, light top-left facet."""
         r = max(2, int(cell * 0.3))
+        self._blit_shadow(px, py + r // 2 + 1, r * 2.2, max(2, int(r * 0.7)), target=surf)  # slice 9
         pygame.draw.circle(surf, _ROCK, (px, py), r)
         pygame.draw.circle(surf, _ROCK_HI, (px - r // 4, py - r // 4), max(1, r // 2))
         pygame.draw.circle(surf, _shade(_ROCK, -18), (px, py), r, 1)
+
+    # -- Slice 9: light & shadow + ambient-life machinery -------------------
+    def _shadow_stamp(self, w: int, h: int) -> Any:
+        """A cached translucent shadow ellipse (SRCALPHA) of size (w, h) — built once per size."""
+        key = ("shadow", w, h)
+        stamp = self._stamps.get(key)
+        if stamp is None:
+            stamp = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.ellipse(stamp, (*_SHADOW, _SHADOW_ALPHA), (0, 0, w, h))
+            self._stamps[key] = stamp
+        return stamp
+
+    def _blit_shadow(self, cx: float, cy: float, w: float, h: float, target: Any = None) -> None:
+        """Ground a thing: a soft shadow ellipse under it, nudged toward the bottom-right
+        (one consistent top-left sun for the whole scene). Cheap — one cached-stamp blit."""
+        w, h = max(3, int(w)), max(2, int(h))
+        (target if target is not None else self._screen).blit(
+            self._shadow_stamp(w, h),
+            (int(cx - w / 2 + max(1, w // 10)), int(cy - h / 2 + 1)))
+
+    def _soft_stamp(self, r: int, color: tuple, alpha: int) -> Any:
+        """A cached translucent soft disc (smoke puffs etc.), keyed by radius/colour/alpha."""
+        key = ("soft", r, color, alpha)
+        stamp = self._stamps.get(key)
+        if stamp is None:
+            stamp = pygame.Surface((2 * r + 2, 2 * r + 2), pygame.SRCALPHA)
+            pygame.draw.circle(stamp, (*color, alpha), (r + 1, r + 1), r)
+            self._stamps[key] = stamp
+        return stamp
+
+    def _draw_water_shimmer(self) -> None:
+        """Ambient ripple glints on the pond and along the coast — a few short light dashes
+        whose positions re-hash every ~⅓s (terrain_noise on a coarse frame index; zero RNG)."""
+        f = self._frame
+        if self._pond is not None:
+            pcx, pcy, rx, ry = self._pond
+            for k in range(3):
+                u = terrain_noise(f // 18, k, 71) - 0.5
+                v = terrain_noise(f // 18, k, 72) - 0.5
+                if (u * 1.2) ** 2 + (v * 1.1) ** 2 < 0.18:      # keep the glint inside the water
+                    x, y = pcx + u * rx * 1.2, pcy + v * ry * 1.1
+                    w = 3 + int(3 * terrain_noise(f // 18, k, 73))
+                    pygame.draw.line(self._screen, _WATER_HI,
+                                     (int(x - w), int(y)), (int(x + w), int(y)), 1)
+        if self._margin_px > 0:
+            for k in range(4):
+                y = int(terrain_noise(f // 22, k, 74) * (self._map_px - 3)) + 1
+                x0 = self._coast_x(y)
+                x = x0 + 3 + terrain_noise(f // 22, k, 75) * max(0, self._map_px - x0 - 8)
+                if x < self._map_px - 3:
+                    w = 3 + int(3 * terrain_noise(f // 22, k, 76))
+                    pygame.draw.line(self._screen, _WATER_HI,
+                                     (int(x), y), (int(min(x + w, self._map_px - 3)), y), 1)
+
+    def _draw_birds(self) -> None:
+        """The occasional bird crossing the sky: tiny v-shapes, flapping — pure frame+hash."""
+        for x, y, spread in ambient_birds(self._frame, self._map_px):
+            xi, yi, s = int(x), int(y), max(1.5, spread)
+            pygame.draw.line(self._screen, _BIRD, (int(xi - s), int(yi - s * 0.6)), (xi, yi), 1)
+            pygame.draw.line(self._screen, _BIRD, (xi, yi), (int(xi + s), int(yi - s * 0.6)), 1)
 
     def _build_vignette(self, surf: Any, grid_px: int) -> None:
         """Darken the map edges with nested translucent rings for atmospheric depth."""
@@ -1036,13 +1304,16 @@ class PygameRenderer:
         if not settlements:
             return
         cell = self._cell
-        grid_px = cell * self._size
+        map_px = self._map_px
         pos_by_name = {
             a.name: a.position
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
+        overlay = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
+        # Slice 9: the crops SWAY — a gentle 1px lean whose phase drifts along the row (frame
+        # counter + position; zero sim RNG). Recomputed per frame, it costs a sin per tuft.
+        f = self._frame
         for sid in sorted(settlements):
             center = settlements[sid].get("center")
             if center is None:
@@ -1062,8 +1333,9 @@ class PygameRenderer:
                                  (cx - half, fy), (cx + half, fy), 1)
                 # Slice 6: CROP ROWS — little green tufts standing along each furrow.
                 for x in range(cx - half + 2, cx + half - 1, crop_dx):
+                    sway = int(round(math.sin(f * 0.10 + x * 0.4 + fy * 0.15)))
                     pygame.draw.line(overlay, (*_CROP, _FARMLAND_ALPHA + 40),
-                                     (x, fy), (x, fy - max(2, cell // 6)), 1)
+                                     (x, fy), (x + sway, fy - max(2, cell // 6)), 1)
         self._screen.blit(overlay, (0, 0))
 
     # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
@@ -1113,6 +1385,9 @@ class PygameRenderer:
                (cx + w // 2, base_y - h // 3), (cx + w, base_y - h), (cx + w, base_y)]
         pygame.draw.polygon(self._screen, _CROWN, pts)
         pygame.draw.polygon(self._screen, _OUTLINE, pts, 1)
+        # Slice 9: a highlight rim on the sun-side (left) points — gold catches the light.
+        pygame.draw.line(self._screen, _shade(_CROWN, 55),
+                         (cx - w, base_y - h), (cx - w // 2, base_y - h // 3), 1)
         if double:                                   # emperor: a smaller crown above the first
             self._draw_crown(cx, base_y - h - 1, max(2, (w * 2) // 3), double=False)
 
@@ -1144,23 +1419,26 @@ class PygameRenderer:
                 pygame.draw.circle(screen, _BUBBLE_DOT, (rect.centerx + dx, dy), 1)
 
     def _draw_wheat(self, cx: int, cy: int, cell: int) -> None:
-        """Food as a wheat stalk: a vertical stem + a few angled grain strokes (green)."""
+        """Food as a wheat stalk: a stem + grain strokes, SWAYING ±1px on the ambient clock."""
         if cell < _FOOD_GLYPH_MIN_CELL:
             pygame.draw.circle(self._screen, _FOOD, (cx, cy), max(1, cell // 6))
             return
         screen = self._screen
         s = max(3, cell // 3)
+        # Slice 9: a gentle lean, phase-shifted by position so a field ripples, not marches.
+        sway = int(round(math.sin(self._frame * 0.12 + cx * 0.35 + cy * 0.2)))
         base, top = cy + s // 2, cy - s
-        pygame.draw.line(screen, _FOOD, (cx, base), (cx, top), 1)        # the stalk
+        pygame.draw.line(screen, _FOOD, (cx, base), (cx + sway, top), 1)  # the stalk
         for off in range(0, s + 1, max(2, s // 3)):                      # grain strokes up the stem
             yy = top + off
-            pygame.draw.line(screen, _FOOD, (cx, yy), (cx - s // 2, yy - s // 3), 1)
-            pygame.draw.line(screen, _FOOD, (cx, yy), (cx + s // 2, yy - s // 3), 1)
+            pygame.draw.line(screen, _FOOD, (cx + sway, yy), (cx + sway - s // 2, yy - s // 3), 1)
+            pygame.draw.line(screen, _FOOD, (cx + sway, yy), (cx + sway + s // 2, yy - s // 3), 1)
 
     def _draw_house(self, cx: int, cy: int, s: int) -> None:
         """A simple building: a square wall + a triangular roof, centred on (cx, cy)."""
         screen = self._screen
         half = max(2, s // 2)
+        self._blit_shadow(cx, cy + half, s * 1.3, max(2, s // 3))  # slice 9: grounded
         wall = pygame.Rect(cx - half, cy - half + half // 2, 2 * half, half + half // 2)
         pygame.draw.rect(screen, _HOUSE_WALL, wall)
         pygame.draw.rect(screen, _OUTLINE, wall, 1)
@@ -1183,7 +1461,7 @@ class PygameRenderer:
             return  # slice-1 behaviour: nothing extra drawn when no settlements exist
         screen = self._screen
         cell = self._cell
-        grid_px = cell * self._size
+        map_px = self._map_px
         # Map member NAME -> current position (living agents only) for the spread read.
         pos_by_name = {
             a.name: a.position
@@ -1197,7 +1475,7 @@ class PygameRenderer:
         empires = state.get("empires", {})
         # One translucent overlay per frame for the TERRITORY tint; circles drawn here blend over
         # the terrain WITHOUT darkening the buildings/agents (drawn afterwards, straight on screen).
-        overlay = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
+        overlay = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
         towns: list[tuple] = []
         for sid in sorted(settlements):
             rec = settlements[sid]
@@ -1227,6 +1505,7 @@ class PygameRenderer:
         # Slice 6: each settlement is now a detailed, GROWING built place — a cached plan of
         # houses + civic structure + a ruler's HALL/CASTLE. Drawn under food/agents (which the
         # caller draws afterwards). Tiny cells fall back to the slice-4 simple-house glyphs.
+        pending_labels: list[tuple[str, int, int, int]] = []
         for sid, center, cx, cy, count, radius_px in towns:
             top_y = cy
             if cell >= _TOWN_MIN_CELL:
@@ -1248,9 +1527,23 @@ class PygameRenderer:
                 top_y = cy - cached[1]["cluster_r"]
             else:
                 self._draw_settlement_houses(cx, cy, radius_px, count, cell)
-            if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
+            pending_labels.append((sid, cx, top_y, count))
+        # Slice 9: labels drawn LAST on a translucent chip, clear of the buildings (above the
+        # cluster), clamped on-map, and nudged upward when two settlements' labels collide.
+        if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
+            placed: list[Any] = []
+            for sid, cx, top_y, count in pending_labels:
                 label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
-                screen.blit(label, (cx - label.get_width() // 2, top_y - label.get_height() - 2))
+                rect = label.get_rect(midbottom=(cx, top_y - 4))
+                rect.left = max(3, min(rect.left, self._map_px - rect.width - 3))
+                rect.top = max(3, rect.top)
+                while any(rect.colliderect(p) for p in placed) and rect.top > 3:
+                    rect.move_ip(0, -(rect.height + 2))         # the later label steps up and away
+                chip = pygame.Surface((rect.width + 6, rect.height + 2), pygame.SRCALPHA)
+                chip.fill((*_HUD_BG, 110))
+                screen.blit(chip, (rect.left - 3, rect.top - 1))
+                screen.blit(label, rect)
+                placed.append(rect)
         # Prune plans for settlements that no longer exist (keeps the cache bounded).
         self._town_plans = {s: v for s, v in self._town_plans.items() if s in settlements}
 
@@ -1288,6 +1581,20 @@ class PygameRenderer:
         for b in plan["buildings"]:                                            # dirt roads to each house
             pygame.draw.line(screen, _PATH, (cx, cy), (cx + b["dx"], cy + b["dy"]), plan["path_w"])
 
+        # Slice 9: GROUND SHADOWS first (one top-left sun) so every structure sits on the earth
+        # rather than floating; cached alpha-stamp blits, drawn under all the buildings.
+        for b in plan["buildings"]:
+            self._blit_shadow(cx + b["dx"], cy + b["dy"] + 1, b["w"] * 1.35, max(3, int(b["h"] * 0.36)))
+        if plan["granary"]:
+            g = plan["granary"]
+            self._blit_shadow(cx + g["dx"], cy + g["dy"] + 1, g["scale"] * 1.4, max(3, int(g["scale"] * 0.4)))
+        if plan["central"]["kind"]:
+            sc = plan["central"]["scale"]
+            self._blit_shadow(cx, cy + 2, sc * (3.4 if plan["central"]["kind"] == "castle" else 2.4),
+                              max(4, int(sc * 0.5)))
+        wl = plan["well"]
+        self._blit_shadow(cx + wl["dx"], cy + wl["dy"] + 1, wl["scale"] * 1.3, max(2, wl["scale"] // 2))
+
         ops: list[tuple[int, str, dict]] = [(b["dy"], "house", b) for b in plan["buildings"]]
         if plan["granary"]:
             ops.append((plan["granary"]["dy"], "granary", plan["granary"]))
@@ -1306,6 +1613,25 @@ class PygameRenderer:
         w = plan["well"]
         self._draw_well(cx + w["dx"], cy + w["dy"], w["scale"])
 
+        # Slice 9: CHIMNEY SMOKE — the lit (occupied) dwellings breathe; a hash picks which
+        # hearths are burning, and smoke_puffs (pure) drives the rise/drift/fade per frame.
+        for b in plan["buildings"]:
+            if not b["lit"] or b["h"] < 7 or b["w"] < 9:
+                continue
+            if terrain_noise(b["dx"], b["dy"], 61) < 0.45:
+                continue
+            gx, gy = cx + b["dx"], cy + b["dy"]
+            half = max(2, b["w"] // 2)
+            roof_h = max(3, int(b["h"] * 0.7))
+            cw = max(1, b["w"] // 6)
+            chx = gx + half - cw - 1 + cw // 2                  # matches the drawn chimney
+            chy = gy - b["h"] - roof_h // 2 - 1
+            for dx, dy, r, alpha in smoke_puffs(self._frame, gx, gy):
+                if alpha > 0:
+                    stamp = self._soft_stamp(r, _SMOKE, alpha)
+                    screen.blit(stamp, (chx + dx - stamp.get_width() // 2,
+                                        chy + dy - stamp.get_height() // 2))
+
     def _draw_building(self, gx: int, gy: int, w: int, h: int, wall: tuple, roof: tuple,
                        hip: bool, lit: bool) -> None:
         """A detailed house at ground-centre (gx, gy): walls, gabled/hip roof + shading, door,
@@ -1314,6 +1640,14 @@ class PygameRenderer:
         half = max(2, w // 2)
         wall_rect = pygame.Rect(gx - half, gy - h, 2 * half, h)
         pygame.draw.rect(s, wall, wall_rect)
+        # Slice 9: one consistent top-left sun — the right face falls into shade, the left
+        # edge catches light (the roof's sun-away slope was already darkened; now unified).
+        face_w = max(1, wall_rect.width // 3)
+        pygame.draw.rect(s, _shade(wall, _FACE_SHADE),
+                         (wall_rect.right - face_w, wall_rect.top, face_w, wall_rect.height))
+        pygame.draw.line(s, _shade(wall, _FACE_LIGHT),
+                         (wall_rect.left + 1, wall_rect.top + 1),
+                         (wall_rect.left + 1, wall_rect.bottom - 2), 1)
         pygame.draw.rect(s, _OUTLINE, wall_rect, 1)
         roof_h = max(3, int(h * 0.7))
         rtop = wall_rect.top
@@ -1331,7 +1665,9 @@ class PygameRenderer:
         dw, dh = max(2, w // 4), max(3, h // 2)                               # door
         pygame.draw.rect(s, _DOOR, (gx - dw // 2, gy - dh, dw, dh))
         if w >= 9:                                                            # windows
-            win = _WINDOW_LIT if lit else _WINDOW_DARK
+            # Slice 9: a lit window FLICKERS — a subtle hearth-light brightness oscillation.
+            win = (_shade(_WINDOW_LIT, int(5 * math.sin(self._frame * 0.35 + gx * 0.7)))
+                   if lit else _WINDOW_DARK)
             wsz = max(2, w // 5)
             pygame.draw.rect(s, win, (gx - half + 2, gy - h + 2, wsz, wsz))
             pygame.draw.rect(s, win, (gx + half - 2 - wsz, gy - h + 2, wsz, wsz))
@@ -1357,16 +1693,23 @@ class PygameRenderer:
         kh = max(12, int(scale * (2.8 if emperor else 2.3)))
         tw = max(5, int(scale * 0.95))
         th = int(kh * 0.82)
-        for sx in (cx - kw // 2 - tw // 2 + 1, cx + kw // 2 + tw // 2 - 1):   # two flanking towers
+        # Slice 9: the top-left sun — the WEST tower stands lit, the EAST tower in shade.
+        towers = ((cx - kw // 2 - tw // 2 + 1, _CASTLE_STONE),
+                  (cx + kw // 2 + tw // 2 - 1, _CASTLE_STONE_DK))
+        for sx, tone in towers:
             trect = pygame.Rect(sx - tw // 2, cy - th, tw, th)
-            pygame.draw.rect(s, _CASTLE_STONE_DK, trect)
+            pygame.draw.rect(s, tone, trect)
             pygame.draw.rect(s, _OUTLINE, trect, 1)
-            self._crenellate(trect.left, trect.top, tw, _CASTLE_STONE)
+            self._crenellate(trect.left, trect.top, tw, _shade(tone, 20))
             pygame.draw.polygon(s, color, [(trect.left - 1, trect.top - 2),  # conical roof in ruler colour
                                            (trect.right + 1, trect.top - 2),
                                            (sx, trect.top - tw)])
         keep = pygame.Rect(cx - kw // 2, cy - kh, kw, kh)                     # the central keep
         pygame.draw.rect(s, _CASTLE_STONE, keep)
+        face_w = max(1, kw // 3)                                              # sun-away facet
+        pygame.draw.rect(s, _shade(_CASTLE_STONE, _FACE_SHADE), (keep.right - face_w, keep.top, face_w, kh))
+        pygame.draw.line(s, _shade(_CASTLE_STONE, _FACE_LIGHT),
+                         (keep.left + 1, keep.top + 1), (keep.left + 1, keep.bottom - 2), 1)
         pygame.draw.rect(s, _OUTLINE, keep, 1)
         self._crenellate(keep.left, keep.top, kw, _CASTLE_STONE_DK)
         gw, gh = max(3, kw // 3), max(4, kh // 3)                             # gate
@@ -1376,10 +1719,15 @@ class PygameRenderer:
             pygame.draw.rect(s, _WINDOW_DARK, (cx - 1, wy, 2, max(2, kh // 6)))
         pole_top = keep.top - max(4, scale)                                   # banner pole + pennant
         pygame.draw.line(s, _OUTLINE, (cx, keep.top), (cx, pole_top), 1)
-        pygame.draw.polygon(s, color, [(cx, pole_top), (cx + scale, pole_top + 2), (cx, pole_top + 5)])
+        # Slice 9: the pennant FLUTTERS (tip riding a gentle frame-clock sine) and its upper
+        # edge carries a highlight rim — royalty catches the light.
+        fl = int(round(math.sin(self._frame * 0.3 + cx * 0.2) * 1.5))
+        tip = (cx + scale, pole_top + 2 + fl)
+        pygame.draw.polygon(s, color, [(cx, pole_top), tip, (cx, pole_top + 5)])
+        pygame.draw.line(s, _shade(color, 55), (cx, pole_top), tip, 1)
         if emperor:
-            pygame.draw.polygon(s, _shade(color, 30),
-                                [(cx, pole_top + 5), (cx + scale - 2, pole_top + 7), (cx, pole_top + 10)])
+            tip2 = (cx + scale - 2, pole_top + 7 - fl)
+            pygame.draw.polygon(s, _shade(color, 30), [(cx, pole_top + 5), tip2, (cx, pole_top + 10)])
 
     def _draw_hall(self, cx: int, cy: int, scale: int, color: tuple) -> None:
         """A trust-leader's HALL: a longhouse larger than a hut, with a big gabled roof, a double
@@ -1392,9 +1740,12 @@ class PygameRenderer:
         pygame.draw.line(s, _shade(_DOOR, 30), (cx, cy - max(4, h // 2)), (cx, cy), 1)
         peak = cy - h - max(3, int(h * 0.7))
         pygame.draw.line(s, _OUTLINE, (cx, peak), (cx, peak - max(4, scale)), 1)  # pennant pole
-        pygame.draw.polygon(s, color, [(cx, peak - max(4, scale)),
-                                       (cx + max(4, scale - 1), peak - max(4, scale) + 2),
-                                       (cx, peak - max(4, scale) + 5)])
+        # Slice 9: the leader's pennant flutters gently too, with a lit upper edge.
+        fl = int(round(math.sin(self._frame * 0.3 + cx * 0.2) * 1.5))
+        top = peak - max(4, scale)
+        tip = (cx + max(4, scale - 1), top + 2 + fl)
+        pygame.draw.polygon(s, color, [(cx, top), tip, (cx, top + 5)])
+        pygame.draw.line(s, _shade(color, 55), (cx, top), tip, 1)
 
     def _draw_granary(self, gx: int, gy: int, scale: int) -> None:
         """A granary: a stout light-walled store with a tall conical roof, set near the fields."""
@@ -1436,11 +1787,11 @@ class PygameRenderer:
             pygame.draw.circle(s, _shade(_FENCE, 18), (x, y), 1)
             prev = (x, y)
 
-    def _draw_hud(self, state: dict[str, Any], grid_px: int, paused: bool,
+    def _draw_hud(self, state: dict[str, Any], map_px: int, paused: bool,
                   in_battle: bool = False) -> None:
-        """A one-line status strip under the grid (turn / living / food / pause / battle)."""
+        """A one-line status strip under the map zone (turn / living / food / pause / battle)."""
         screen = self._screen
-        pygame.draw.rect(screen, _HUD_BG, (0, grid_px, grid_px, _HUD_H))
+        pygame.draw.rect(screen, _HUD_BG, (0, map_px, map_px, _HUD_H))
         if self._font is None:
             return
         turn = state.get("turn", 0)
@@ -1454,11 +1805,11 @@ class PygameRenderer:
         if paused:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)
-        screen.blit(label, (8, grid_px + (_HUD_H - label.get_height()) // 2))
+        screen.blit(label, (8, map_px + (_HUD_H - label.get_height()) // 2))
         if in_battle:  # slice 8: a small indicator while a battle cinematic plays
             chip = self._font.render("BATTLE — any key skips", True, _BATTLE_CHIP)
-            screen.blit(chip, (grid_px - chip.get_width() - 8,
-                               grid_px + (_HUD_H - chip.get_height()) // 2))
+            screen.blit(chip, (map_px - chip.get_width() - 8,
+                               map_px + (_HUD_H - chip.get_height()) // 2))
 
     # -- Slice 3: the right sidebar (state summary + event feed) ------------
     def _stat_lines(self, state: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1485,7 +1836,7 @@ class PygameRenderer:
         cols = max(8, inner_w // char_w)
         return wrap_events(state.get("events") or [], cols, max_rows)
 
-    def _draw_panel(self, state: dict[str, Any], grid_px: int) -> None:
+    def _draw_panel(self, state: dict[str, Any], map_px: int) -> None:
         """Draw the right sidebar: a STATE summary above a scrolling EVENT feed (READ only).
 
         Top block = current-state counts (turn/living/food + settlements/kingdoms/empires
@@ -1495,8 +1846,8 @@ class PygameRenderer:
         """
         screen = self._screen
         font = self._font
-        win_h = grid_px + _HUD_H
-        x0, pad = grid_px, _PANEL_PAD
+        win_h = map_px + _HUD_H
+        x0, pad = map_px, _PANEL_PAD
         inner_w = _PANEL_W - 2 * pad
         pygame.draw.rect(screen, _PANEL_BG, (x0, 0, _PANEL_W, win_h))
         if font is None:
@@ -1592,6 +1943,7 @@ class PygameRenderer:
     def _draw_soldier(self, x: float, y: float, color: tuple, facing_right: bool) -> None:
         """An armed soldier: the slice-4 figure in its side's realm colour, carrying a spear."""
         r = max(3, int(self._cell * 0.30))
+        self._blit_shadow(x, y + r, r * 2.0, max(2, int(r * 0.8)))  # slice 9: grounded like all figures
         top = self._draw_agent_figure(int(x), int(y), r, color)
         sx = int(x) + (r + 1 if facing_right else -(r + 1))
         tip_y = top - max(2, r // 2)
@@ -1623,21 +1975,21 @@ class PygameRenderer:
 
     def _draw_banner(self, text: str, fade: float) -> None:
         """The aftermath outcome banner: a translucent band across the map with the verdict."""
-        grid_px = self._cell * self._size
+        map_px = self._map_px
         band_h = max(36, self._cell * 2)
-        y0 = (grid_px - band_h) // 2
-        band = pygame.Surface((grid_px, band_h), pygame.SRCALPHA)
+        y0 = (map_px - band_h) // 2
+        band = pygame.Surface((map_px, band_h), pygame.SRCALPHA)
         band.fill((*_BANNER_BG, int(210 * max(0.0, min(1.0, fade)))))
         self._screen.blit(band, (0, y0))
-        pygame.draw.line(self._screen, _CROWN, (6, y0), (grid_px - 6, y0), 1)
-        pygame.draw.line(self._screen, _CROWN, (6, y0 + band_h), (grid_px - 6, y0 + band_h), 1)
+        pygame.draw.line(self._screen, _CROWN, (6, y0), (map_px - 6, y0), 1)
+        pygame.draw.line(self._screen, _CROWN, (6, y0 + band_h), (map_px - 6, y0 + band_h), 1)
         font = self._big_font or self._font
         if font is None:
             return
         label = font.render(text, True, _BANNER_FG)
-        if label.get_width() > grid_px - 16 and self._font is not None:
+        if label.get_width() > map_px - 16 and self._font is not None:
             label = self._font.render(text, True, _BANNER_FG)   # long verdicts drop to the small face
-        self._screen.blit(label, ((grid_px - label.get_width()) // 2,
+        self._screen.blit(label, ((map_px - label.get_width()) // 2,
                                   y0 + (band_h - label.get_height()) // 2))
 
     def _draw_battle_overlay(self, scene: dict[str, Any], el: float) -> None:
