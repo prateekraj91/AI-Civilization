@@ -4320,6 +4320,155 @@ def test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only() -> None:
     print("PASS test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only")
 
 
+def test_pygame_time_of_day_pure_periodic_and_smooth() -> None:
+    """Slice 10: the day-cycle clock is a PURE function of the turn — periodic, in [0, 1),
+    the four phases appear in order across a day, and the daylight curve has no
+    discontinuity anywhere (including the midnight wrap). Zero RNG touched.
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import (time_of_day, daylight_factor, phase_name,
+                                              _TURNS_PER_DAY)
+    except ImportError:
+        print("PASS test_pygame_time_of_day_pure_periodic_and_smooth (skipped: no pygame)")
+        return
+    s0 = _random.getstate()
+    for t in (0, 1, 7, 12.5, 23, 24, 100, 1000):
+        p = time_of_day(t)
+        assert 0.0 <= p < 1.0, f"phase out of range at turn {t}"
+        assert p == time_of_day(t), "the clock is pure"
+        assert abs(p - time_of_day(t + _TURNS_PER_DAY)) < 1e-9 and \
+            abs(p - time_of_day(t + 5 * _TURNS_PER_DAY)) < 1e-9, "the clock is periodic"
+    # The four phases appear once each, in order, across one full day.
+    names = [phase_name(time_of_day(i * _TURNS_PER_DAY / 400)) for i in range(400)]
+    runs = [n for i, n in enumerate(names) if i == 0 or names[i - 1] != n]
+    assert runs == ["dawn", "day", "dusk", "night"], f"phase order broke: {runs}"
+    # Daylight: full at midday, zero at deep night, SMOOTH on a fine grid spanning the wrap.
+    assert daylight_factor(0.35) == 1.0 and daylight_factor(0.85) == 0.0
+    samples = [daylight_factor((i / 4000) % 1.0) for i in range(-200, 4200)]
+    worst = max(abs(samples[i + 1] - samples[i]) for i in range(len(samples) - 1))
+    assert worst < 0.01, f"daylight curve jumps by {worst} — a hard switch somewhere"
+    assert all(0.0 <= v <= 1.0 for v in samples), "daylight factor stays in [0, 1]"
+    assert _random.getstate() == s0, "the day/night clock touched the global RNG stream"
+    print("PASS test_pygame_time_of_day_pure_periodic_and_smooth")
+
+
+def test_pygame_phase_grade_interpolation_bounded() -> None:
+    """Slice 10: the phase-driven scene grade interpolates CONTINUOUSLY and stays bounded —
+    sane RGB everywhere, alpha between the day and deep-night grades, seamless at the wrap,
+    midday exactly the slice-9 daylight tint, deep night a cool blue-dark. The companion
+    helpers (dawn wash bump, night muting, star field) are pure and bounded too.
+    """
+    try:
+        from renderer.pygame_renderer import (phase_tint, dawn_wash_factor, night_mute,
+                                              star_field, PALETTE, _GRADE_ALPHA,
+                                              _NIGHT_GRADE_A, _PH_DAWN_END)
+    except ImportError:
+        print("PASS test_pygame_phase_grade_interpolation_bounded (skipped: no pygame)")
+        return
+    prev = None
+    for i in range(2001):
+        rgb, a = phase_tint((i / 2000) % 1.0)
+        assert all(0 <= c <= 255 for c in rgb), "grade colour out of RGB range"
+        assert _GRADE_ALPHA <= a <= _NIGHT_GRADE_A, "grade alpha out of its band"
+        if prev is not None:
+            assert max(abs(rgb[j] - prev[0][j]) for j in range(3)) <= 5 and \
+                abs(a - prev[1]) <= 4, f"grade jumps near phase {i / 2000}"
+        prev = (rgb, a)
+    assert phase_tint(0.0) == phase_tint(0.9999999), "the midnight wrap must be seamless"
+    assert phase_tint(0.35) == (PALETTE["daylight"], _GRADE_ALPHA), \
+        "midday holds the slice-9 daylight grade exactly"
+    ntint, na = phase_tint(0.85)
+    assert na == _NIGHT_GRADE_A and ntint[2] > ntint[0], "deep night is a cool blue-dark"
+    # The sunrise wash: a smooth bump peaking mid-dawn, zero outside (and at) the band edges.
+    assert dawn_wash_factor(_PH_DAWN_END / 2) > 0.99
+    assert dawn_wash_factor(0.0) < 0.02 and dawn_wash_factor(_PH_DAWN_END - 1e-9) < 0.02
+    assert dawn_wash_factor(0.35) == 0.0 and dawn_wash_factor(0.85) == 0.0
+    # Night muting: identity by day, strictly dimmer at deep night, always a sane RGB.
+    c = (196, 84, 70)
+    assert night_mute(c, 0.0) == c, "daytime colours are untouched"
+    m = night_mute(c, 1.0)
+    assert sum(m) < sum(c) and all(0 <= v <= 255 for v in m), "night muting dims sanely"
+    # The star field: pure, in-bounds, tiny sizes.
+    st = star_field(760)
+    assert st and st == star_field(760), "the star field is deterministic"
+    assert all(0 <= x <= 760 and 0 <= y <= 760 and s in (1, 2) for x, y, s in st)
+    print("PASS test_pygame_phase_grade_interpolation_bounded")
+
+
+def test_pygame_night_draw_is_read_only_and_lights_the_dark() -> None:
+    """Slice 10: a NIGHT frame (a turn deep in the night band) is still a pure READ — and it
+    actually transforms the scene: the grade goes cool-dark, stars sit on the water, the
+    castle raises torches and lit windows register their glow, while a night BATTLE frame
+    (clash + banner beats) still draws over it all. Headless SDL-dummy; skips without pygame.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import (PygameRenderer, time_of_day, daylight_factor,
+                                              _TURNS_PER_DAY)
+    except ImportError:
+        print("PASS test_pygame_night_draw_is_read_only_and_lights_the_dark (skipped: no pygame)")
+        return
+    night_turn = int(_TURNS_PER_DAY * 0.85)          # deep in the night band, any day
+    assert daylight_factor(time_of_day(night_turn)) == 0.0, "the chosen turn must be night"
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0)
+               for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": 24, "turn": night_turn, "food": [(2, 2), (9, 9)],
+        "settlements": {
+            "S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2},
+            "S002": {"id": "S002", "center": (13, 12), "members": {"K"}, "founded": 5},
+        },
+        "leaders": {"S001": {"leader": "a", "followers": {"b"}, "since": 3}},
+        "monarchs": {"S002": {"monarch": "K", "since": 8, "garrison": set()}},
+        "kingdoms": {"K": {"home": "S002", "settlements": {"S002"}, "vassals": {}}},
+        "empires": {},
+        "events": [f"turn {night_turn}: a talked to b: \"hi\""],
+        "agents": list(village.values()) + [
+            _FakeAgent("K", "independent and competitive", (13, 12), True, 300.0, 0.0)],
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(state["size"])
+        assert r._stars, "star candidates landed on the water at build time"
+        assert r._dawn_wash is not None, "the sunrise wash is baked once per screen"
+        for _ in range(4):                            # several animated night frames
+            r._draw(state)
+        assert r._phase == time_of_day(night_turn) and r._nf == 1.0, \
+            "the frame's phase derives purely from the sim turn"
+        tint, a = r._grade_tint
+        assert tint[2] > tint[0] and a >= 100, "the night grade is a deep cool blue"
+        assert r._grade.get_size() == (r._map_px, r._map_px), \
+            "the grade covers the MAP only — HUD and panel stay ungraded UI"
+        kinds = {light[0] for light in r._frame_lights}
+        assert "torch" in kinds, "the castle raises torchlight at night"
+        assert "window" in kinds, "lit windows register their glow at night"
+        # A NIGHT BATTLE still reads: clash and banner beats draw fine over the dark scene.
+        scene = {"kind": "conquest", "attacker": "K", "defender": "S001", "won": True,
+                 "att_pos": (13, 12), "def_pos": (6, 6), "n_att": 6, "n_def": 4,
+                 "att_color": (196, 84, 70), "def_color": (86, 132, 214),
+                 "att_dead": [("z", (7, 7))], "def_dead": [("b", (6, 6))],
+                 "banner": "K SEIZES S001 — MONARCH by force", "territory": []}
+        r._draw(state, battle=(scene, 2.8))           # mid-clash
+        r._draw(state, battle=(scene, 4.0))           # the outcome banner
+        # A mid-walk frame keeps the phase gliding (fractional turn), still read-only.
+        r._draw(state, motion=({"a": (6, 5)}, 0.5))
+        assert 0.0 <= r._phase < 1.0
+    finally:
+        pygame.quit()
+    assert {k: state[k] for k in state if k != "agents"} == before, \
+        "the night draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "the night draw mutated an agent"
+    print("PASS test_pygame_night_draw_is_read_only_and_lights_the_dark")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4839,6 +4988,9 @@ def main_runner() -> None:
         test_pygame_palette_is_centralized_and_scene_constants_derive,
         test_pygame_ambient_helpers_pure_bounded_and_rng_free,
         test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only,
+        test_pygame_time_of_day_pure_periodic_and_smooth,
+        test_pygame_phase_grade_interpolation_bounded,
+        test_pygame_night_draw_is_read_only_and_lights_the_dark,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

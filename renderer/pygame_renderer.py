@@ -25,6 +25,12 @@ top-left sun with ground shadows and lit/shaded building faces, a single central
 PALETTE (calm earthy base; rulers/war stay saturated and pop), ambient life (chimney
 smoke, wheat sway, water shimmer, birds, banner flutter, window flicker) on a
 renderer-local frame clock, and a warm daylight grade tying the scene together.
+Slice 10 — DAY/NIGHT CYCLE: time of day derives PURELY from the sim turn
+(dawn -> day -> dusk -> night, ~24 turns per day), a continuously interpolated
+colour grade sweeps the whole map through golden dawns, neutral days, burning
+dusks and deep blue nights; at night the lit windows GLOW, castles raise
+torchlight, stars mirror on the water, shadows fade, and realm/figure colours
+mute so the lights carry the scene — while battles stay bright and readable.
 
 ARCHITECTURE RULE (same boundary as the text renderer, obeyed strictly)
 -----------------------------------------------------------------------
@@ -131,6 +137,15 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "smoke": (206, 202, 194),
     "bird": (52, 56, 50),
     "daylight": (255, 214, 156),       # the warm full-scene grade (very low alpha)
+    # slice 10: the day/night cycle
+    "night": (13, 22, 54),             # the deep cool blue-dark night grade
+    "dawn_gold": (255, 196, 112),      # the dawn grade + the directional sunrise wash
+    "dusk_ember": (255, 134, 88),      # the burning orange/pink dusk grade
+    "starlight": (222, 230, 250),      # stars mirrored on the night water
+    "window_glow": (255, 186, 92),     # the halo around a lit window at night
+    "torch_flame": (255, 168, 64),     # torch flame + its warm halo
+    "torch_core": (255, 232, 158),     # the white-hot torch heart
+    "moon_smoke": (222, 230, 244),     # chimney smoke catching the moonlight
 }
 _TRAIT_DESAT = 0.22                    # how far commoner figures step toward the earth tones
 
@@ -289,6 +304,26 @@ _BIRD_WINDOW = 240                # frames per bird-flight window (~4s at 60fps)
 _BIRD_CHANCE = 0.72               # noise threshold: most windows have NO birds ("every so often")
 _FACE_SHADE = -14                 # how much a building's sun-away face darkens
 _FACE_LIGHT = 16                  # how much its sun-side edge lightens
+
+# Slice 10: DAY/NIGHT CYCLE. Time of day derives PURELY from the sim TURN (one day =
+# _TURNS_PER_DAY turns): `time_of_day(turn)` -> a phase in [0,1) that drives EVERYTHING —
+# the full-scene grade (keyframe-interpolated, never a hard switch), the directional dawn
+# wash, star/torch/window-glow intensity, shadow fading and colour muting. No new state,
+# no RNG: the same seeded run always has the same nights. The slice-9 static daylight
+# grade becomes one keyframe of this cycle; the grade SURFACE stays cached and is only
+# REFILLED when the interpolated tint changes (never rebuilt per frame).
+_TURNS_PER_DAY = 24               # sim turns per full day/night cycle (tunable)
+_PH_DAWN_END = 0.15               # dawn  [0.00, 0.15) — night brightens into gold
+_PH_DAY_END = 0.55                # day   [0.15, 0.55) — the slice-9 neutral daylight
+_PH_DUSK_END = 0.70               # dusk  [0.55, 0.70) — gold burns down into night
+_NIGHT_GRADE_A = 118              # the deep-night grade alpha (day keeps _GRADE_ALPHA)
+_DAWN_GRADE_A = 44                # the mid-dawn gold grade alpha
+_DUSK_GRADE_A = 58                # the mid-dusk ember grade alpha
+_DAWN_WASH_MAX_A = 46             # the directional sunrise wash at its mid-dawn peak
+_STAR_COUNT = 320                 # hashed star candidates; only those on WATER are kept
+_NIGHT_EPS = 0.02                 # below this night factor the lights pass is skipped
+_SHADOW_NIGHT_KEEP = 0.30         # fraction of shadow alpha kept at deep night (sun-cast)
+_NIGHT_MUTE_MAX = 0.75            # how far commoner/realm colours step into the dark
 
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
@@ -840,6 +875,125 @@ def ambient_birds(frame: int, map_px: int) -> list[tuple[float, float, float]]:
     return out
 
 
+# --- Slice 10: pure day/night helpers (phase from the TURN; zero state, zero sim RNG) -----
+def time_of_day(turn: float) -> float:
+    """The day-cycle phase in [0, 1) for a (possibly fractional) turn number (pure).
+
+    One full day = _TURNS_PER_DAY turns; the renderer passes a fractional turn while the
+    inter-turn walk animation plays so the light GLIDES rather than stepping per turn.
+    Periodic by construction: time_of_day(t) == time_of_day(t + _TURNS_PER_DAY), forever.
+    """
+    return (float(turn) / _TURNS_PER_DAY) % 1.0
+
+
+def daylight_factor(phase: float) -> float:
+    """How much SUN is on the scene at `phase`: 1.0 at midday, 0.0 at deep night (pure).
+
+    Smoothstep ramps span the whole dawn and dusk bands, so the curve is continuous
+    everywhere — including the midnight wrap (0 at phase->1⁻ and 0 at phase 0). Drives
+    shadow strength, colour muting (via its complement, the night factor) and gates the
+    daytime-only ambience (birds).
+    """
+    p = phase % 1.0
+    if p < _PH_DAWN_END:
+        return ease(p / _PH_DAWN_END)
+    if p < _PH_DAY_END:
+        return 1.0
+    if p < _PH_DUSK_END:
+        return 1.0 - ease((p - _PH_DAY_END) / (_PH_DUSK_END - _PH_DAY_END))
+    return 0.0
+
+
+def phase_name(phase: float) -> str:
+    """The human name of the band `phase` falls in — dawn / day / dusk / night (pure)."""
+    p = phase % 1.0
+    if p < _PH_DAWN_END:
+        return "dawn"
+    if p < _PH_DAY_END:
+        return "day"
+    if p < _PH_DUSK_END:
+        return "dusk"
+    return "night"
+
+
+# The grade keyframes: (phase, PALETTE key, alpha). Interpolation eases between neighbours,
+# and the first/last keys are identical so the midnight wrap is seamless. Midday holds the
+# slice-9 daylight tint exactly, so a noon frame looks the way slice 9 always did.
+_TINT_KEYS: tuple[tuple[float, str, int], ...] = (
+    (0.000, "night", _NIGHT_GRADE_A),
+    (0.075, "dawn_gold", _DAWN_GRADE_A),      # mid-dawn: the golden hour
+    (0.150, "daylight", _GRADE_ALPHA),
+    (0.550, "daylight", _GRADE_ALPHA),
+    (0.625, "dusk_ember", _DUSK_GRADE_A),     # mid-dusk: the sky burns
+    (0.700, "night", _NIGHT_GRADE_A),
+    (1.000, "night", _NIGHT_GRADE_A),
+)
+
+
+def phase_tint(phase: float) -> tuple[tuple[int, int, int], int]:
+    """The full-scene grade at `phase` -> ((r, g, b), alpha), keyframe-interpolated (pure).
+
+    Eased lerp between the _TINT_KEYS neighbours bracketing `phase`: warm gold at dawn,
+    the neutral slice-9 daylight through the day, orange/pink at dusk, a deep cool
+    blue-dark through the night — never a hard switch, seamless at the wrap.
+    """
+    p = phase % 1.0
+    for i in range(len(_TINT_KEYS) - 1):
+        p0, key0, a0 = _TINT_KEYS[i]
+        p1, key1, a1 = _TINT_KEYS[i + 1]
+        if p0 <= p <= p1:
+            t = ease((p - p0) / (p1 - p0)) if p1 > p0 else 0.0
+            return (lerp_color(PALETTE[key0], PALETTE[key1], t),
+                    int(round(a0 + (a1 - a0) * t)))
+    return PALETTE[_TINT_KEYS[-1][1]], _TINT_KEYS[-1][2]  # pragma: no cover - p is always bracketed
+
+
+def dawn_wash_factor(phase: float) -> float:
+    """The strength of the directional SUNRISE wash: a smooth bump peaking mid-dawn (pure).
+
+    Zero everywhere outside the dawn band (and zero AT both band edges, so the wash fades
+    in from night and fully dissolves into plain day — no pop).
+    """
+    p = phase % 1.0
+    if p >= _PH_DAWN_END:
+        return 0.0
+    return math.sin(math.pi * (p / _PH_DAWN_END))
+
+
+def night_mute(color: tuple[int, int, int], nf: float) -> tuple[int, int, int]:
+    """Dim + gently desaturate a colour into the dark by night factor `nf` in [0,1] (pure).
+
+    Identity at nf=0 (daytime colours untouched); at deep night, commoner figures and realm
+    territory step back toward shadow so the lit windows and torches carry the scene.
+    """
+    t = _NIGHT_MUTE_MAX * max(0.0, min(1.0, nf))
+    return lerp_color(color, _desat(_shade(color, -70), 0.45), t)
+
+
+def star_field(map_px: int, n: int = _STAR_COUNT) -> list[tuple[int, int, int]]:
+    """`n` hash-placed star candidates over the map zone -> (x, y, size) (pure, RNG-free).
+
+    Candidates cover the WHOLE zone; the renderer keeps only those landing on WATER (the
+    sea margin and the pond), so the top-down night sky appears as reflections and the
+    land stays readable. Same map size -> the same stars, forever.
+    """
+    out = []
+    for k in range(n):
+        x = int(terrain_noise(k, 1, 57) * max(1, map_px))
+        y = int(terrain_noise(k, 2, 57) * max(1, map_px))
+        out.append((x, y, 1 if terrain_noise(k, 3, 57) < 0.85 else 2))
+    return out
+
+
+def _q8(a: float) -> int:
+    """Quantize an alpha to a multiple of 8, clamped to [0, 255] (pure).
+
+    The night-light halos are cached surfaces keyed by (radius, colour, alpha); quantizing
+    the continuously-fading alpha keeps that cache small and bounded.
+    """
+    return max(0, min(255, int(a))) & ~7
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -876,7 +1030,17 @@ class PygameRenderer:
         self._frame = 0                                    # ambient-life clock (per drawn frame)
         self._stamps: dict[tuple, Any] = {}                # cached shadow/smoke alpha stamps
         self._pond: tuple | None = None                    # baked pond geometry, for the shimmer
-        self._grade: Any = None                            # cached warm daylight tint overlay
+        self._grade: Any = None                            # cached full-scene grade overlay
+        # Slice 10: DAY/NIGHT — the current frame's light, DERIVED inside _draw from the sim
+        # turn (never stored in world_state). Defaults are midday so pre-frame calls (terrain
+        # baking, tests poking single methods) behave exactly like slice 9.
+        self._phase = 0.35                                 # day-cycle phase in [0,1)
+        self._dl = 1.0                                     # daylight factor (1 midday, 0 night)
+        self._nf = 0.0                                     # night factor = 1 - daylight
+        self._grade_tint: tuple | None = None              # the tint the grade is filled with
+        self._dawn_wash: Any = None                        # cached directional sunrise gradient
+        self._stars: list[tuple[int, int, int]] = []       # star candidates that landed on water
+        self._frame_lights: list[tuple] = []               # this frame's (kind, x, y, size) lights
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -915,6 +1079,10 @@ class PygameRenderer:
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
         self._terrain_bg = self._build_terrain()
         self._grade = self._build_grade()
+        # Slice 10: the sunrise wash and the water-borne starfield are geometry-dependent,
+        # so they are (re)built here with the terrain — pure hash, cached, never per frame.
+        self._dawn_wash = self._build_dawn_wash()
+        self._stars = self._build_stars()
         self._stamps = {}
         # Slice 6: town plans hold pixel offsets, so a resize (new cell size) invalidates them.
         self._town_plans = {}
@@ -1009,6 +1177,16 @@ class PygameRenderer:
         # Slice 9: the ambient-life clock — one tick per DRAWN frame (renderer-local; the sim
         # never sees it), driving smoke/sway/shimmer/birds/flutter/flicker phases.
         self._frame = (self._frame + 1) % (1 << 20)
+        # Slice 10: the DAY/NIGHT clock — the phase derives PURELY from the sim turn (made
+        # fractional mid-walk so the light glides through the inter-turn animation rather
+        # than stepping). Everything below reads these three derived values; nothing writes.
+        turn_f = float(state.get("turn", 0))
+        if motion is not None:
+            turn_f += -1.0 + max(0.0, min(1.0, motion[1]))
+        self._phase = time_of_day(turn_f)
+        self._dl = daylight_factor(self._phase)
+        self._nf = 1.0 - self._dl
+        self._frame_lights = []           # towns register window/torch lights as they draw
 
         # Slice 5/9: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
         # coast + pond + vignette) under everything, blitted not rebuilt. Fallback flat fill.
@@ -1045,23 +1223,40 @@ class PygameRenderer:
                 continue
             cx, cy = self._agent_px(agent, motion)  # slice 8: mid-walk lerp when motion plays
             r = agent_radius(_wealth(agent), cell)
-            color = agent_color(getattr(agent, "personality", ""))
+            # Slice 10: figures step back into the dark at night (identity by day).
+            color = night_mute(agent_color(getattr(agent, "personality", "")), self._nf)
             self._blit_shadow(cx, cy + r, r * 2.1, max(2, int(r * 0.8)))  # slice 9: grounded
             figure_top = self._draw_agent_figure(cx, cy, r, color)
             self._draw_role_marker(cx, figure_top, r, agent_role(agent.name, state))
             if agent.name in talkers:
                 self._draw_speech_bubble(cx + r + 1, figure_top, r)
 
-        # Slice 8: the battle cinematic overlay (soldiers/dust/clash/fallen/banner), drawn over
-        # the map but under the HUD/panel so the feed stays readable while a scene plays.
+        # Slice 9/10: occasional birds (a daytime ambience — they roost as dusk falls), then
+        # the full-scene grade. Slice 10 turns the static daylight tint into the day/night
+        # cycle: the cached grade surface is REFILLED (never rebuilt) whenever the phase
+        # tint moves, and blitted over the whole map zone (the HUD/panel stay ungraded).
+        if self._dl > 0.35:
+            self._draw_birds()
+        if self._grade is not None:
+            tint = phase_tint(self._phase)
+            if tint != self._grade_tint:
+                self._grade.fill((*tint[0], tint[1]))
+                self._grade_tint = tint
+            screen.blit(self._grade, (0, 0))
+        # Slice 10: the directional sunrise wash — gold pouring in from the sun side.
+        wash = dawn_wash_factor(self._phase)
+        if wash > 0.01 and self._dawn_wash is not None:
+            self._dawn_wash.set_alpha(int(255 * wash))
+            screen.blit(self._dawn_wash, (0, 0))
+        # Slice 10: the NIGHT LIGHTS pierce the grade — stars on the water, window glow,
+        # torchlight — so towns twinkle in the dark instead of drowning in it.
+        self._draw_night_lights()
+
+        # Slice 8: the battle cinematic overlay (soldiers/dust/clash/fallen/banner) — drawn
+        # ABOVE the grade since slice 10, so a night battle stays vivid and readable (the
+        # clash flashes and the outcome banner never dim with the scene).
         if battle is not None:
             self._draw_battle_overlay(*battle)
-
-        # Slice 9: occasional birds over everything, then the warm daylight grade tying the
-        # whole scene (terrain, towns, figures, even a playing battle) into one light.
-        self._draw_birds()
-        if self._grade is not None:
-            screen.blit(self._grade, (0, 0))
 
         self._draw_hud(state, map_px, paused, in_battle=battle is not None)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
@@ -1178,12 +1373,84 @@ class PygameRenderer:
         return surf
 
     def _build_grade(self) -> Any:
-        """The cached warm DAYLIGHT grade: one very-low-alpha tint blitted over the map zone."""
+        """The cached full-scene GRADE surface (slice 10: refilled — never rebuilt — whenever
+        the interpolated phase tint changes; it starts on the current phase's tint)."""
         if self._map_px <= 0:
             return None
         grade = pygame.Surface((self._map_px, self._map_px), pygame.SRCALPHA)
-        grade.fill((*PALETTE["daylight"], _GRADE_ALPHA))
+        tint = phase_tint(self._phase)
+        grade.fill((*tint[0], tint[1]))
+        self._grade_tint = tint
         return grade
+
+    def _build_dawn_wash(self) -> Any:
+        """The cached directional SUNRISE wash: a soft gold gradient strongest at the sun-side
+        (west) edge, baked once; per frame only its surface alpha scales with dawn_wash_factor,
+        so dawn pours in gradually and dissolves into plain day with zero rebuild cost."""
+        if self._map_px <= 0:
+            return None
+        wash = pygame.Surface((self._map_px, self._map_px), pygame.SRCALPHA)
+        strips = 28
+        sw = max(1, self._map_px // strips + 1)
+        gold = PALETTE["dawn_gold"]
+        for i in range(strips):
+            a = int(_DAWN_WASH_MAX_A * (1.0 - i / strips) ** 1.6)
+            if a > 0:
+                wash.fill((*gold, a), (i * sw, 0, sw, self._map_px))
+        return wash
+
+    def _build_stars(self) -> list[tuple[int, int, int]]:
+        """Keep only the star_field candidates that land on WATER (the sea past the coast, or
+        inside the pond): the top-down night sky appears as REFLECTIONS, so the land stays
+        readable. Deterministic per map size — the renderer twinkles them per frame."""
+        out: list[tuple[int, int, int]] = []
+        for x, y, s in star_field(self._map_px):
+            if self._margin_px > 0 and x > self._coast_x(y) + 5 and x < self._map_px - 2:
+                out.append((x, y, s))
+            elif self._pond is not None:
+                pcx, pcy, rx, ry = self._pond
+                if rx > 3 and ry > 2 and (((x - pcx) / (rx * 0.85)) ** 2 +
+                                          ((y - pcy) / (ry * 0.85)) ** 2) < 1.0:
+                    out.append((x, y, s))
+        return out
+
+    def _draw_night_lights(self) -> None:
+        """Slice 10: the lights that pierce the dark — star reflections, window glow, torches.
+
+        Drawn OVER the phase grade so at night they carry the scene. Every intensity scales
+        with the night factor (they fade in through dusk and out through dawn — never pop),
+        twinkle/flicker rides the frame clock through terrain_noise (zero sim RNG), and every
+        halo is a cached soft stamp with a quantized alpha (a bounded cache, cheap blits).
+        """
+        nf = self._nf
+        if nf <= _NIGHT_EPS:
+            return
+        screen, f = self._screen, self._frame
+        for k, (x, y, s) in enumerate(self._stars):        # stars mirrored on the water
+            tw = terrain_noise(f // 14, k, 66)
+            a = _q8(nf * (95 + 140 * tw))
+            if a <= 0:
+                continue
+            stamp = self._soft_stamp(s, PALETTE["starlight"], a)
+            screen.blit(stamp, (x - stamp.get_width() // 2, y - stamp.get_height() // 2))
+        for kind, x, y, s in self._frame_lights:
+            if kind == "window":                           # the towns twinkle
+                fl = 0.82 + 0.18 * terrain_noise(f // 3, x * 7 + y * 3, 67)
+                halo = self._soft_stamp(max(3, s * 2), PALETTE["window_glow"],
+                                        _q8(34 * nf * fl))
+                screen.blit(halo, (x - halo.get_width() // 2, y - halo.get_height() // 2))
+                core = self._soft_stamp(max(1, (s + 1) // 2), PALETTE["window_lit"],
+                                        _q8(150 * nf * fl))
+                screen.blit(core, (x - core.get_width() // 2, y - core.get_height() // 2))
+            else:                                          # torchlight at the seats of power
+                fl = 0.70 + 0.30 * terrain_noise(f // 2, x * 5 + y, 68)
+                wob = int(round(terrain_noise(f // 2, x, 69) * 2 - 1))
+                halo = self._soft_stamp(max(4, int(s * 1.6)), PALETTE["torch_flame"],
+                                        _q8(46 * nf * fl))
+                screen.blit(halo, (x - halo.get_width() // 2, y + wob - halo.get_height() // 2))
+                pygame.draw.circle(screen, PALETTE["torch_core"], (x, y + wob), max(1, s // 4))
+                pygame.draw.circle(screen, PALETTE["torch_flame"], (x, y + wob),
+                                   max(2, s // 3), 1)
 
     def _build_pond(self, surf: Any, grid_px: int, cell: int) -> None:
         """A still pond in a fixed off-centre spot (deterministic; never the central arena).
@@ -1220,22 +1487,33 @@ class PygameRenderer:
         pygame.draw.circle(surf, _shade(_ROCK, -18), (px, py), r, 1)
 
     # -- Slice 9: light & shadow + ambient-life machinery -------------------
-    def _shadow_stamp(self, w: int, h: int) -> Any:
-        """A cached translucent shadow ellipse (SRCALPHA) of size (w, h) — built once per size."""
-        key = ("shadow", w, h)
+    def _shadow_stamp(self, w: int, h: int, alpha: int = _SHADOW_ALPHA) -> Any:
+        """A cached translucent shadow ellipse (SRCALPHA) of size (w, h) — built once per
+        (size, alpha); slice 10 passes quantized night-faded alphas so the cache stays small."""
+        key = ("shadow", w, h, alpha)
         stamp = self._stamps.get(key)
         if stamp is None:
             stamp = pygame.Surface((w, h), pygame.SRCALPHA)
-            pygame.draw.ellipse(stamp, (*_SHADOW, _SHADOW_ALPHA), (0, 0, w, h))
+            pygame.draw.ellipse(stamp, (*_SHADOW, alpha), (0, 0, w, h))
             self._stamps[key] = stamp
         return stamp
 
     def _blit_shadow(self, cx: float, cy: float, w: float, h: float, target: Any = None) -> None:
         """Ground a thing: a soft shadow ellipse under it, nudged toward the bottom-right
-        (one consistent top-left sun for the whole scene). Cheap — one cached-stamp blit."""
+        (one consistent top-left sun for the whole scene). Cheap — one cached-stamp blit.
+
+        Slice 10: shadows are SUN-cast, so the per-frame ones fade with the daylight factor
+        (quantized alpha -> the stamp cache stays bounded). The terrain BAKE (target given)
+        always stamps full daylight shadows — the baked landscape is phase-neutral and the
+        night grade darkens it wholesale instead.
+        """
         w, h = max(3, int(w)), max(2, int(h))
+        alpha = _SHADOW_ALPHA if target is not None or self._dl >= 1.0 else \
+            _q8(_SHADOW_ALPHA * (_SHADOW_NIGHT_KEEP + (1.0 - _SHADOW_NIGHT_KEEP) * self._dl))
+        if alpha <= 0:
+            return
         (target if target is not None else self._screen).blit(
-            self._shadow_stamp(w, h),
+            self._shadow_stamp(w, h, alpha),
             (int(cx - w / 2 + max(1, w // 10)), int(cy - h / 2 + 1)))
 
     def _soft_stamp(self, r: int, color: tuple, alpha: int) -> Any:
@@ -1493,7 +1771,11 @@ class PygameRenderer:
             owner = settlement_realm(sid, state)
             tint = self._territory_lerp.get(sid) or (realm_color(owner) if owner is not None else None)
             if tint is not None:
-                fill, fill_a, edge, edge_a = tint, _REALM_FILL_ALPHA, _shade(tint, 45), _REALM_EDGE_ALPHA
+                # Slice 10: realm banners MUTE at night (dimmer, fainter) so the window/torch
+                # light carries the scene; by day this is exactly the slice-8 tint.
+                tint = night_mute(tint, self._nf)
+                fill, fill_a = tint, int(round(_REALM_FILL_ALPHA * (1.0 - 0.45 * self._nf)))
+                edge, edge_a = _shade(tint, 45), int(round(_REALM_EDGE_ALPHA * (1.0 - 0.35 * self._nf)))
             else:
                 fill, fill_a, edge, edge_a = (_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA,
                                               _SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA)
@@ -1615,6 +1897,9 @@ class PygameRenderer:
 
         # Slice 9: CHIMNEY SMOKE — the lit (occupied) dwellings breathe; a hash picks which
         # hearths are burning, and smoke_puffs (pure) drives the rise/drift/fade per frame.
+        # Slice 10: at night the smoke catches the MOONLIGHT — a paler, cooler tint (the
+        # night factor is quantized so the soft-stamp cache stays bounded).
+        smoke_c = lerp_color(_SMOKE, PALETTE["moon_smoke"], 0.7 * (round(self._nf * 8) / 8.0))
         for b in plan["buildings"]:
             if not b["lit"] or b["h"] < 7 or b["w"] < 9:
                 continue
@@ -1628,9 +1913,23 @@ class PygameRenderer:
             chy = gy - b["h"] - roof_h // 2 - 1
             for dx, dy, r, alpha in smoke_puffs(self._frame, gx, gy):
                 if alpha > 0:
-                    stamp = self._soft_stamp(r, _SMOKE, alpha)
+                    stamp = self._soft_stamp(r, smoke_c, alpha)
                     screen.blit(stamp, (chx + dx - stamp.get_width() // 2,
                                         chy + dy - stamp.get_height() // 2))
+
+        # Slice 10: TORCHLIGHT — a castle raises two gate torches, a large (palisaded) town
+        # one by its well. Positions are plan-derived (stable per settlement); the flame and
+        # halo are drawn later, over the grade, so they burn through the night.
+        if self._nf > _NIGHT_EPS:
+            central = plan["central"]
+            if central["kind"] == "castle":
+                off = max(4, int(central["scale"] * 1.15))
+                self._frame_lights.append(("torch", cx - off, cy - 3, central["scale"]))
+                self._frame_lights.append(("torch", cx + off, cy - 3, central["scale"]))
+            elif plan["fence_r"]:
+                self._frame_lights.append(("torch", cx + wl["dx"],
+                                           cy + wl["dy"] - wl["scale"] - 2,
+                                           max(4, wl["scale"])))
 
     def _draw_building(self, gx: int, gy: int, w: int, h: int, wall: tuple, roof: tuple,
                        hip: bool, lit: bool) -> None:
@@ -1669,6 +1968,13 @@ class PygameRenderer:
             win = (_shade(_WINDOW_LIT, int(5 * math.sin(self._frame * 0.35 + gx * 0.7)))
                    if lit else _WINDOW_DARK)
             wsz = max(2, w // 5)
+            if lit and self._nf > _NIGHT_EPS:
+                # Slice 10: at night the pane itself burns brighter, and each lit window
+                # registers a GLOW light drawn later over the grade — towns twinkle.
+                win = lerp_color(win, (255, 238, 168), 0.8 * self._nf)
+                wy = gy - h + 2 + wsz // 2
+                self._frame_lights.append(("window", gx - half + 2 + wsz // 2, wy, wsz))
+                self._frame_lights.append(("window", gx + half - 2 - wsz + wsz // 2, wy, wsz))
             pygame.draw.rect(s, win, (gx - half + 2, gy - h + 2, wsz, wsz))
             pygame.draw.rect(s, win, (gx + half - 2 - wsz, gy - h + 2, wsz, wsz))
         if h >= 7:                                                            # chimney
@@ -1689,6 +1995,7 @@ class PygameRenderer:
         roofs in the RULER's colour), a gate, and a banner — unmistakably grander than a village.
         An emperor's seat is taller with a second banner."""
         s = self._screen
+        color = night_mute(color, self._nf)  # slice 10: banners mute in the dark
         kw = max(8, int(scale * 1.7))
         kh = max(12, int(scale * (2.8 if emperor else 2.3)))
         tw = max(5, int(scale * 0.95))
@@ -1733,6 +2040,7 @@ class PygameRenderer:
         """A trust-leader's HALL: a longhouse larger than a hut, with a big gabled roof, a double
         door and a small pennant in the leader's colour — between a common house and a castle."""
         s = self._screen
+        color = night_mute(color, self._nf)  # slice 10: pennants mute in the dark
         w, h = max(10, int(scale * 1.9)), max(8, int(scale * 1.4))
         self._draw_building(cx, cy, w, h, _WALL_TONES[1], _ROOF_TONES[3], hip=False, lit=True)
         dw = max(3, w // 4)                                                   # a grander double door
@@ -1806,10 +2114,41 @@ class PygameRenderer:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)
         screen.blit(label, (8, map_px + (_HUD_H - label.get_height()) // 2))
+        # Slice 10: the time-of-day readout — a tiny sun/moon dial at the far right of the
+        # HUD (the phase hand rides its ring) with the phase name beside it. UI chrome: the
+        # HUD/panel are never night-graded, so this stays readable at every phase.
+        dial_x = map_px - 16
+        tag = self._font.render(phase_name(self._phase), True, _STAT_LABEL)
+        screen.blit(tag, (dial_x - 14 - tag.get_width(),
+                          map_px + (_HUD_H - tag.get_height()) // 2))
+        self._draw_phase_dial(dial_x, map_px + _HUD_H // 2)
         if in_battle:  # slice 8: a small indicator while a battle cinematic plays
             chip = self._font.render("BATTLE — any key skips", True, _BATTLE_CHIP)
-            screen.blit(chip, (map_px - chip.get_width() - 8,
+            screen.blit(chip, (dial_x - 14 - tag.get_width() - 12 - chip.get_width(),
                                map_px + (_HUD_H - chip.get_height()) // 2))
+
+    def _draw_phase_dial(self, cx: int, cy: int) -> None:
+        """Slice 10: the sun/moon dial — a ring whose hand rides the full day cycle, around
+        an icon that is a rayed SUN by day and cools into a crescent MOON by night."""
+        s = self._screen
+        r = 9
+        pygame.draw.circle(s, _shade(_HUD_BG, 14), (cx, cy), r + 2)
+        pygame.draw.circle(s, _PANEL_DIV, (cx, cy), r + 2, 1)
+        body = lerp_color(PALETTE["crown"], PALETTE["starlight"], self._nf)
+        pygame.draw.circle(s, body, (cx, cy), 4)
+        if self._dl >= 0.5:                              # sun rays
+            for i in range(8):
+                ang = i * math.pi / 4
+                s0, s1 = 5.5, 7.5
+                pygame.draw.line(s, body,
+                                 (cx + int(math.cos(ang) * s0), cy + int(math.sin(ang) * s0)),
+                                 (cx + int(math.cos(ang) * s1), cy + int(math.sin(ang) * s1)), 1)
+        else:                                            # crescent: bite the disc
+            pygame.draw.circle(s, _shade(_HUD_BG, 14), (cx + 2, cy - 1), 3)
+        hand = self._phase * 2 * math.pi - math.pi / 2   # midnight at the top, noon below
+        pygame.draw.circle(s, _HUD_FG,
+                           (cx + int(round(math.cos(hand) * (r + 2))),
+                            cy + int(round(math.sin(hand) * (r + 2)))), 2)
 
     # -- Slice 3: the right sidebar (state summary + event feed) ------------
     def _stat_lines(self, state: dict[str, Any]) -> list[tuple[str, str]]:
