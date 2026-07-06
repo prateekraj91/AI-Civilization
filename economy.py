@@ -316,7 +316,10 @@ def trade(state: dict[str, Any], turn: int) -> list[str]:
     Caller gates invocation on the `economy` flag (run_simulation), so an economy-off run
     never calls this and stays byte-identical to v1.
     """
-    living = [a for a in state["agents"] if a.alive]
+    # M4.1: dependent children don't trade — full economic agency waits for maturity
+    # (the filter is always a no-op when lineage is off -> byte-identical).
+    living = [a for a in state["agents"]
+              if a.alive and not world.is_dependent_child(a, state)]
     seen: set[tuple[str, str]] = set()
     done: list[str] = []
     for a in living:  # world_state["agents"] order is stable

@@ -166,6 +166,8 @@ def is_worker(a: Any) -> bool:
     """
     if a.settlement is None:
         return False
+    if world.is_dependent_child(a):
+        return False  # M4.1: a dependent child does not sell labor — work waits for maturity
     if any(s in a.knowledge for s in economy.PRODUCER_SKILLS):
         return False  # has its own means -> self-sufficient, not a wage worker
     return _wealth(a) < WORKER_MAX_WEALTH

@@ -42,6 +42,7 @@ import kingdoms
 import knowledge
 import labor
 import leadership
+import lineage
 import monarchy
 import population
 import settlement
@@ -61,6 +62,7 @@ from world import (
     create_world,
     execute_action,
     is_dead,
+    is_dependent_child,
     observe,
     place_agent,
     record_memory,
@@ -210,7 +212,10 @@ def scaled_food_cfg(n: int) -> dict:
 # Memory entries worth surfacing in the end-of-run summary (Phase 5).
 _IMPORTANT_MEMORY_KEYS = ("Observed", "Ate food", "Starved", "New strategy", "Blocked",
                           "stole", "Trust in", "allied", "ALLIANCE", "BETRAYED",
-                          "proposed an alliance", "died on turn", "appeared on turn")
+                          "proposed an alliance", "died on turn", "appeared on turn",
+                          # M4.1 lineage moments (these strings only ever exist when
+                          # lineage is on, so the default summary is unchanged):
+                          "was born", "Born to", "Came of age", "Died of old age")
 
 
 def important_memories(memory: list[str], limit: int = 5) -> list[str]:
@@ -288,6 +293,29 @@ def run_agent_turn(agent: Agent, turn: int, strategies: dict[str, Strategy],
     """
     # Time passes first: hunger grows. Reaching the limit means starvation.
     update_hunger(agent)
+
+    # M4.1 lineage: a DEPENDENT CHILD takes no actions — it does not forage (no
+    # brink-eat: children don't feed themselves), produce, trade, talk or fight.
+    # It is fed from its parents' stores at end of turn (lineage.update); if they
+    # cannot feed it, it starves like anyone through the same death path. It costs
+    # ZERO LLM calls (no strategy is ever built for it). Gated on lineage_on, so a
+    # default run never enters this branch and stays byte-identical.
+    if is_dependent_child(agent, world_state):
+        if is_dead(agent):
+            survivors = population.announce_death(agent, turn, world_state, cause="starved")
+            if VERBOSE_MODE:
+                print(f"  --- {agent.name} ---")
+                print(f"    {agent.name} (a child) has starved at {agent.position}; "
+                      f"{len(survivors)} survivor(s) recorded the death.")
+                print()
+            return "starved"
+        survived[agent.name] = turn
+        counters["agent_turns"] += 1
+        if VERBOSE_MODE:
+            print(f"  --- {agent.name} (dependent child, age {agent.age}, "
+                  f"hunger {agent.hunger}) stays by its family ---\n")
+        return "child"
+
     if is_dead(agent):
         # A meal underfoot saves you at the brink: reaching food costs a turn to
         # step on and another to eat, so an agent that arrived at high hunger
@@ -473,6 +501,13 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
                                  if agent.name in r["subject_kings"]), None)
                 if overlord is not None:
                     print(f"Subject-king of: {overlord}  [submitted in war]")
+        # M4.1: read-only lineage overlay — printed ONLY when the system is on, so a default
+        # run's summary is byte-identical. Pure read of the agent's lineage fields.
+        if world_state.get("lineage_on"):
+            stage = "dependent child" if agent.dependent else "adult"
+            print(f"Age:             {agent.age} of lifespan {agent.lifespan} ({stage})")
+            if agent.parents:
+                print(f"Parents:         {agent.parents[0]} and {agent.parents[1]}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -780,6 +815,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              f"above it the backlash erodes his trust until he BREAKS AWAY and the empire FRAGMENTS. "
              f"Only meaningful with --empire.")
     p.add_argument(
+        "--lineage", action="store_true",
+        help="V2 M4.1: enable LINEAGE — birth, childhood, aging and family (opens Phase 4). "
+             "Settled pairs with MUTUAL high trust, both fed, in a settlement holding a food "
+             "SURPLUS, bear CHILDREN who inherit a BLEND of their parents' temperament (small "
+             "seeded jitter; knowledge/wealth are NOT inherited — children learn via M1.1 "
+             "diffusion at a boosted childhood rate). A child is a DEPENDENT for ~16 turns: it "
+             "produces nothing and is fed from its parents' stockpiles (family size gated by "
+             "wealth). EVERYONE ages and dies of OLD AGE at a varied seeded lifespan, so "
+             "generations TURN. Births become the population engine (bounded by a cap, "
+             "food-gated -> Malthusian); the Day 14 respawn becomes extinction insurance only "
+             "(its existing below-3 gate). Pair with --settlements --tech-tree/--seed-knowledge "
+             "farming (births need a settlement + surplus) and --storage (stockpiles feed "
+             "children). Zero LLM; deterministic under seed. Off by default -> byte-identical. "
+             "(Wealth inheritance at death is M4.2; dynastic succession of titles is M4.3 — "
+             "not built here.)")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -851,7 +902,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    tribute_rate: "float | None" = None,
                    empire_on: bool = False,
                    empire_share: "float | None" = None,
-                   stage: "str | None" = None) -> None:
+                   stage: "str | None" = None,
+                   lineage_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -962,6 +1014,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     if stage is not None:
         import scenario
         scenario.apply(world_state, stage, cognition=cognition)
+
+    # M4.1: the lineage flag + founding-cast setup. Runs AFTER staging so a staged cast is
+    # covered too. init_cast draws ages/lifespans from the seeded stream (part of the
+    # reproducible sequence) and writes the lineage block (pop_cap/birth_seq) onto
+    # world_state. False (default) -> init_cast/update never called, zero RNG drawn ->
+    # byte-identical to v1 (respawn included — its code is untouched).
+    world_state["lineage_on"] = lineage_on
+    if lineage_on:
+        lineage.init_cast(world_state)
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1125,6 +1186,25 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
         if empire_on:
             empire.update(world_state, turn)
+
+        # M4.1: lineage — aging, coming of age, OLD-AGE deaths, child-feeding, and BIRTHS.
+        # Runs AFTER the institutions so births read this turn's settled/trust/food state,
+        # and a ruler who died of old age is cleaned up by the SAME institution updates
+        # next turn that already handle a battle death (succession is M4.3, not built).
+        # Runs BEFORE process_respawns, whose UNCHANGED living < TARGET_POPULATION gate is
+        # the extinction floor: births are the engine, respawn the backstop. Zero LLM; all
+        # randomness from the seeded stream; gated on the opt-in flag, so a default run
+        # never calls it (byte-identical to v1).
+        if lineage_on:
+            for baby in lineage.update(world_state, turn):
+                survived.setdefault(baby.name, turn)
+                if DEBUG_MODE:
+                    print(f"*** {baby.name} was born to {baby.parents[0]} and "
+                          f"{baby.parents[1]} on turn {turn} ***")
+                    print()
+                elif VERBOSE_MODE:
+                    print(f"  *** {baby.name} was born to {baby.parents[0]} and "
+                          f"{baby.parents[1]} ***\n")
 
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
@@ -1355,7 +1435,7 @@ def main(argv: list[str] | None = None) -> None:
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
-                           stage=stage)
+                           stage=stage, lineage_on=args.lineage)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1380,7 +1460,7 @@ def main(argv: list[str] | None = None) -> None:
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
-                           stage=stage)
+                           stage=stage, lineage_on=args.lineage)
 
 
 if __name__ == "__main__":

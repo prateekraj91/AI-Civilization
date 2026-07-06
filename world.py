@@ -223,6 +223,18 @@ world_state: dict[str, Any] = {
     "kingdoms_on": False,    # bool: M3.5 kingdoms/vassalage institution enabled for this run
     "tribute_rate": 0.25,    # float: the king's share of vassal tribute (mirrors
                              # kingdoms.DEFAULT_KING_SHARE; run_simulation sets it from its param)
+    # V2 M4.1 lineage — birth, childhood, aging, family (opens Phase 4). When ON, agents PAIR
+    # (settled + mutual trust + fed + settlement food surplus), bear CHILDREN who inherit blended
+    # temperament (never knowledge/wealth), raise them at real cost, AGE, and die of OLD AGE —
+    # births become the population engine and the Day 14 respawn is extinction insurance only
+    # (its existing living < TARGET_POPULATION gate IS the floor; no respawn code changes). The
+    # per-agent state (age/lifespan/parents/dependent/last_child_turn) lives on the Agent records;
+    # the `lineage` block holds the world-level birth machinery ({"pop_cap", "birth_seq"}, written
+    # by lineage.init_cast). OFF (default) -> lineage.update never called, zero RNG drawn, and the
+    # run — including respawn — is byte-identical to before. (Wealth inheritance at death is M4.2
+    # and dynastic succession of titles is M4.3 — deliberately NOT built in M4.1.)
+    "lineage_on": False,     # bool: M4.1 lineage system enabled for this run
+    "lineage": {},           # dict: {"pop_cap": int, "birth_seq": int} once init_cast has run
 }
 
 
@@ -391,6 +403,11 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state.setdefault("empires", {}).clear()
     world_state["empire_on"] = False
     world_state["empire_share"] = 0.25
+    # M4.1: lineage is per-simulation — reset the flag OFF and clear the birth-machinery block
+    # so a stale pop_cap/birth counter never leaks across runs. A fresh run is v1 unless
+    # run_simulation opts in (which then calls lineage.init_cast to rebuild the block).
+    world_state["lineage_on"] = False
+    world_state.setdefault("lineage", {}).clear()
     return world_state["grid"]
 
 
@@ -745,6 +762,22 @@ def is_sick(agent: Any, state: dict[str, Any] | None = None) -> bool:
     state = world_state if state is None else state
     until = getattr(agent, "plague_until", 0)
     return 0 < until and state["turn"] <= until
+
+
+def is_dependent_child(agent: Any, state: dict[str, Any] | None = None) -> bool:
+    """True if `agent` is a not-yet-mature CHILD under the M4.1 lineage system.
+
+    The single gate every production/combat/trade selector asks before counting an
+    agent as a full participant: a dependent does not forage, farm, hunt, bank,
+    work for wages, trade, or fight — it is raised (fed by its parents, learning
+    at a boosted rate) until it comes of age (lineage.update flips `dependent`).
+    Doubly gated on the run-level lineage_on flag, so with lineage OFF (default)
+    this is always False and every caller behaves byte-identically to before.
+    Lives in the world layer (like is_sick) so higher modules can share it
+    without import cycles. Pure READ of world_state + agent state.
+    """
+    state = world_state if state is None else state
+    return bool(state.get("lineage_on")) and getattr(agent, "dependent", False)
 
 
 def update_hunger(agent: Any) -> int:

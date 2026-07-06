@@ -158,6 +158,14 @@ TRUST_COEFF = 0.12
 ADOPTION_MIN = 0.02
 ADOPTION_MAX = 0.95
 
+# M4.1 lineage: childhood is a LEARNING WINDOW. A dependent child adopts knowledge
+# through the SAME diffusion channel at this multiple of the adult rate — children
+# inherit no knowledge at birth, they EARN it, just faster while young (and their
+# kin-trust in their parents raises it further through the ordinary trust term).
+# Only applied when the run's lineage system is on, so a default run's adoption
+# probabilities are byte-identical to before.
+CHILD_LEARN_BOOST = 2.0
+
 
 def adoption_probability(learner: Any, teacher: Any, state: dict[str, Any]) -> float:
     """Chance `learner` adopts a known item from adjacent `teacher` this turn.
@@ -172,6 +180,10 @@ def adoption_probability(learner: Any, teacher: Any, state: dict[str, Any]) -> f
     mult = PERSONALITY_ADOPT.get(pers.dominant, 1.0)
     trust = learner.relationships.get(teacher.name, {}).get("trust", 0)
     p = ADOPTION_BASE * mult * (1.0 + TRUST_COEFF * trust)
+    # M4.1: a dependent child soaks up knowledge at a boosted rate (the childhood
+    # learning window). False for every agent when lineage is off -> byte-identical.
+    if world.is_dependent_child(learner, state):
+        p *= CHILD_LEARN_BOOST
     return max(ADOPTION_MIN, min(ADOPTION_MAX, p))
 
 
@@ -329,8 +341,11 @@ def farm(state: dict[str, Any], turn: int,
 
     Cost: O(agents) to find farmers; ZERO LLM calls.
     """
+    # M4.1: a dependent child does not produce, even if it has already learned the
+    # skill — production waits for maturity (always False when lineage is off).
     farmers = [a for a in state["agents"]
-               if a.alive and "farming" in a.knowledge and a.hunger < FARM_HUNGER_CUTOFF]
+               if a.alive and "farming" in a.knowledge and a.hunger < FARM_HUNGER_CUTOFF
+               and not world.is_dependent_child(a, state)]
     if not farmers:
         return []  # v1 / no fed farmers -> no-op, zero rng
     # Stabiliser, not hoarder: once the world already holds enough food per living
@@ -400,8 +415,10 @@ def hunt(state: dict[str, Any], turn: int,
     rng when nobody is a fed hunter — so a run with no hunting knowledge (incl. every v1 run)
     is byte-identical, exactly like `farm`. Cost: O(agents); ZERO LLM calls.
     """
+    # M4.1: dependents don't hunt either — see the matching exclusion in farm().
     hunters = [a for a in state["agents"]
-               if a.alive and "hunting" in a.knowledge and a.hunger < HUNT_HUNGER_CUTOFF]
+               if a.alive and "hunting" in a.knowledge and a.hunger < HUNT_HUNGER_CUTOFF
+               and not world.is_dependent_child(a, state)]
     if not hunters:
         return []  # v1 / no fed hunters -> no-op, zero rng
     living = sum(1 for a in state["agents"] if a.alive)

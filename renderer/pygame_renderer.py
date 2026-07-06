@@ -31,6 +31,20 @@ colour grade sweeps the whole map through golden dawns, neutral days, burning
 dusks and deep blue nights; at night the lit windows GLOW, castles raise
 torchlight, stars mirror on the water, shadows fade, and realm/figure colours
 mute so the lights carry the scene — while battles stay bright and readable.
+Slice 11 — CAMERA: PAN, ZOOM & LEVEL-OF-DETAIL — the world becomes EXPLORABLE.
+ONE shared pure transform (world_to_screen / screen_to_world) maps grid coords to
+screen pixels for EVERY map draw; the camera (a world-cell centre + an effective
+cell size as the zoom, all renderer-local) pans with arrows/WASD/mouse-drag,
+zooms on the cursor with the wheel (+/- on the centre), HOME refits the whole
+world, and every move GLIDES. Cached layers (the baked landscape) exist at a
+small ladder of QUANTIZED integer-cell zoom buckets, and per frame only the
+visible sub-rect is blitted; dynamic layers simply redraw through the transform,
+so a close-up re-renders MORE detail instead of upscaling pixels. Three detail
+tiers with hysteresis: FAR reads as a grand-strategy map (dots, block towns,
+realm banners dominant, ambience off), MID is the slice 1-10 look, CLOSE adds
+villager name tags with everything larger. Off-screen work is culled, and a
+battle that starts off-screen glides the camera to itself. The camera never
+touches the sim: a panned/zoomed seeded run logs byte-identical events.
 
 ARCHITECTURE RULE (same boundary as the text renderer, obeyed strictly)
 -----------------------------------------------------------------------
@@ -324,6 +338,36 @@ _STAR_COUNT = 320                 # hashed star candidates; only those on WATER 
 _NIGHT_EPS = 0.02                 # below this night factor the lights pass is skipped
 _SHADOW_NIGHT_KEEP = 0.30         # fraction of shadow alpha kept at deep night (sun-cast)
 _NIGHT_MUTE_MAX = 0.75            # how far commoner/realm colours step into the dark
+
+# Slice 11: CAMERA — PAN, ZOOM & LEVEL-OF-DETAIL. The window/viewport never changes size;
+# the WORLD slides and scales behind it. The camera is a world-cell CENTRE plus an effective
+# integer CELL size (the zoom), all renderer-local like _town_plans; one shared pure
+# transform (world_to_screen/screen_to_world) maps world -> screen for every map draw, so
+# no draw call does its own camera maths (the side PANEL and HUD are UI — never
+# transformed). CACHED-SURFACE STRATEGY (the key engineering decision, stated explicitly):
+# the baked landscape is rendered at a small geometric ladder of QUANTIZED integer cell
+# sizes ("zoom buckets", ~6-8 across the range, LRU-capped); zoom steps TARGET buckets
+# exactly, so a settled camera blits its bucket's visible sub-rect 1:1 (~free), and only
+# while a zoom glide is mid-flight is the nearest bucket's sub-rect scaled by the small
+# residual ratio (pygame.transform.scale of one viewport-sized region — cheap, and motion
+# masks it). The bake is NEVER rebuilt per frame. Dynamic layers (towns, agents, food, war)
+# redraw through the transform at the live cell size, so close-ups stay CRISP — a bigger
+# cell re-renders more detail via the slice-4/6 cell thresholds, never a blurry upscale
+# (town plans already cache per cell size and rebuilding one is cheap pure maths).
+_ZOOM_OUT_MAX = 0.4               # lower zoom bound, as a fraction of the fit-whole-world cell
+_ZOOM_IN_MAX = 3.0                # upper zoom bound (relative to fit), before the absolute cap
+_CELL_FLOOR = 4                   # never draw cells smaller than this (strategy view stays readable)
+_CELL_CEIL = 72                   # ...or bigger than this (close-up cap for tiny worlds)
+_ZOOM_STEP_RATIO = 1.35           # the geometric ladder between zoom buckets (~6-8 buckets)
+_TERRAIN_LRU = 3                  # non-base bucket landscapes kept baked at once (bounded memory)
+_CAM_GLIDE = 0.22                 # per-frame ease toward the camera target — pan/zoom glides
+_PAN_FRAC = 0.02                  # held-key pan speed: fraction of the viewport per frame
+_LOD_FAR_MAX = 11.0               # at/below this cell size the map is the FAR strategy view
+                                  # (11 keeps FAR reachable: every ladder's low bucket dips in)
+_LOD_CLOSE_MIN = 26.0             # at/above this cell size the map is the CLOSE village view
+_LOD_HYST = 1.0                   # hysteresis band so a tier never flickers at its boundary
+_CAM_HOLD_KEYS = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN,
+                  pygame.K_a, pygame.K_d, pygame.K_w, pygame.K_s)   # held-pan keys (polled)
 
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
@@ -994,6 +1038,105 @@ def _q8(a: float) -> int:
     return max(0, min(255, int(a))) & ~7
 
 
+# --- Slice 11: pure camera / culling / LOD helpers (unit-testable, zero pygame state) -----
+def world_to_screen(pos: tuple[float, float], cam: tuple[float, float, float],
+                    view: tuple[int, int]) -> tuple[float, float]:
+    """Map a WORLD point (grid-cell coords; cell (x, y)'s centre is (x+0.5, y+0.5)) to
+    screen pixels under camera `cam` = (centre_x, centre_y, cell_px), viewport `view`.
+
+    THE one shared transform: every map draw goes through this (via _to_px /
+    _base_to_screen), so no draw call does its own camera maths. Pure.
+    """
+    cx, cy, cell = cam
+    return ((pos[0] - cx) * cell + view[0] * 0.5,
+            (pos[1] - cy) * cell + view[1] * 0.5)
+
+
+def screen_to_world(px: tuple[float, float], cam: tuple[float, float, float],
+                    view: tuple[int, int]) -> tuple[float, float]:
+    """The exact inverse of world_to_screen (pure): screen pixels -> world grid coords."""
+    cx, cy, cell = cam
+    return ((px[0] - view[0] * 0.5) / cell + cx,
+            (px[1] - view[1] * 0.5) / cell + cy)
+
+
+def clamp_camera(cx: float, cy: float, cell: float, size: int,
+                 view: tuple[int, int]) -> tuple[float, float]:
+    """Clamp a camera CENTRE so the view never leaves the world (margin included). Pure.
+
+    The world spans cells [-_MARGIN_CELLS, size + _MARGIN_CELLS] on each axis. An axis
+    whose whole span FITS inside the viewport is simply centred (a zoomed-out world floats
+    centred in the window rather than pinning to a corner).
+    """
+    lo, hi = -_MARGIN_CELLS, size + _MARGIN_CELLS
+    out = []
+    for c, v in ((cx, view[0]), (cy, view[1])):
+        half = v / (2.0 * max(1e-9, cell))            # half the viewport, in world cells
+        if hi - lo <= 2 * half:
+            out.append(size / 2.0)
+        else:
+            out.append(max(lo + half, min(hi - half, c)))
+    return out[0], out[1]
+
+
+def zoom_buckets(base_cell: int) -> tuple[int, ...]:
+    """The quantized zoom ladder for cached surfaces: a small geometric set of INTEGER
+    cell sizes spanning ~0.4x..3x of the fit-whole-world cell (clamped to sane px). Pure.
+
+    Integer cells keep every bucket's bake pixel-consistent with the live transform, and
+    the ladder always contains the base cell itself, so the launch (fit) view blits 1:1.
+    """
+    base = max(_CELL_FLOOR, int(base_cell))
+    lo = max(_CELL_FLOOR, int(round(base * _ZOOM_OUT_MAX)))
+    hi = max(base, min(_CELL_CEIL, int(round(base * _ZOOM_IN_MAX))))
+    out = {base}
+    c = float(base)
+    while int(round(c)) > lo:
+        c /= _ZOOM_STEP_RATIO
+        out.add(max(lo, int(round(c))))
+    c = float(base)
+    while int(round(c)) < hi:
+        c *= _ZOOM_STEP_RATIO
+        out.add(min(hi, int(round(c))))
+    return tuple(sorted(out))
+
+
+def visible_on_screen(x: float, y: float, margin: float, view_w: int, view_h: int) -> bool:
+    """Is a screen-space point inside the viewport, padded by `margin` px? (pure culling —
+    everything positional skips its draw when this is False, essential on big worlds)."""
+    return -margin <= x <= view_w + margin and -margin <= y <= view_h + margin
+
+
+def lod_tier(cell_px: float, prev: str = "mid") -> str:
+    """The detail tier for an effective cell size — 'far' / 'mid' / 'close' (pure).
+
+    Discrete tiers keyed off the zoom with a hysteresis band: a tier is only LEFT once the
+    cell moves _LOD_HYST past the boundary it entered through, so wobbling the zoom right
+    at a threshold can never flicker detail on and off frame to frame.
+    """
+    if prev == "far":
+        if cell_px < _LOD_FAR_MAX + _LOD_HYST:
+            return "far"
+        prev = "mid"
+    if prev == "close":
+        if cell_px > _LOD_CLOSE_MIN - _LOD_HYST:
+            return "close"
+        prev = "mid"
+    if cell_px <= _LOD_FAR_MAX - _LOD_HYST:
+        return "far"
+    if cell_px >= _LOD_CLOSE_MIN + _LOD_HYST:
+        return "close"
+    return "mid"
+
+
+def _pond_geom(grid_px: int, cell: int, margin: int) -> tuple[int, int, int, int]:
+    """The pond's (cx, cy, rx, ry) in the pixel space of `cell`/`margin` (pure) — one
+    formula shared by every zoom bucket's bake and the base-space shimmer/star reads,
+    so the glints always land on the same water at every zoom."""
+    return (margin + int(grid_px * 0.22), margin + int(grid_px * 0.74),
+            max(cell, int(grid_px * 0.10)), max(cell, int(grid_px * 0.07)))
+
+
 class PygameRenderer:
     """Draws world_state to a Pygame window each turn (READ only); paces + handles input.
 
@@ -1003,7 +1146,10 @@ class PygameRenderer:
     advances the simulation — it only reads and draws what the sim produced.
 
     Controls: SPACE pauses/resumes, ESC or closing the window ends the run (raised as
-    KeyboardInterrupt, which the launcher suppresses for a clean exit).
+    KeyboardInterrupt, which the launcher suppresses for a clean exit). Slice 11 camera:
+    arrows/WASD (or left-mouse drag) pan, the wheel zooms on the cursor (+/- on the view
+    centre), HOME refits the whole world; every move glides and none of it can touch the
+    sim — a panned/zoomed seeded run logs byte-identical events.
     """
 
     def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4) -> None:
@@ -1041,6 +1187,23 @@ class PygameRenderer:
         self._dawn_wash: Any = None                        # cached directional sunrise gradient
         self._stars: list[tuple[int, int, int]] = []       # star candidates that landed on water
         self._frame_lights: list[tuple] = []               # this frame's (kind, x, y, size) lights
+        # Slice 11: CAMERA — all state renderer-local, like _town_plans. The camera is a
+        # world-cell CENTRE plus an effective cell size (the zoom); the *_t fields are the
+        # glide TARGETS that input moves, eased toward each drawn frame. `_cell` (the live
+        # integer cell every size read uses) and `_cam_draw` (this frame's frozen shared
+        # transform) derive from it in _update_camera. Nothing here can reach the sim.
+        self._cell0 = _MAX_CELL            # the fit-whole-world cell — the zoom-1.0 reference
+        self._cam_x = 0.0                  # view centre, world grid coords
+        self._cam_y = 0.0
+        self._cam_cell = float(_MAX_CELL)  # live zoom, as a float cell size (glides smoothly)
+        self._cam_tx = 0.0                 # glide targets (pan / zoom land here)
+        self._cam_ty = 0.0
+        self._cam_tcell = float(_MAX_CELL)
+        self._cam_draw = (0.0, 0.0, _MAX_CELL)     # this frame's (centre_x, centre_y, cell)
+        self._zoom_buckets: tuple[int, ...] = ()   # the quantized integer-cell zoom ladder
+        self._terrain_zoom: dict[int, Any] = {}    # bucket cell -> baked landscape (LRU-capped)
+        self._lod = "mid"                  # current detail tier (far/mid/close, hysteresis)
+        self._drag: tuple | None = None    # mouse-drag pan anchor (screen px, camera centre)
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -1069,15 +1232,27 @@ class PygameRenderer:
         if self._screen is not None and size == self._size:
             return
         self._size = size
-        self._cell = _cell_size(size)
+        self._cell = self._cell0 = _cell_size(size)
         grid_px = self._cell * max(1, size)
         # Slice 9: the MAP zone is full-bleed — a wilderness margin rings the playable grid.
+        # Slice 11: this is also the fixed VIEWPORT — the window never grows with zoom.
         self._margin_px = _MARGIN_CELLS * self._cell
         self._map_px = grid_px + 2 * self._margin_px
         self._screen = pygame.display.set_mode((self._map_px + _PANEL_W, self._map_px + _HUD_H))
+        # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
+        # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
+        self._pond = _pond_geom(grid_px, self._cell, self._margin_px)
+        self._zoom_buckets = zoom_buckets(self._cell0)
+        self._cam_x = self._cam_tx = size / 2.0
+        self._cam_y = self._cam_ty = size / 2.0
+        self._cam_cell = self._cam_tcell = float(self._cell0)
+        self._cam_draw = (self._cam_x, self._cam_y, self._cell)
+        self._lod = lod_tier(self._cell0, "mid")
+        self._drag = None
+        self._terrain_zoom = {}
         # Slice 5/9: bake the procedural landscape ONCE for this grid size (cached, blitted each
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
-        self._terrain_bg = self._build_terrain()
+        self._terrain_bg = self._build_terrain(self._cell0)
         self._grade = self._build_grade()
         # Slice 10: the sunrise wash and the water-borne starfield are geometry-dependent,
         # so they are (re)built here with the terrain — pure hash, cached, never per frame.
@@ -1109,10 +1284,12 @@ class PygameRenderer:
 
     # -- input -------------------------------------------------------------
     def _pump_events(self) -> None:
-        """Drain the OS event queue; toggle pause on SPACE, end the run on quit/ESC."""
+        """Drain the OS event queue; camera events first, pause on SPACE, quit/ESC ends."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise KeyboardInterrupt
+            if self._handle_camera_event(event):
+                continue
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     raise KeyboardInterrupt
@@ -1120,16 +1297,121 @@ class PygameRenderer:
                     self.paused = not self.paused
 
     def _pump_cinema_events(self) -> bool:
-        """Input during a cinematic: quit/ESC still ends the run; ANY other key SKIPS the scene."""
+        """Input during a cinematic: quit/ESC still ends the run; any NON-CAMERA key SKIPS
+        the scene (slice 11: exploring — pan/zoom/home — must never swallow a battle)."""
         skip = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise KeyboardInterrupt
+            if self._handle_camera_event(event):
+                continue
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     raise KeyboardInterrupt
                 skip = True
         return skip
+
+    # -- Slice 11: the camera (renderer-local; the sim is never consulted or touched) ------
+    def _handle_camera_event(self, event: Any) -> bool:
+        """Route one OS event to the camera; True when the camera consumed it.
+
+        Wheel zoom is CURSOR-anchored (the world point under the mouse stays put); +/-
+        zooms on the view centre; HOME refits the whole world; left-drag pans. Held pan
+        keys (arrows/WASD) return True here so they never skip a cinematic — the actual
+        panning is polled per frame in _update_camera for smooth held-key movement.
+        """
+        centre = (self._map_px // 2, self._map_px // 2)
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
+                self._zoom_step(1, centre)
+                return True
+            if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                self._zoom_step(-1, centre)
+                return True
+            if event.key == pygame.K_HOME:                 # refit the whole world
+                self._cam_tx = self._cam_ty = self._size / 2.0
+                self._cam_tcell = float(self._cell0)
+                return True
+            return event.key in _CAM_HOLD_KEYS
+        if event.type == pygame.MOUSEWHEEL and event.y:
+            anchor = centre
+            with contextlib.suppress(Exception):
+                mx, my = pygame.mouse.get_pos()
+                if mx < self._map_px and my < self._map_px:
+                    anchor = (mx, my)
+            self._zoom_step(1 if event.y > 0 else -1, anchor)
+            return True
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 \
+                and event.pos[0] < self._map_px and event.pos[1] < self._map_px:
+            self._drag = (event.pos, (self._cam_tx, self._cam_ty))
+            return True
+        if event.type == pygame.MOUSEMOTION and self._drag is not None:
+            (px, py), (ox, oy) = self._drag
+            c = max(1.0, self._cam_tcell)
+            self._cam_tx = ox - (event.pos[0] - px) / c
+            self._cam_ty = oy - (event.pos[1] - py) / c
+            return True
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            had_drag, self._drag = self._drag is not None, None
+            return had_drag
+        return False
+
+    def _zoom_step(self, direction: int, anchor: tuple[int, int]) -> None:
+        """Step the zoom TARGET one bucket up/down, keeping the world point under `anchor`
+        fixed on screen. Targets land exactly ON buckets, so a settled camera always blits
+        its cached landscape 1:1 (the cheap path of the cached-surface strategy)."""
+        buckets = self._zoom_buckets or (self._cell0,)
+        t = self._cam_tcell
+        if direction > 0:
+            new = next((float(b) for b in buckets if b > t + 0.5), float(buckets[-1]))
+        else:
+            new = next((float(b) for b in reversed(buckets) if b < t - 0.5), float(buckets[0]))
+        if new == t:
+            return
+        view = (self._map_px, self._map_px)
+        wx, wy = screen_to_world(anchor, (self._cam_tx, self._cam_ty, t), view)
+        self._cam_tcell = new
+        self._cam_tx = wx - (anchor[0] - view[0] * 0.5) / new
+        self._cam_ty = wy - (anchor[1] - view[1] * 0.5) / new
+        self._cam_tx, self._cam_ty = clamp_camera(self._cam_tx, self._cam_ty, new,
+                                                  self._size, view)
+
+    def _update_camera(self) -> None:
+        """Advance the camera one drawn frame: poll held pan keys, glide toward the targets,
+        clamp to the world, and freeze this frame's shared transform + LOD tier.
+
+        Runs at the top of every _draw — turn walks, pauses and cinematics all glide. It
+        reads input and writes ONLY renderer-local camera fields; panning/zooming during a
+        seeded run can never change the event log.
+        """
+        size, view = self._size, (self._map_px, self._map_px)
+        if pygame.display.get_init():                 # held-key panning at constant screen speed
+            keys = None
+            with contextlib.suppress(Exception):
+                keys = pygame.key.get_pressed()
+            if keys:
+                step = self._map_px * _PAN_FRAC / max(1.0, self._cam_tcell)
+                dx = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - \
+                     (keys[pygame.K_LEFT] or keys[pygame.K_a])
+                dy = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - \
+                     (keys[pygame.K_UP] or keys[pygame.K_w])
+                if dx or dy:
+                    self._cam_tx += dx * step
+                    self._cam_ty += dy * step
+        self._cam_tx, self._cam_ty = clamp_camera(self._cam_tx, self._cam_ty,
+                                                  self._cam_tcell, size, view)
+        # Glide: ease a fraction of the remaining distance per frame; SNAP when close, so a
+        # settled zoom sits exactly on its integer bucket (terrain then blits 1:1).
+        for attr, target in (("_cam_x", self._cam_tx), ("_cam_y", self._cam_ty),
+                             ("_cam_cell", self._cam_tcell)):
+            cur = getattr(self, attr)
+            nxt = cur + (target - cur) * _CAM_GLIDE
+            setattr(self, attr, target if abs(target - nxt) < 0.02 else nxt)
+        self._cell = max(_CELL_FLOOR, int(round(self._cam_cell)))
+        self._cam_x, self._cam_y = clamp_camera(self._cam_x, self._cam_y,
+                                                self._cell, size, view)
+        self._cam_draw = (self._cam_x, self._cam_y, self._cell)
+        self._lod = lod_tier(self._cell, self._lod)
 
     def _animate_turn(self, state: dict[str, Any]) -> None:
         """Pace the per-turn delay while LERPing every mover from last turn's cell to its new one.
@@ -1159,10 +1441,20 @@ class PygameRenderer:
 
     # -- drawing (pure reads of `state`) -----------------------------------
     def _to_px(self, x: int, y: int) -> tuple[int, int]:
-        """Centre of grid cell (x, y) in pixels (offset past the slice-9 wilderness margin)."""
-        c = self._cell
-        m = self._margin_px
-        return (m + x * c + c // 2, m + y * c + c // 2)
+        """Centre of grid cell (x, y) in SCREEN pixels — through the ONE shared camera
+        transform (slice 11). At the fit-whole-world default this is exactly the slice-9
+        mapping (margin offset + cell centre); panned/zoomed it slides and scales."""
+        sx, sy = world_to_screen((x + 0.5, y + 0.5), self._cam_draw,
+                                 (self._map_px, self._map_px))
+        return int(round(sx)), int(round(sy))
+
+    def _base_to_screen(self, bx: float, by: float) -> tuple[int, int]:
+        """A BASE-space pixel (the fit-view pixel space the pond/coast/stars are stored in)
+        through the same shared transform — so baked-geometry reads track the camera."""
+        c0 = max(1, self._cell0)
+        sx, sy = world_to_screen((bx / c0 - _MARGIN_CELLS, by / c0 - _MARGIN_CELLS),
+                                 self._cam_draw, (self._map_px, self._map_px))
+        return int(round(sx)), int(round(sy))
 
     def _draw(self, state: dict[str, Any], *, paused: bool = False,
               motion: tuple[dict[str, tuple], float] | None = None,
@@ -1172,11 +1464,15 @@ class PygameRenderer:
         screen = self._screen
         if screen is None:
             return
-        cell = self._cell
         map_px = self._map_px
         # Slice 9: the ambient-life clock — one tick per DRAWN frame (renderer-local; the sim
         # never sees it), driving smoke/sway/shimmer/birds/flutter/flicker phases.
         self._frame = (self._frame + 1) % (1 << 20)
+        # Slice 11: advance the CAMERA first — glide toward its targets, clamp to the world,
+        # and freeze this frame's shared transform, effective cell and LOD tier. Everything
+        # below draws through them; nothing below does its own camera maths.
+        self._update_camera()
+        cell = self._cell
         # Slice 10: the DAY/NIGHT clock — the phase derives PURELY from the sim turn (made
         # fractional mid-walk so the light glides through the inter-turn animation rather
         # than stepping). Everything below reads these three derived values; nothing writes.
@@ -1188,14 +1484,16 @@ class PygameRenderer:
         self._nf = 1.0 - self._dl
         self._frame_lights = []           # towns register window/torch lights as they draw
 
-        # Slice 5/9: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
-        # coast + pond + vignette) under everything, blitted not rebuilt. Fallback flat fill.
-        screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters; map zone is overdrawn below
+        # Slice 5/9/11: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
+        # coast + pond + vignette) under everything — the camera blits only the VISIBLE
+        # sub-rect of the nearest quantized zoom bucket's bake, never rebuilding per frame.
+        screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters + beyond-the-world void
         if self._terrain_bg is not None:
-            screen.blit(self._terrain_bg, (0, 0))
+            self._blit_terrain()
         else:
             screen.fill(_GRASS_BASE, (0, 0, map_px, map_px))
-        self._draw_water_shimmer()  # slice 9: ripple glints on the baked pond + coast
+        if self._lod != "far":       # slice 11: micro-shimmer is off in the strategy view
+            self._draw_water_shimmer()  # slice 9: ripple glints on the baked pond + coast
 
         # Slice 5: settled land looks CULTIVATED — a translucent tilled-dirt tint (with furrows)
         # under the slice-2 region. Dynamic (settlements come and go), but cheap. No-op if none.
@@ -1208,12 +1506,22 @@ class PygameRenderer:
 
         # Slice 4: FOOD as a little wheat stalk (a stalk + a few grain strokes), still green
         # and at the same positions; a plain dot when cells are too small for wheat to read.
+        # Slice 11: off-screen food is culled; the FAR strategy view keeps simple dots.
         for fx, fy in state.get("food", []):
-            self._draw_wheat(*self._to_px(fx, fy), cell)
+            px, py = self._to_px(fx, fy)
+            if not visible_on_screen(px, py, cell, map_px, map_px):
+                continue
+            if self._lod == "far":
+                pygame.draw.circle(screen, _FOOD, (px, py), max(1, cell // 5))
+            else:
+                self._draw_wheat(px, py, cell)
 
         # Slice 4: AGENTS as little FIGURES (head + body) in their personality colour, scaled
         # by wealth; rulers wear a CROWN/STAR and anyone talking this turn gets a SPEECH
         # BUBBLE — so a stranger watching ONLY the map can read role and conversation.
+        # Slice 11: off-screen agents are culled; at FAR zoom each agent collapses to a small
+        # personality-colour dot (no figure/shadow/insignia/bubble — a strategy-map read);
+        # at CLOSE zoom villagers additionally wear their NAME under the figure.
         talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
         for agent in state.get("agents", []):
             if not getattr(agent, "alive", True):
@@ -1223,19 +1531,28 @@ class PygameRenderer:
                 continue
             cx, cy = self._agent_px(agent, motion)  # slice 8: mid-walk lerp when motion plays
             r = agent_radius(_wealth(agent), cell)
+            if not visible_on_screen(cx, cy, r * 4 + cell, map_px, map_px):
+                continue
             # Slice 10: figures step back into the dark at night (identity by day).
             color = night_mute(agent_color(getattr(agent, "personality", "")), self._nf)
+            if self._lod == "far":
+                dot = max(2, r)
+                pygame.draw.circle(screen, _OUTLINE, (cx, cy), dot + 1)
+                pygame.draw.circle(screen, color, (cx, cy), dot)
+                continue
             self._blit_shadow(cx, cy + r, r * 2.1, max(2, int(r * 0.8)))  # slice 9: grounded
             figure_top = self._draw_agent_figure(cx, cy, r, color)
             self._draw_role_marker(cx, figure_top, r, agent_role(agent.name, state))
             if agent.name in talkers:
                 self._draw_speech_bubble(cx + r + 1, figure_top, r)
+            if self._lod == "close" and self._font is not None:
+                self._draw_name_tag(agent.name, cx, cy + r + 2)
 
         # Slice 9/10: occasional birds (a daytime ambience — they roost as dusk falls), then
         # the full-scene grade. Slice 10 turns the static daylight tint into the day/night
         # cycle: the cached grade surface is REFILLED (never rebuilt) whenever the phase
         # tint moves, and blitted over the whole map zone (the HUD/panel stay ungraded).
-        if self._dl > 0.35:
+        if self._dl > 0.35 and self._lod != "far":   # slice 11: no ambience on the strategy map
             self._draw_birds()
         if self._grade is not None:
             tint = phase_tint(self._phase)
@@ -1285,14 +1602,69 @@ class PygameRenderer:
         return int(round(px + (cx - px) * e)), int(round(py + (cy - py) * e - bob))
 
     # -- Slice 5/9: cached procedural landscape (built ONCE; pure hash, no sim RNG) --
-    def _coast_x(self, y: int) -> int:
+    def _terrain_surface(self, cell_q: int) -> Any:
+        """The baked landscape for zoom bucket `cell_q` (slice 11): the base bake for the
+        fit cell, else baked LAZILY on first entry into that bucket and kept in a tiny LRU
+        — rebuilt only when the camera crosses into an evicted bucket, NEVER per frame."""
+        if cell_q == self._cell0:
+            return self._terrain_bg
+        surf = self._terrain_zoom.pop(cell_q, None)
+        if surf is None:
+            surf = self._build_terrain(cell_q)
+        self._terrain_zoom[cell_q] = surf              # (re)insert newest-last: LRU order
+        while len(self._terrain_zoom) > _TERRAIN_LRU:
+            self._terrain_zoom.pop(next(iter(self._terrain_zoom)))
+        return surf
+
+    def _blit_terrain(self) -> None:
+        """Blit the VISIBLE slice of the cached landscape through the camera (slice 11).
+
+        The stated cached-surface strategy: bakes exist only at quantized integer-cell zoom
+        buckets. When the live cell IS a bucket (any settled camera — zoom steps target
+        buckets exactly) the visible sub-rect blits 1:1, pixel-perfect and ~free. While a
+        zoom glide is between buckets, the nearest bucket's sub-rect is scaled by the small
+        residual ratio with pygame.transform.scale — one viewport-sized cheap interim that
+        the motion masks. The bake itself is never touched per frame.
+        """
+        screen, c, view = self._screen, self._cell, self._map_px
+        buckets = self._zoom_buckets or (self._cell0,)
+        surf = self._terrain_surface(min(buckets, key=lambda b: abs(b - c)))
+        if surf is None:
+            return
+        x0, y0 = world_to_screen((-_MARGIN_CELLS, -_MARGIN_CELLS), self._cam_draw,
+                                 (view, view))
+        world_px = (self._size + 2 * _MARGIN_CELLS) * c
+        vx0, vy0 = max(0, int(x0)), max(0, int(y0))
+        vx1, vy1 = min(view, int(x0 + world_px)), min(view, int(y0 + world_px))
+        if vx1 <= vx0 or vy1 <= vy0:
+            return
+        cq = surf.get_width() // (self._size + 2 * _MARGIN_CELLS)
+        if c == cq:                                    # resting ON the bucket: plain blit
+            screen.blit(surf, (vx0, vy0), (vx0 - int(x0), vy0 - int(y0),
+                                           vx1 - vx0, vy1 - vy0))
+            return
+        s = cq / c                                     # live px -> bucket px
+        sw, sh = surf.get_size()
+        sx0 = max(0, min(sw - 1, int((vx0 - x0) * s)))
+        sy0 = max(0, min(sh - 1, int((vy0 - y0) * s)))
+        sx1 = max(sx0 + 1, min(sw, int(math.ceil((vx1 - x0) * s))))
+        sy1 = max(sy0 + 1, min(sh, int(math.ceil((vy1 - y0) * s))))
+        sub = surf.subsurface((sx0, sy0, sx1 - sx0, sy1 - sy0))
+        screen.blit(pygame.transform.scale(sub, (vx1 - vx0, vy1 - vy0)), (vx0, vy0))
+
+    def _coast_x(self, y: int, cell: int | None = None, m: int | None = None,
+                 map_px: int | None = None) -> int:
         """The shoreline x for pixel row y: the sea fills the outer EAST margin, meandering.
 
         A per-cell-row hash, linearly smoothed between rows, keeps the water strictly inside
         the wilderness margin (width 0.37..0.72 of it) — the playable grid never gets wet.
-        Deterministic, so the baked coast and the per-frame shimmer agree forever.
+        Deterministic, so the baked coast and the per-frame shimmer agree forever. Slice 11:
+        the defaults describe the BASE (fit) geometry; a bucket bake passes its own — the
+        row hash is keyed on the WORLD row, so every zoom draws the SAME shoreline.
         """
-        m, cell, map_px = self._margin_px, self._cell, self._map_px
+        cell = cell if cell is not None else self._cell0
+        m = m if m is not None else self._margin_px
+        map_px = map_px if map_px is not None else self._map_px
         if m <= 0:
             return map_px
         row, t = divmod(max(0, y), max(1, cell))
@@ -1301,16 +1673,19 @@ class PygameRenderer:
         wiggle = (a + (b - a) * (t / max(1, cell))) - 0.5
         return int(map_px - m * (0.55 + 0.35 * wiggle))
 
-    def _build_terrain(self) -> Any:
-        """Bake the FULL-BLEED landscape ONCE: grass, wilderness fringe, coast, features, light.
+    def _build_terrain(self, cell: int) -> Any:
+        """Bake the FULL-BLEED landscape for one cell size: grass, fringe, coast, features.
 
         Slice 9 extends slice 5 edge to edge: the ground texture covers the whole map zone; the
         margin ring beyond the playable grid darkens/roughens into WILDERNESS with denser trees;
         an EAST COAST (sand -> shallow -> open water) meanders across the margin; every tree and
         rock casts a soft baked shadow from the top-left sun. Still 100% terrain_noise — it never
-        calls `random`, so it cannot perturb the seeded sim. Cached per grid size, free to blit.
+        calls `random`, so it cannot perturb the seeded sim. Slice 11 parameterizes the bake by
+        `cell` so each quantized zoom bucket gets its own CRISP bake (cached; blitted per frame).
         """
-        map_px, cell, size, m = self._map_px, self._cell, self._size, self._margin_px
+        size = self._size
+        m = _MARGIN_CELLS * cell
+        map_px = cell * size + 2 * m
         if map_px <= 0:
             return None
         grid_px = cell * size
@@ -1331,9 +1706,12 @@ class PygameRenderer:
                     shade += int((-10 + fine * 14) * w)
                 surf.fill(_shade(_GRASS_BASE, shade), (tx, ty, tile, tile))
 
-        # 2) STIPPLE grain across the whole zone (cheap; most samples place nothing).
-        for sy in range(0, map_px, _STIPPLE_STEP):
-            for sx in range(0, map_px, _STIPPLE_STEP):
+        # 2) STIPPLE grain across the whole zone (cheap; most samples place nothing). The
+        #    stride scales with the bucket's cell so a close-up bake stays affordable and
+        #    keeps roughly the base view's speck density per world area.
+        step = max(_STIPPLE_STEP, (_STIPPLE_STEP * cell) // max(1, self._cell0))
+        for sy in range(0, map_px, step):
+            for sx in range(0, map_px, step):
                 h = terrain_noise(sx, sy, 3)
                 if h > 0.90:
                     surf.set_at((sx, sy), _GRASS_SPECK_HI)
@@ -1342,7 +1720,7 @@ class PygameRenderer:
 
         # 3) The EAST COAST: for each pixel row, sand strip -> sunlit shallow -> open water.
         for y in range(map_px):
-            wx = self._coast_x(y)
+            wx = self._coast_x(y, cell, m, map_px)
             if wx < map_px - 1:
                 pygame.draw.line(surf, _WATER, (wx, y), (map_px - 1, y), 1)
                 pygame.draw.line(surf, _WATER_SHALLOW, (wx, y), (min(wx + 3, map_px - 1), y), 1)
@@ -1350,7 +1728,7 @@ class PygameRenderer:
                     pygame.draw.line(surf, _SAND, (wx - 4, y), (wx - 1, y), 1)
 
         # 4) A POND in one deterministic off-centre spot inside the playable land.
-        self._build_pond(surf, grid_px, cell)
+        self._build_pond(surf, grid_px, cell, m)
 
         # 5) TREES and ROCKS over the EXTENDED cell range (margin included) — denser at the
         #    fringe so the forest visibly closes in; nothing planted in the sea.
@@ -1358,7 +1736,8 @@ class PygameRenderer:
             for cx in range(-_MARGIN_CELLS, size + _MARGIN_CELLS):
                 px = m + cx * cell + cell // 2
                 py = m + cy * cell + cell // 2
-                if not (0 <= px < map_px and 0 <= py < map_px) or px > self._coast_x(py) - cell:
+                if not (0 <= px < map_px and 0 <= py < map_px) \
+                        or px > self._coast_x(py, cell, m, map_px) - cell:
                     continue
                 fringe = not (0 <= cx < size and 0 <= cy < size)
                 if terrain_noise(cx, cy, 4) > (_TREE_THRESHOLD_WILD if fringe else _TREE_THRESHOLD):
@@ -1425,14 +1804,18 @@ class PygameRenderer:
         nf = self._nf
         if nf <= _NIGHT_EPS:
             return
-        screen, f = self._screen, self._frame
+        screen, f, view = self._screen, self._frame, self._map_px
+        k_px = self._cell / max(1, self._cell0)            # slice 11: base px -> live px
         for k, (x, y, s) in enumerate(self._stars):        # stars mirrored on the water
+            sx, sy = self._base_to_screen(x, y)            # slice 11: ride the camera
+            if not visible_on_screen(sx, sy, 6, view, view):
+                continue
             tw = terrain_noise(f // 14, k, 66)
             a = _q8(nf * (95 + 140 * tw))
             if a <= 0:
                 continue
-            stamp = self._soft_stamp(s, PALETTE["starlight"], a)
-            screen.blit(stamp, (x - stamp.get_width() // 2, y - stamp.get_height() // 2))
+            stamp = self._soft_stamp(max(1, int(round(s * k_px))), PALETTE["starlight"], a)
+            screen.blit(stamp, (sx - stamp.get_width() // 2, sy - stamp.get_height() // 2))
         for kind, x, y, s in self._frame_lights:
             if kind == "window":                           # the towns twinkle
                 fl = 0.82 + 0.18 * terrain_noise(f // 3, x * 7 + y * 3, 67)
@@ -1452,17 +1835,15 @@ class PygameRenderer:
                 pygame.draw.circle(screen, PALETTE["torch_flame"], (x, y + wob),
                                    max(2, s // 3), 1)
 
-    def _build_pond(self, surf: Any, grid_px: int, cell: int) -> None:
+    def _build_pond(self, surf: Any, grid_px: int, cell: int, margin: int) -> None:
         """A still pond in a fixed off-centre spot (deterministic; never the central arena).
 
-        Slice 9: offset past the margin, with a sun-side highlight rim; its geometry is kept
-        (renderer-local) so the per-frame water shimmer knows where to glint.
+        Slice 9: offset past the margin, with a sun-side highlight rim. Slice 11: the
+        geometry comes from the shared pure _pond_geom formula (the base-space copy lives
+        in self._pond, set once in _ensure_screen), so the per-frame shimmer and the star
+        filter glint on the same water at every zoom bucket.
         """
-        pcx = self._margin_px + int(grid_px * 0.22)
-        pcy = self._margin_px + int(grid_px * 0.74)
-        rx = max(cell, int(grid_px * 0.10))
-        ry = max(cell, int(grid_px * 0.07))
-        self._pond = (pcx, pcy, rx, ry)
+        pcx, pcy, rx, ry = _pond_geom(grid_px, cell, margin)
         pygame.draw.ellipse(surf, _WATER, (pcx - rx, pcy - ry, 2 * rx, 2 * ry))
         pygame.draw.ellipse(surf, _WATER_HI, (pcx - rx, pcy - ry, 2 * rx, 2 * ry), 1)
         pygame.draw.ellipse(surf, _WATER_HI,
@@ -1528,27 +1909,38 @@ class PygameRenderer:
 
     def _draw_water_shimmer(self) -> None:
         """Ambient ripple glints on the pond and along the coast — a few short light dashes
-        whose positions re-hash every ~⅓s (terrain_noise on a coarse frame index; zero RNG)."""
-        f = self._frame
+        whose positions re-hash every ~⅓s (terrain_noise on a coarse frame index; zero RNG).
+
+        Slice 11: glints are computed in the BASE pixel space the pond/coast are stored in,
+        then ride the shared camera transform to screen; off-screen glints are culled and
+        the dash length scales with the zoom.
+        """
+        f, view = self._frame, self._map_px
+        k_px = self._cell / max(1, self._cell0)
         if self._pond is not None:
             pcx, pcy, rx, ry = self._pond
             for k in range(3):
                 u = terrain_noise(f // 18, k, 71) - 0.5
                 v = terrain_noise(f // 18, k, 72) - 0.5
                 if (u * 1.2) ** 2 + (v * 1.1) ** 2 < 0.18:      # keep the glint inside the water
-                    x, y = pcx + u * rx * 1.2, pcy + v * ry * 1.1
-                    w = 3 + int(3 * terrain_noise(f // 18, k, 73))
-                    pygame.draw.line(self._screen, _WATER_HI,
-                                     (int(x - w), int(y)), (int(x + w), int(y)), 1)
+                    x, y = self._base_to_screen(pcx + u * rx * 1.2, pcy + v * ry * 1.1)
+                    if not visible_on_screen(x, y, 12, view, view):
+                        continue
+                    w = max(2, int((3 + 3 * terrain_noise(f // 18, k, 73)) * k_px))
+                    pygame.draw.line(self._screen, _WATER_HI, (x - w, y), (x + w, y), 1)
         if self._margin_px > 0:
             for k in range(4):
-                y = int(terrain_noise(f // 22, k, 74) * (self._map_px - 3)) + 1
-                x0 = self._coast_x(y)
-                x = x0 + 3 + terrain_noise(f // 22, k, 75) * max(0, self._map_px - x0 - 8)
-                if x < self._map_px - 3:
-                    w = 3 + int(3 * terrain_noise(f // 22, k, 76))
-                    pygame.draw.line(self._screen, _WATER_HI,
-                                     (int(x), y), (int(min(x + w, self._map_px - 3)), y), 1)
+                by = int(terrain_noise(f // 22, k, 74) * (self._map_px - 3)) + 1
+                x0 = self._coast_x(by)
+                bx = x0 + 3 + terrain_noise(f // 22, k, 75) * max(0, self._map_px - x0 - 8)
+                if bx >= self._map_px - 3:
+                    continue
+                bw = 3 + int(3 * terrain_noise(f // 22, k, 76))
+                x1, y1 = self._base_to_screen(bx, by)
+                x2, _y2 = self._base_to_screen(min(bx + bw, self._map_px - 3), by)
+                if not visible_on_screen(x1, y1, 12, view, view):
+                    continue
+                pygame.draw.line(self._screen, _WATER_HI, (x1, y1), (max(x1 + 1, x2), y1), 1)
 
     def _draw_birds(self) -> None:
         """The occasional bird crossing the sky: tiny v-shapes, flapping — pure frame+hash."""
@@ -1600,15 +1992,22 @@ class PygameRenderer:
             mpos = [pos_by_name[n] for n in members if n in pos_by_name]
             rad = max(cell, int(round(settlement_radius_cells(center, mpos) * cell * 0.85)))
             cx, cy = self._to_px(int(center[0]), int(center[1]))
+            if not visible_on_screen(cx, cy, rad + cell, map_px, map_px):
+                continue                                         # slice 11: cull off-screen fields
             pygame.draw.circle(overlay, (*_FARMLAND, _FARMLAND_ALPHA), (cx, cy), rad)
-            step = max(3, cell // 2)
-            crop_dx = max(4, cell // 2)
+            # Slice 11: furrow/tuft spacing also scales with the DISC so a sprawling (or
+            # zoomed-in) settlement keeps a bounded tuft count per frame — the ploughed-
+            # field read survives at any radius without O(radius²) per-frame cost.
+            step = max(3, cell // 2, rad // 18)
+            crop_dx = max(4, cell // 2, rad // 18)
             for fy in range(cy - rad + step, cy + rad, step):    # furrows, clipped to the disc
                 half = int((rad * rad - (fy - cy) ** 2) ** 0.5)
                 if half <= 1:
                     continue
                 pygame.draw.line(overlay, (*_FARMLAND_FURROW, _FARMLAND_ALPHA),
                                  (cx - half, fy), (cx + half, fy), 1)
+                if self._lod == "far":
+                    continue                # slice 11: the strategy view drops the swaying tufts
                 # Slice 6: CROP ROWS — little green tufts standing along each furrow.
                 for x in range(cx - half + 2, cx + half - 1, crop_dx):
                     sway = int(round(math.sin(f * 0.10 + x * 0.4 + fy * 0.15)))
@@ -1764,6 +2163,8 @@ class PygameRenderer:
             member_positions = [pos_by_name[n] for n in members if n in pos_by_name]
             radius_px = int(round(settlement_radius_cells(center, member_positions) * cell))
             cx, cy = self._to_px(int(center[0]), int(center[1]))
+            if not visible_on_screen(cx, cy, radius_px + cell * 3, map_px, map_px):
+                continue                          # slice 11: whole town off-screen -> culled
             # Slice 8: the REALM layer — an owned settlement wears its TOP ruler's banner colour
             # (emperor > king > lone monarch); during a battle's aftermath, _territory_lerp holds
             # the mid-fade tint instead, so conquered land BLEEDS to the victor's colour rather
@@ -1776,21 +2177,29 @@ class PygameRenderer:
                 tint = night_mute(tint, self._nf)
                 fill, fill_a = tint, int(round(_REALM_FILL_ALPHA * (1.0 - 0.45 * self._nf)))
                 edge, edge_a = _shade(tint, 45), int(round(_REALM_EDGE_ALPHA * (1.0 - 0.35 * self._nf)))
+                if self._lod == "far":            # slice 11: territory is THE strategic read
+                    fill_a = min(150, int(fill_a * 1.8))
+                    edge_a = min(220, int(edge_a * 1.3))
             else:
                 fill, fill_a, edge, edge_a = (_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA,
                                               _SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA)
             pygame.draw.circle(overlay, (*fill, fill_a), (cx, cy), radius_px)
             pygame.draw.circle(overlay, (*edge, edge_a), (cx, cy), radius_px, width=2)
-            towns.append((sid, center, cx, cy, len(members), radius_px))
+            towns.append((sid, center, cx, cy, len(members), radius_px, owner))
         screen.blit(overlay, (0, 0))
 
         # Slice 6: each settlement is now a detailed, GROWING built place — a cached plan of
         # houses + civic structure + a ruler's HALL/CASTLE. Drawn under food/agents (which the
         # caller draws afterwards). Tiny cells fall back to the slice-4 simple-house glyphs.
         pending_labels: list[tuple[str, int, int, int]] = []
-        for sid, center, cx, cy, count, radius_px in towns:
+        for sid, center, cx, cy, count, radius_px, owner in towns:
             top_y = cy
-            if cell >= _TOWN_MIN_CELL:
+            if self._lod == "far":
+                # Slice 11 FAR: a settlement is a deliberate strategy-map MARK — a tiny block
+                # cluster under a realm banner — not a shrunken village.
+                self._draw_far_settlement(sid, cx, cy, count, owner, state)
+                top_y = cy - cell * 3
+            elif cell >= _TOWN_MIN_CELL:
                 mon = monarchs.get(sid, {}).get("monarch")
                 led = leaders.get(sid, {}).get("leader")
                 if mon is not None:
@@ -1812,7 +2221,8 @@ class PygameRenderer:
             pending_labels.append((sid, cx, top_y, count))
         # Slice 9: labels drawn LAST on a translucent chip, clear of the buildings (above the
         # cluster), clamped on-map, and nudged upward when two settlements' labels collide.
-        if self._font is not None and cell >= _SETTLEMENT_LABEL_MIN_CELL:
+        # Slice 11: the FAR strategy view FORCES name+size labels (they are the map's text).
+        if self._font is not None and (cell >= _SETTLEMENT_LABEL_MIN_CELL or self._lod == "far"):
             placed: list[Any] = []
             for sid, cx, top_y, count in pending_labels:
                 label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
@@ -1847,6 +2257,44 @@ class PygameRenderer:
         for i in range(n):
             ang = -math.pi / 2 + (i / n) * 2 * math.pi
             self._draw_house(int(cx + ring * math.cos(ang)), int(cy + ring * math.sin(ang)), house_s)
+
+    # -- Slice 11: the FAR (strategy-map) settlement mark + CLOSE name tags ---------
+    def _draw_far_settlement(self, sid: str, cx: int, cy: int, count: int, owner: Any,
+                             state: dict[str, Any]) -> None:
+        """FAR zoom: a settlement drawn as a deliberate MAP MARK — a tiny block cluster
+        (one to three blocks by population band) under a realm BANNER; a realm's capital
+        (a kingdom's home, or a lone monarch's seat) flies a taller flag. The realm colour
+        is the dominant strategic read; detail (houses, smoke, figures) is deliberately off.
+        """
+        s, c = self._screen, self._cell
+        blk = max(3, int(c * 0.9))
+        offs = ((0, 0), (-blk, blk // 3), (blk, blk // 2))[:1 + min(2, count // 4)]
+        for i, (dx, dy) in enumerate(offs):
+            rect = pygame.Rect(cx + dx - blk // 2, cy + dy - blk // 2, blk, max(2, (blk * 3) // 4))
+            pygame.draw.rect(s, _pick(_WALL_TONES, 0.15 + 0.3 * i), rect)
+            pygame.draw.rect(s, _OUTLINE, rect, 1)
+        if owner is None:
+            return
+        color = night_mute(realm_color(owner), self._nf)
+        capital = ((state.get("kingdoms", {}).get(owner, {}) or {}).get("home") == sid
+                   or (state.get("monarchs", {}).get(sid, {}) or {}).get("monarch") == owner)
+        pole_h = c * (3 if capital else 2)
+        top = cy - blk - pole_h
+        pygame.draw.line(s, _OUTLINE, (cx, cy - blk), (cx, top), 1)
+        fl = int(round(math.sin(self._frame * 0.3 + cx * 0.2) * 1.5))   # the pennant flutters
+        tip = (cx + max(4, int(c * 1.2)), top + 2 + fl)
+        pygame.draw.polygon(s, color, [(cx, top), tip, (cx, top + max(4, c // 2) + 2)])
+        pygame.draw.line(s, _shade(color, 55), (cx, top), tip, 1)
+
+    def _draw_name_tag(self, name: str, cx: int, top_y: int) -> None:
+        """CLOSE zoom only: the villager's name under the figure (a cached muted render) —
+        the village-square read, where you can see WHO is talking to whom."""
+        key = ("name", name)
+        lab = self._stamps.get(key)
+        if lab is None:
+            lab = self._font.render(name, True, _STAT_LABEL)
+            self._stamps[key] = lab
+        self._screen.blit(lab, (cx - lab.get_width() // 2, top_y))
 
     # -- Slice 6: detailed settlement rendering from a cached plan (pure drawing) ---
     def _draw_town(self, cx: int, cy: int, plan: dict[str, Any]) -> None:
@@ -2109,7 +2557,9 @@ class PygameRenderer:
         towns = len(state.get("settlements", {}))
         if towns:  # only shown once settlements exist, so the slice-1 HUD is unchanged
             text += f"   towns {towns}"
-        text += "   [space] pause  [esc] quit"
+        # Slice 11: the zoom readout + the camera keys (the HUD is UI — never transformed).
+        text += f"   zoom {self._cell / max(1, self._cell0):.1f}x"
+        text += "   [spc]pause [wasd]pan [whl]zoom [home]fit"
         if paused:
             text = "PAUSED — [space] resume   " + text
         label = self._font.render(text, True, _HUD_FG)
@@ -2233,6 +2683,13 @@ class PygameRenderer:
         conquered settlements from their old realm colour to the victor's; it is cleared on exit
         so the map settles onto the true current colours (also the skip-key end-state).
         """
+        # Slice 11: a battle may start OFF-SCREEN on a big world — glide the camera to the
+        # midpoint of the two hosts (pan only; the zoom is the viewer's) so it is watched,
+        # not missed. Camera state only; the sim and its RNG are untouched.
+        (ax, ay), (bx, by) = scene["att_pos"], scene["def_pos"]
+        self._cam_tx, self._cam_ty = clamp_camera((ax + bx) / 2.0, (ay + by) / 2.0,
+                                                  self._cam_tcell, self._size,
+                                                  (self._map_px, self._map_px))
         start = time.monotonic()
         after_start = _CIN_TOTAL - _CIN_AFTER
         try:

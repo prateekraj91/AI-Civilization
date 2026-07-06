@@ -173,6 +173,8 @@ def accumulate(state: dict[str, Any], turn: int) -> list[tuple[str, float]]:
     for a in state["agents"]:  # stable world_state order
         if not a.alive or a.settlement is None:
             continue  # rule 1: storing requires settlement
+        if world.is_dependent_child(a, state):
+            continue  # M4.1: a dependent child gathers/banks nothing (no production)
         if a.hunger > STORE_HUNGER_MAX:
             continue  # not yet fed — its own need comes first, no surplus to bank
         if not _near_food(a.position, food, STORE_RADIUS):

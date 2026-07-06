@@ -150,6 +150,7 @@ def _available_mercenaries(state: dict[str, Any], aspirant: Any, exclude: set[st
     cands = [a for a in state["agents"]
              if a.alive and a.name != aspirant.name and a.name not in exclude
              and _wealth(a) < MERC_MAX_WEALTH
+             and not world.is_dependent_child(a, state)  # M4.1: children don't fight
              and _chebyshev(a.position, aspirant.position) <= MUSTER_RADIUS]
     return sorted(cands, key=lambda a: (_chebyshev(a.position, aspirant.position), a.name))
 
@@ -184,7 +185,10 @@ def defenders_of(state: dict[str, Any], sid: str) -> tuple[list[Any], str]:
     Pure read. The figurehead (monarch/leader) is NOT counted as a combat unit — it holds or loses
     the TITLE; the rank-and-file are the force that fights and dies.
     """
-    living = {a.name: a for a in state["agents"] if a.alive}
+    # M4.1: dependent children never stand in a battle line — not as garrison,
+    # follower-levy or militia (a no-op filter when lineage is off).
+    living = {a.name: a for a in state["agents"]
+              if a.alive and not world.is_dependent_child(a, state)}
     mon = state.get("monarchs", {}).get(sid)
     if mon is not None:
         return [living[n] for n in sorted(mon["garrison"]) if n in living], "garrison"

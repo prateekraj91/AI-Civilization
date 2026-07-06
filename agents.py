@@ -149,3 +149,32 @@ class Agent:
     # (economy.trade); a buyer pays money, a seller banks it. Wealth in money, like stockpile,
     # EMERGES from who an agent is (a hoarding producer mints the most) — never assigned.
     money: float = 0.0
+
+    # --- V2 M4.1 LINEAGE (birth, childhood, aging, family) -------------------
+    # All five fields are inert defaults unless the run opts in (--lineage /
+    # world_state["lineage_on"]): nothing reads them when the system is off, so a
+    # default run is byte-identical. Wealth inheritance at death is M4.2 and
+    # dynastic succession of titles is M4.3 — NEITHER is built here.
+
+    # age: turns since birth (or since world creation for the founding cast, which
+    # lineage.init_cast seeds with varied adult ages from the seeded stream).
+    age: int = 0
+
+    # lifespan: the age at which this agent dies of OLD AGE. Drawn once from the
+    # seeded sim stream at creation (founders in init_cast, newborns at birth,
+    # backstop respawns on their first lineage tick). 0 = unset/immortal — the
+    # lineage-off world where only starvation and battle kill.
+    lifespan: int = 0
+
+    # parents: the two parent names, or () for a founder/respawned blank slate.
+    # The permanent family link a birth records (read by M4.2/M4.3 later).
+    parents: tuple = ()
+
+    # dependent: True while this agent is a CHILD — it takes no actions (no
+    # foraging/production/trade/war), is fed from its parents' stores, and learns
+    # at a boosted rate. Flips False when age reaches lineage.CHILDHOOD_TURNS.
+    dependent: bool = False
+
+    # last_child_turn: when this agent last parented a child — births are paced
+    # by lineage.BIRTH_COOLDOWN. Large-negative default = never.
+    last_child_turn: int = -10**9

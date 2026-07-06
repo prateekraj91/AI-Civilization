@@ -4469,6 +4469,223 @@ def test_pygame_night_draw_is_read_only_and_lights_the_dark() -> None:
     print("PASS test_pygame_night_draw_is_read_only_and_lights_the_dark")
 
 
+def test_pygame_camera_transform_pure_and_inverse() -> None:
+    """Slice 11: world_to_screen / screen_to_world are pure, exact inverses of each other,
+    and behave like a camera: the view centre maps to the viewport centre, screen distances
+    scale linearly with the cell size (the zoom), and panning the centre shifts everything
+    the opposite way. Zero RNG touched.
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import world_to_screen, screen_to_world
+    except ImportError:
+        print("PASS test_pygame_camera_transform_pure_and_inverse (skipped: no pygame)")
+        return
+    s0 = _random.getstate()
+    view = (760, 760)
+    cams = ((5.0, 7.0, 16), (0.0, 0.0, 6), (22.5, 3.25, 48), (20.0, 20.0, 14))
+    points = ((0.5, 0.5), (10.0, 20.0), (-3.0, 44.0), (12.25, 0.0))
+    for cam in cams:
+        for pos in points:
+            sp = world_to_screen(pos, cam, view)
+            back = screen_to_world(sp, cam, view)
+            assert abs(back[0] - pos[0]) < 1e-9 and abs(back[1] - pos[1]) < 1e-9, \
+                f"screen_to_world must invert world_to_screen (cam={cam}, pos={pos})"
+        # The camera CENTRE lands exactly on the viewport centre.
+        assert world_to_screen(cam[:2], cam, view) == (380.0, 380.0)
+    # Zoom scaling: doubling the cell size doubles every on-screen distance.
+    a1 = world_to_screen((10.0, 10.0), (8.0, 8.0, 12), view)
+    b1 = world_to_screen((14.0, 10.0), (8.0, 8.0, 12), view)
+    a2 = world_to_screen((10.0, 10.0), (8.0, 8.0, 24), view)
+    b2 = world_to_screen((14.0, 10.0), (8.0, 8.0, 24), view)
+    assert (b2[0] - a2[0]) == 2 * (b1[0] - a1[0]), "screen distance scales with the cell size"
+    # Panning the centre right moves the world LEFT on screen.
+    x_before = world_to_screen((10.0, 10.0), (8.0, 8.0, 12), view)[0]
+    x_after = world_to_screen((10.0, 10.0), (11.0, 8.0, 12), view)[0]
+    assert x_after < x_before, "panning the camera right slides the world left"
+    assert world_to_screen((3.0, 4.0), (1.0, 1.0, 10), view) == \
+        world_to_screen((3.0, 4.0), (1.0, 1.0, 10), view), "the transform is pure"
+    assert _random.getstate() == s0, "the camera transform touched the global RNG stream"
+    print("PASS test_pygame_camera_transform_pure_and_inverse")
+
+
+def test_pygame_camera_clamp_buckets_and_culling_pure() -> None:
+    """Slice 11: the camera-support helpers are pure and bounded — clamp_camera centres a
+    world that fits the viewport and pins the view inside one that doesn't; zoom_buckets is
+    a small sorted integer ladder spanning ~0.4x..3x of the fit cell (always containing it);
+    visible_on_screen culls exactly outside the padded viewport.
+    """
+    import random as _random
+    try:
+        from renderer.pygame_renderer import (clamp_camera, zoom_buckets, visible_on_screen,
+                                              _MARGIN_CELLS, _CELL_FLOOR, _CELL_CEIL)
+    except ImportError:
+        print("PASS test_pygame_camera_clamp_buckets_and_culling_pure (skipped: no pygame)")
+        return
+    s0 = _random.getstate()
+    view = (760, 760)
+    # A world SMALLER than the viewport floats centred whatever the requested centre.
+    assert clamp_camera(99.0, -99.0, 4, 20, view) == (10.0, 10.0)
+    # A world BIGGER than the viewport clamps the centre so the view never leaves it.
+    size, cell = 40, 32                                # world px = 46*32 = 1472 > 760
+    half = view[0] / (2.0 * cell)
+    cx, cy = clamp_camera(-50.0, 999.0, cell, size, view)
+    assert cx == -_MARGIN_CELLS + half and cy == size + _MARGIN_CELLS - half
+    inside = clamp_camera(20.0, 20.0, cell, size, view)
+    assert inside == (20.0, 20.0), "an in-bounds centre passes through unchanged"
+    # The zoom ladder: sorted unique ints, contains the base, spans the bounded range.
+    for base in (10, 14, 16, 25, 44):
+        bs = zoom_buckets(base)
+        assert list(bs) == sorted(set(bs)) and all(isinstance(b, int) for b in bs)
+        assert base in bs, "the fit-whole-world cell is always a bucket (launch blits 1:1)"
+        assert 4 <= len(bs) <= 10, f"a small quantized ladder, got {len(bs)} for base {base}"
+        assert bs[0] >= max(_CELL_FLOOR, round(base * 0.4) - 1) and bs[0] < base
+        assert bs[-1] <= min(_CELL_CEIL, base * 3) and bs[-1] > base
+        assert bs == zoom_buckets(base), "the ladder is pure"
+    # Culling: inside/edge kept, beyond the padded viewport dropped.
+    assert visible_on_screen(380, 380, 0, 760, 760)
+    assert visible_on_screen(-8, 760, 10, 760, 760), "the pad keeps part-visible things"
+    assert not visible_on_screen(-30, 380, 10, 760, 760)
+    assert not visible_on_screen(380, 9999, 50, 760, 760)
+    assert _random.getstate() == s0, "camera helpers touched the global RNG stream"
+    print("PASS test_pygame_camera_clamp_buckets_and_culling_pure")
+
+
+def test_pygame_lod_tiers_have_hysteresis() -> None:
+    """Slice 11: LOD tier selection is pure and hysteretic — far/mid/close appear in order
+    as the zoom sweeps, and wobbling the cell size right at a boundary can never flicker
+    the tier, because leaving a tier needs the cell to move past the band it entered by.
+    """
+    try:
+        from renderer.pygame_renderer import (lod_tier, _LOD_FAR_MAX, _LOD_CLOSE_MIN,
+                                              _LOD_HYST)
+    except ImportError:
+        print("PASS test_pygame_lod_tiers_have_hysteresis (skipped: no pygame)")
+        return
+    assert lod_tier(5.0, "mid") == "far" and lod_tier(16.0, "mid") == "mid" \
+        and lod_tier(40.0, "mid") == "close"
+    # Sweeping the whole range visits the tiers once each, in order (no bouncing).
+    tier, seen = "far", ["far"]
+    c = 4.0
+    while c <= 60.0:
+        tier = lod_tier(c, tier)
+        if tier != seen[-1]:
+            seen.append(tier)
+        c += 0.25
+    assert seen == ["far", "mid", "close"], f"tier order broke: {seen}"
+    # Hysteresis at the far/mid boundary: both tiers are STICKY on the boundary itself.
+    assert lod_tier(_LOD_FAR_MAX, "far") == "far" and lod_tier(_LOD_FAR_MAX, "mid") == "mid"
+    # Wobbling across the boundary inside the band never flips the tier, from either side.
+    for start in ("far", "mid"):
+        tier = start
+        for cell in (_LOD_FAR_MAX - 0.4, _LOD_FAR_MAX + 0.4) * 20:
+            tier = lod_tier(cell, tier)
+            assert tier == start, "the far/mid boundary flickered inside the hysteresis band"
+    # Same at the mid/close boundary.
+    assert lod_tier(_LOD_CLOSE_MIN, "close") == "close" and lod_tier(_LOD_CLOSE_MIN, "mid") == "mid"
+    for start in ("close", "mid"):
+        tier = start
+        for cell in (_LOD_CLOSE_MIN - 0.4, _LOD_CLOSE_MIN + 0.4) * 20:
+            tier = lod_tier(cell, tier)
+            assert tier == start, "the mid/close boundary flickered inside the hysteresis band"
+    # Leaving the band does switch (hysteresis, not a latch).
+    assert lod_tier(_LOD_FAR_MAX + _LOD_HYST + 0.1, "far") == "mid"
+    assert lod_tier(_LOD_CLOSE_MIN - _LOD_HYST - 0.1, "close") == "mid"
+    print("PASS test_pygame_lod_tiers_have_hysteresis")
+
+
+def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
+    """Slice 11: the camera lives ONLY on the renderer and drawing at every zoom is a pure
+    READ. On a BIG world (grid 40, two kingdoms far apart): the run opens on the fit-whole-
+    world view; gliding out to the smallest bucket lands in the FAR strategy tier; gliding
+    in to the largest lands CLOSE with the centre clamped inside the world; the bucket
+    landscape cache stays bounded; wheel/HOME events drive only camera targets — and
+    world_state is byte-identical throughout. Headless SDL-dummy; skips without pygame.
+    """
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, _MARGIN_CELLS, _TERRAIN_LRU
+    except ImportError:
+        print("PASS test_pygame_camera_state_renderer_local_and_lod_draw_read_only (skipped: no pygame)")
+        return
+    size = 40
+    west = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    east = {n: _FakeAgent(n, "cautious", (34, 34), True, 2.0, 0.0) for n in ("p", "q", "r", "s")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2), (20, 20), (37, 37)],
+        "settlements": {
+            "S0A1": {"id": "S0A1", "center": (6, 6), "members": set(west), "founded": 1},
+            "S0B1": {"id": "S0B1", "center": (34, 34), "members": set(east), "founded": 2},
+        },
+        "monarchs": {"S0A1": {"monarch": "KA", "since": 3, "garrison": set()},
+                     "S0B1": {"monarch": "KB", "since": 4, "garrison": set()}},
+        "kingdoms": {"KA": {"home": "S0A1", "settlements": {"S0A1"}, "vassals": {}},
+                     "KB": {"home": "S0B1", "settlements": {"S0B1"}, "vassals": {}}},
+        "empires": {}, "leaders": {},
+        "events": ["turn 9: a talked to b: \"hi\""],
+        "agents": (list(west.values()) + list(east.values())
+                   + [_FakeAgent("KA", "independent", (6, 6), True, 200.0, 0.0),
+                      _FakeAgent("KB", "independent", (34, 34), True, 200.0, 0.0)]),
+    }
+    keys_before = set(state)
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    agents_before = [(a.name, a.position, a.alive) for a in state["agents"]]
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(size)
+        # Default start: the FIT-WHOLE-WORLD view, resting exactly on the base bucket.
+        assert (r._cam_x, r._cam_y) == (size / 2.0, size / 2.0) == (r._cam_tx, r._cam_ty)
+        assert r._cell == r._cell0 and r._cam_cell == float(r._cell0)
+        assert r._cell0 in r._zoom_buckets, "the fit cell is a zoom bucket (1:1 blits)"
+        r._draw(state)
+        assert r._cell == r._cell0, "an idle camera stays on the fit view"
+        # GLIDE OUT to the smallest bucket -> the FAR strategy tier (several frames settle it).
+        r._cam_tcell = float(r._zoom_buckets[0])
+        for _ in range(60):
+            r._draw(state)
+        assert r._cell == r._zoom_buckets[0], "the zoom glide settles exactly on its bucket"
+        assert r._lod == "far", f"smallest bucket reads as the strategy map, got {r._lod}"
+        # GLIDE IN to the largest bucket with an absurd pan target: the clamp keeps the view
+        # inside the world and the tier lands CLOSE.
+        r._cam_tx, r._cam_ty = -999.0, 999.0
+        r._cam_tcell = float(r._zoom_buckets[-1])
+        for _ in range(80):
+            r._draw(state)
+        assert r._cell == r._zoom_buckets[-1] and r._lod == "close"
+        assert -_MARGIN_CELLS <= r._cam_x <= size + _MARGIN_CELLS
+        assert -_MARGIN_CELLS <= r._cam_y <= size + _MARGIN_CELLS
+        # The cached-surface strategy: base bake untouched, bucket cache LRU-bounded.
+        assert r._terrain_bg is not None and len(r._terrain_zoom) <= _TERRAIN_LRU
+        # Panning the TARGET right slides a fixed cell's screen position left once settled.
+        x1 = r._to_px(20, 20)[0]
+        r._cam_tx = r._cam_x + 3.0
+        for _ in range(40):
+            r._draw(state)
+        assert r._to_px(20, 20)[0] < x1, "panning right slides the world left"
+        # Camera EVENTS drive only renderer-local targets: wheel out steps down the ladder,
+        # HOME refits the whole world.
+        t_before = r._cam_tcell
+        r._handle_camera_event(pygame.event.Event(pygame.MOUSEWHEEL, y=-1, x=0))
+        assert r._cam_tcell < t_before, "wheel-down targets the next bucket out"
+        r._handle_camera_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_HOME))
+        assert r._cam_tcell == float(r._cell0) and (r._cam_tx, r._cam_ty) == (20.0, 20.0)
+        for _ in range(60):
+            r._draw(state)
+        assert r._cell == r._cell0, "HOME glides back to the fit-whole-world view"
+    finally:
+        pygame.quit()
+    assert set(state) == keys_before, "the camera wrote a key into world_state"
+    assert {k: state[k] for k in state if k != "agents"} == before, \
+        "a panned/zoomed draw mutated world_state"
+    assert [(a.name, a.position, a.alive) for a in state["agents"]] == agents_before, \
+        "a panned/zoomed draw mutated an agent"
+    print("PASS test_pygame_camera_state_renderer_local_and_lod_draw_read_only")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -4827,6 +5044,315 @@ def test_god_script_runs_and_capture_includes_god_events() -> None:
     print("PASS test_god_script_runs_and_capture_includes_god_events")
 
 
+# --- Lineage (V2 M4.1): birth, childhood, aging, family ---------------------
+def _lineage_world(pop_cap: int = 10) -> None:
+    """A fresh world with lineage ON, one settlement S001 at (5, 5), no agents yet."""
+    _fresh_world()
+    world_state["lineage_on"] = True
+    world_state["lineage"] = {"pop_cap": pop_cap, "birth_seq": 0}
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5),
+                                          "members": set(), "founded": 0}
+
+
+def _settler(name: str, pos: tuple[int, int], sid: str = "S001",
+             personality: str = "friendly and outgoing", hunger: int = 1) -> Agent:
+    """A living, settled adult (age 20, lifespan 100) enrolled in `sid`."""
+    a = Agent(name=name, personality=personality)
+    place_agent(a, *pos)
+    a.hunger = hunger
+    a.settlement = sid
+    a.age, a.lifespan = 20, 100
+    rec = world_state["settlements"].get(sid)
+    if rec is not None:
+        rec["members"].add(name)
+    return a
+
+
+def _mutual_high_trust(a: Agent, b: Agent, level: int | None = None) -> None:
+    """Seed trust BOTH ways at the pairing bar (lineage.PAIR_TRUST by default)."""
+    import lineage, trust
+    level = lineage.PAIR_TRUST if level is None else level
+    trust.ensure_relationship(a, b.name)["trust"] = level
+    trust.ensure_relationship(b, a.name)["trust"] = level
+
+
+def _surplus_food_at_centre(tiles: int = 4) -> None:
+    """Standing food within lineage.SURPLUS_RADIUS of S001's centre (5, 5)."""
+    for x, y in [(4, 4), (6, 6), (5, 3), (3, 5), (7, 5), (5, 7)][:tiles]:
+        world.place_food(x, y)
+
+
+def test_lineage_off_run_is_byte_identical_to_v1() -> None:
+    """lineage_on=False (default) leaves the run — respawn included — byte-identical."""
+    def run(**kw):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, **kw)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base, off = run(), run(lineage_on=False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "lineage_on=False diverged from the default run"
+    print("PASS test_lineage_off_run_is_byte_identical_to_v1")
+
+
+def test_birth_requires_every_gate() -> None:
+    """A birth needs settled-together + mutual trust + both fed + surplus + cap headroom
+    + adult parents + cooldown — knocking out ANY single gate yields no birth."""
+    import lineage
+
+    def staged(mutate=None) -> int:
+        """Build the all-gates-hold world, apply `mutate`, return births count."""
+        _lineage_world()
+        ada = _settler("Ada", (5, 5))
+        ben = _settler("Ben", (6, 5))
+        _mutual_high_trust(ada, ben)
+        _surplus_food_at_centre()
+        if mutate is not None:
+            mutate(ada, ben)
+        return len(lineage._births(world_state, 5, random.Random(3)))
+
+    # Baseline: every gate holds -> exactly ONE child of the pair this turn.
+    assert staged() == 1, "all gates hold but no child was born"
+    child = world_state["agents"][-1]
+    assert child.parents == ("Ada", "Ben") and child.dependent
+    assert child.settlement == "S001"
+
+    # Each gate, knocked out alone, blocks the birth:
+    assert staged(lambda a, b: a.relationships.__setitem__(
+        b.name, {"trust": lineage.PAIR_TRUST - 1, "interactions": 0, "grudge": False})
+    ) == 0, "one-way sub-threshold trust must block a birth (mutuality)"
+    assert staged(lambda a, b: setattr(b, "settlement", None)) == 0, \
+        "an unsettled partner must block a birth"
+    assert staged(lambda a, b: setattr(b, "settlement", "S002")) == 0, \
+        "different settlements must block a birth"
+    assert staged(lambda a, b: setattr(a, "hunger", lineage.FED_HUNGER)) == 0, \
+        "a hungry parent must block a birth (fed gate)"
+    assert staged(lambda a, b: world_state["food"].clear()) == 0, \
+        "no settlement food surplus must block a birth (Malthusian gate)"
+    assert staged(lambda a, b: world_state["lineage"].__setitem__("pop_cap", 2)) == 0, \
+        "the population cap must refuse a birth"
+    assert staged(lambda a, b: setattr(b, "dependent", True)) == 0, \
+        "a dependent child can never be a parent"
+    assert staged(lambda a, b: setattr(a, "last_child_turn", 4)) == 0, \
+        "the birth cooldown must pace births"
+    print("PASS test_birth_requires_every_gate")
+
+
+def test_child_inherits_blend_not_knowledge_and_kin_trust_seeded() -> None:
+    """The child's traits are the parents' average +/- bounded jitter (dominant
+    recomputed from the blend); knowledge/wealth are NOT inherited; kin-trust is
+    seeded both ways with each parent."""
+    import lineage
+    _lineage_world()
+    ada = _settler("Ada", (5, 5), personality="curious and adventurous")
+    ben = _settler("Ben", (6, 5), personality="curious and adventurous")
+    ada.knowledge = {"fire", "farming"}
+    ada.stockpile, ada.money = 5.0, 3.0
+    _mutual_high_trust(ada, ben)
+    _surplus_food_at_centre()
+
+    born = lineage._births(world_state, 5, random.Random(11))
+    assert len(born) == 1
+    child = born[0]
+
+    # Temperament: blended weights within the jitter bound, dominant recomputed.
+    p1, p2 = get_personality(ada), get_personality(ben)
+    pc = get_personality(child)
+    for trait in ("curiosity", "caution", "friendliness", "independence"):
+        mean = (getattr(p1, trait) + getattr(p2, trait)) / 2
+        got = getattr(pc, trait)
+        lo = max(0.0, mean - lineage.TRAIT_JITTER)
+        hi = min(1.0, mean + lineage.TRAIT_JITTER)
+        assert lo <= got <= hi, f"{trait}: {got} outside blend band [{lo}, {hi}]"
+    assert pc.dominant == "curiosity", "a child of two curious parents skews curious"
+    assert child.personality.startswith("curious (child of Ada and Ben)")
+
+    # Knowledge is EARNED, wealth is M4.2: a newborn has neither.
+    assert child.knowledge == set() and child.stockpile == 0.0 and child.money == 0.0
+    assert child.memory[0].startswith("Born to Ada and Ben")
+
+    # Kin-trust seeded BOTH ways with each parent; the parents' cooldown is set.
+    for parent in (ada, ben):
+        assert child.relationships[parent.name]["trust"] == lineage.KIN_TRUST
+        assert parent.relationships[child.name]["trust"] == lineage.KIN_TRUST
+        assert parent.last_child_turn == 5
+    print("PASS test_child_inherits_blend_not_knowledge_and_kin_trust_seeded")
+
+
+def test_child_learning_boost_only_when_lineage_on() -> None:
+    """A dependent child adopts knowledge at CHILD_LEARN_BOOST x the adult rate —
+    and the boost vanishes (byte-identical probability) when lineage is off."""
+    import knowledge
+    _lineage_world()
+    teacher = _settler("Tess", (5, 5))
+    kid = _settler("Kid", (6, 5))
+    kid.dependent = False
+    adult_p = knowledge.adoption_probability(kid, teacher, world_state)
+    kid.dependent = True
+    child_p = knowledge.adoption_probability(kid, teacher, world_state)
+    assert abs(child_p - adult_p * knowledge.CHILD_LEARN_BOOST) < 1e-12, (adult_p, child_p)
+    # Lineage OFF -> the dependent flag is ignored (default runs unchanged).
+    world_state["lineage_on"] = False
+    assert knowledge.adoption_probability(kid, teacher, world_state) == adult_p
+    print("PASS test_child_learning_boost_only_when_lineage_on")
+
+
+def test_dependent_consumes_parent_stockpile_and_does_not_produce() -> None:
+    """Childhood is a real investment: feeding draws the parent's stockpile down,
+    and a dependent produces NOTHING (no farm/hunt/bank/trade/fight/labor) even
+    if it already learned the skill."""
+    import economy, knowledge, labor, lineage, monarchy, storage
+    _lineage_world()
+    ada = _settler("Ada", (5, 5))
+    ben = _settler("Ben", (6, 5))
+    kid = _settler("Kid", (5, 6), hunger=lineage.CHILD_FEED_AT)
+    kid.dependent, kid.parents, kid.age = True, ("Ada", "Ben"), 3
+    ada.stockpile = 3.0
+    _surplus_food_at_centre()
+
+    # Feeding: the richest parent's granary pays CHILD_MEAL_COST; the child eats.
+    lineage._feed_children(world_state, 7)
+    assert ada.stockpile == 3.0 - lineage.CHILD_MEAL_COST, ada.stockpile
+    assert kid.hunger == 0 and f"Was fed by Ada" in kid.memory and "Fed Kid" in ada.memory
+
+    # Ration-share fallback: no savings -> a FED parent takes hunger onto itself.
+    kid.hunger, ada.stockpile, ada.hunger, ben.hunger = lineage.CHILD_FEED_AT, 0.0, 2, 3
+    lineage._feed_children(world_state, 8)
+    assert ada.hunger == 2 + lineage.PARENT_SHARE_HUNGER and kid.hunger == 0
+
+    # No production while dependent — even KNOWING the skills changes nothing
+    # (Kid is the only farmer/hunter, so its exclusion empties both passes).
+    kid.knowledge = {"farming", "hunting"}
+    kid.hunger = 0
+    assert knowledge.farm(world_state, 9, rng=random.Random(0)) == []
+    assert knowledge.hunt(world_state, 9, rng=random.Random(0)) == []
+    assert all(name != "Kid" for name, _ in storage.accumulate(world_state, 9))
+    assert not labor.is_worker(kid), "a dependent child never sells labor"
+    world_state["monarchy_on"] = True
+    rich = _settler("Rich", (7, 5)); rich.money = 100.0
+    assert kid not in monarchy._available_mercenaries(world_state, rich, set()), \
+        "a dependent child never fights"
+    defenders, _ = monarchy.defenders_of(world_state, "S001")
+    assert kid not in defenders, "a dependent child never stands in a battle line"
+
+    # An unfed child starves like anyone (both parents unable to feed it).
+    ada.alive = ben.alive = False
+    kid.hunger = 9
+    result = main.run_agent_turn(kid, 10, {}, {}, {"agent_turns": 0})
+    assert result == "starved" and not kid.alive
+    assert any("Kid died (starved)" in e for e in world_state["events"])
+    print("PASS test_dependent_consumes_parent_stockpile_and_does_not_produce")
+
+
+def test_dependent_child_turn_is_actionless_and_matures_on_schedule() -> None:
+    """A dependent's turn is 'child' (no action, no strategy, zero LLM); at
+    CHILDHOOD_TURNS it comes of age and becomes a full agent."""
+    import lineage
+    _lineage_world()
+    ada = _settler("Ada", (5, 5))
+    kid = _settler("Kid", (5, 6), hunger=0)
+    kid.dependent, kid.parents, kid.age = True, ("Ada",), lineage.CHILDHOOD_TURNS - 2
+    world.place_food(5, 6)  # even standing ON food, a child does not forage
+
+    llm.reset_call_stats()
+    strategies: dict = {}
+    result = main.run_agent_turn(kid, 3, strategies, {}, {"agent_turns": 0})
+    stats = llm.get_call_stats()
+    assert result == "child" and kid.hunger == 1, (result, kid.hunger)
+    assert (5, 6) in world_state["food"], "a dependent must not eat the map's food"
+    assert "Kid" not in strategies and stats["strategy"] == 0 and stats["decision"] == 0
+
+    # Maturation: exactly at CHILDHOOD_TURNS the dependent becomes a full adult.
+    lineage.update(world_state, 4, rng=random.Random(0))   # age -> CHILDHOOD_TURNS - 1
+    assert kid.dependent
+    lineage.update(world_state, 5, rng=random.Random(0))   # age -> CHILDHOOD_TURNS
+    assert not kid.dependent and kid.age == lineage.CHILDHOOD_TURNS
+    assert any("Kid came of age" in e for e in world_state["events"])
+    assert "Came of age — now a full adult" in kid.memory
+    print("PASS test_dependent_child_turn_is_actionless_and_matures_on_schedule")
+
+
+def test_old_age_death_uses_existing_death_path() -> None:
+    """At lifespan's end an agent dies of OLD AGE through announce_death: a distinct
+    DEATH event, survivor memories, and the (floor-gated) respawn queue entry."""
+    import lineage, population
+    _lineage_world()
+    elder = _settler("Eld", (2, 2))
+    heir = _settler("Her", (7, 7))
+    elder.age, elder.lifespan = 99, 100
+    lineage.update(world_state, 30, rng=random.Random(0))
+    assert not elder.alive and heir.alive
+    assert any("Eld died (old age)" in e for e in world_state["events"])
+    assert "Died of old age" in elder.memory
+    assert any("Eld died on turn 30 — they died of old age." == m for m in heir.memory)
+    assert 30 + population.RESPAWN_DELAY in world_state["pending_respawns"]
+    print("PASS test_old_age_death_uses_existing_death_path")
+
+
+def test_births_primary_respawn_backstop() -> None:
+    """Above the floor the respawn queue stays SILENT (drops, exactly as today);
+    only a crash below TARGET_POPULATION (3) brings extinction insurance in."""
+    import population
+    _lineage_world()
+    for i, pos in enumerate([(1, 1), (3, 1), (5, 1), (7, 1)]):
+        _settler(f"A{i}", pos)
+
+    # 4 living >= floor: a due respawn is DROPPED — respawn stays quiet.
+    world_state["pending_respawns"] = [10]
+    assert population.process_respawns(10, world_state) == []
+    assert world_state["pending_respawns"] == []
+
+    # Crash below the floor (2 living < 3): the SAME queue now fires — backstop.
+    world_state["agents"][0].alive = False
+    world_state["agents"][1].alive = False
+    world_state["pending_respawns"] = [12]
+    spawned = population.process_respawns(12, world_state)
+    assert len(spawned) == 1, "below the floor, extinction insurance must fire"
+    print("PASS test_births_primary_respawn_backstop")
+
+
+def test_lineage_mechanics_add_no_llm_calls_and_are_deterministic() -> None:
+    """The whole lineage machinery (init, aging, feeding, births) makes ZERO LLM
+    calls, and a seeded lineage-on run reproduces byte-for-byte."""
+    import lineage
+    # Zero LLM: drive every lineage entry point directly and watch the counters.
+    _lineage_world()
+    ada = _settler("Ada", (5, 5))
+    ben = _settler("Ben", (6, 5))
+    _mutual_high_trust(ada, ben)
+    _surplus_food_at_centre()
+    llm.reset_call_stats()
+    lineage.init_cast(world_state, rng=random.Random(1))
+    world_state["lineage"]["pop_cap"] = 10
+    for t in range(1, 30):
+        lineage.update(world_state, t, rng=random.Random(t))
+    stats = llm.get_call_stats()
+    assert stats["strategy"] == 0 and stats["decision"] == 0, stats
+    assert world_state["lineage"]["birth_seq"] >= 1, "no births in a fertile world?"
+
+    # Determinism: the same seed replays an identical lineage-on run.
+    def run():
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(30, lineage_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        assert run() == run(), "seeded lineage-on runs diverged"
+    finally:
+        llm.PROVIDER = saved
+    print("PASS test_lineage_mechanics_add_no_llm_calls_and_are_deterministic")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -4991,6 +5517,10 @@ def main_runner() -> None:
         test_pygame_time_of_day_pure_periodic_and_smooth,
         test_pygame_phase_grade_interpolation_bounded,
         test_pygame_night_draw_is_read_only_and_lights_the_dark,
+        test_pygame_camera_transform_pure_and_inverse,
+        test_pygame_camera_clamp_buckets_and_culling_pure,
+        test_pygame_lod_tiers_have_hysteresis,
+        test_pygame_camera_state_renderer_local_and_lod_draw_read_only,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
@@ -5008,6 +5538,15 @@ def main_runner() -> None:
         test_seeded_random_runs_are_identical,
         test_god_script_parses_inline_and_file,
         test_god_script_runs_and_capture_includes_god_events,
+        test_lineage_off_run_is_byte_identical_to_v1,
+        test_birth_requires_every_gate,
+        test_child_inherits_blend_not_knowledge_and_kin_trust_seeded,
+        test_child_learning_boost_only_when_lineage_on,
+        test_dependent_consumes_parent_stockpile_and_does_not_produce,
+        test_dependent_child_turn_is_actionless_and_matures_on_schedule,
+        test_old_age_death_uses_existing_death_path,
+        test_births_primary_respawn_backstop,
+        test_lineage_mechanics_add_no_llm_calls_and_are_deterministic,
     ]
     for t in tests:
         t()
