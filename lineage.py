@@ -27,12 +27,17 @@ asymmetries the sim already has:
     knowledge is EARNED, never copied at birth.
 
 SCOPE BOUNDARIES (stated, deliberate — do not blur):
-  * Inheritance of WEALTH at death is M4.2 — NOT built here. A newborn starts
-    with nothing (stockpile 0, money 0) and a dead agent's wealth goes exactly
-    where it goes today (nowhere).
-  * DYNASTIC SUCCESSION of titles is M4.3 — NOT built here. A ruler ages and
-    dies like everyone, and its records clear exactly as they do today when a
-    ruler dies in battle (the institution updates already handle a dead holder).
+  * INHERITANCE OF WEALTH at death IS built here (M4.2 — see settle_estate and the
+    "Inheritance at death" section below). A newborn still starts with nothing
+    (stockpile 0, money 0 — no wealth is inherited AT BIRTH); what M4.2 adds is
+    that a dead agent's wealth no longer vanishes — it PASSES TO KIN.
+  * DYNASTIC SUCCESSION of titles is M4.3 — NOT built here. M4.2 moves only the
+    deceased's MOVABLE WEALTH (money + stockpile); it never transfers a crown or
+    vassal seat. A ruler ages and dies like everyone, and its TITLE records clear
+    exactly as they do today when a ruler dies in battle (the institution updates
+    already handle a dead holder). Escheat (kinless death) pays the estate to the
+    settlement's current ruler as WEALTH — the crown profits from a kinless death
+    — but the seat itself still passes by conquest/trust, never by blood (M4.3).
 
 The design, mechanically
 ------------------------
@@ -70,12 +75,33 @@ The design, mechanically
    and silently drops respawns above it. Births are refused at the cap
    (pop_cap, sized from the founding cast) and food-gated, so growth is
    Malthusian: abundance -> growth toward the cap, scarcity -> stagnation.
+6. INHERITANCE AT DEATH (M4.2 — settle_estate) — death stops ERASING wealth and
+   starts PASSING it on, so history accumulates in families. On ANY death (old
+   age, starvation, battle — every cause funnels through the SAME single hook,
+   population.announce_death), the deceased's money AND stockpile form the ESTATE
+   and are split PARTIBLY and EQUALLY down a fixed kin-order:
+     a. surviving CHILDREN (dependents included — an heir's inherited stockpile
+        helps feed it); else
+     b. surviving PARENTS; else
+     c. surviving SIBLINGS (agents sharing a parent);
+     d. no kin at all -> ESCHEAT to the settlement's current RULER (monarch first,
+        else trust-leader) if one lives — the crown profits from a kinless death;
+        no settlement/ruler -> the estate vanishes exactly as it did before M4.2.
+   Money has no cap, so it all flows to heirs; inherited FOOD respects the M2.2
+   storage cap and any overflow DROPS at the deceased's tile as ground food rather
+   than vanishing. Wealth is strictly CONSERVED: estate == sum distributed to
+   heirs + ground-drop overflow (no minting, no leakage). Every transfer logs an
+   event ("X inherited N from Y", escheat logged distinctly) and writes a memory
+   to each heir. This moves only MOVABLE WEALTH — a dead ruler's TITLE still clears
+   exactly as today; dynastic succession of the seat is M4.3.
 
 Cost & determinism
 ------------------
 ZERO LLM calls — pure Python over world_state. All randomness (trait jitter,
 lifespans) comes from the seeded sim stream, drawn in stable sorted order, so a
-seeded run reproduces exactly. Everything is gated on world_state["lineage_on"]
+seeded run reproduces exactly. Inheritance (M4.2) draws NO RNG at all — an equal
+split down a sorted kin-order and a deterministic ground-drop placement — so it
+too is reproducible under seed. Everything is gated on world_state["lineage_on"]
 (the --lineage flag): with it OFF (default) no function here is ever called, no
 RNG is drawn, and the run — including respawn — is byte-identical to today.
 """
@@ -87,6 +113,7 @@ import random
 from typing import Any
 
 import population
+import storage
 import trust
 import world
 from agents import Agent
@@ -445,6 +472,177 @@ def _feed_children(state: dict[str, Any], turn: int) -> None:
         child.hunger = max(0, child.hunger - CHILD_MEAL_RELIEF)
         world.record_memory(child, f"Was fed by {feeder.name}")
         world.record_memory(feeder, f"Fed {child.name}")
+
+
+# --- Inheritance at death (M4.2) ---------------------------------------------
+# The estate is the deceased's MOVABLE WEALTH: money + stockpile. Money is a
+# food-claim with no store cap (economy.mint) so it flows to heirs in full;
+# inherited FOOD is bounded by the M2.2 granary cap (storage.STORAGE_CAP) and any
+# overflow drops as ground food rather than vanishing. Titles are NOT part of the
+# estate — a crown/vassal seat passes by conquest/trust, and dynastic succession
+# of the seat is M4.3; a dead ruler's title record clears exactly as it does today.
+def _living_heirs(deceased: Any, state: dict[str, Any]) -> "tuple[list[Any], str]":
+    """The heirs of `deceased`, in the fixed partible kin-order (pure read).
+
+    Returns (heirs, kind) where kind is "children" | "parents" | "siblings" |
+    "escheat" | "none". Only LIVING agents other than the deceased are ever heirs.
+      * children — living agents that name the deceased as a parent;
+      * else parents — living agents whose name is in deceased.parents;
+      * else siblings — living agents sharing at least one parent with the deceased;
+      * else escheat — the settlement's ruler (see _settlement_ruler), as a
+        single heir; kind "escheat" so the caller logs it distinctly;
+      * else none — no kin and no ruler; the estate vanishes as it did pre-M4.2.
+    Each heir list is sorted by name so the equal split is deterministic.
+    """
+    living = [a for a in state["agents"] if a.alive and a is not deceased]
+    children = sorted((a for a in living if deceased.name in (a.parents or ())),
+                      key=lambda a: a.name)
+    if children:
+        return children, "children"
+
+    by_name = {a.name: a for a in living}
+    parents = sorted((by_name[n] for n in (deceased.parents or ()) if n in by_name),
+                     key=lambda a: a.name)
+    if parents:
+        return parents, "parents"
+
+    dparents = set(deceased.parents or ())
+    if dparents:
+        siblings = sorted((a for a in living if dparents & set(a.parents or ())),
+                          key=lambda a: a.name)
+        if siblings:
+            return siblings, "siblings"
+
+    ruler = _settlement_ruler(deceased, state)
+    if ruler is not None:
+        return [ruler], "escheat"
+    return [], "none"
+
+
+def _settlement_ruler(deceased: Any, state: dict[str, Any]) -> "Any | None":
+    """The LIVING ruler of the deceased's settlement — monarch first, else trust-leader.
+
+    Mirrors monarchy._holder_name (crown outranks a trust-leader) but resolves to the
+    living Agent, and never returns the deceased itself (a ruler's own kinless estate
+    cannot escheat to a corpse). None if the deceased was a nomad, the seat is vacant,
+    or the titled agent is not currently alive. This is the ONLY title record M4.2
+    reads, and it reads it purely to route WEALTH — the seat itself is untouched (M4.3).
+    """
+    sid = deceased.settlement
+    if sid is None:
+        return None
+    mon = state.get("monarchs", {}).get(sid)
+    holder = mon["monarch"] if mon is not None else \
+        (state.get("leaders", {}).get(sid) or {}).get("leader")
+    if holder is None or holder == deceased.name:
+        return None
+    by_name = {a.name: a for a in state["agents"] if a.alive}
+    return by_name.get(holder)
+
+
+def _drop_ground_food(state: dict[str, Any], pos: tuple[int, int], units: float) -> int:
+    """Drop `int(units)` whole ground-food tiles near `pos` (deterministic). Returns
+    the number placed.
+
+    Inherited food beyond a heir's granary cap does not vanish — it falls at the
+    deceased's tile as standing food (one tile per WHOLE food-unit of overflow),
+    onto the nearest empty cells (no agent, no existing food) in the same distance-
+    then-coordinate order the newborn placement uses. No RNG. The estate LEDGER is
+    conserved to the exact float (see settle_estate); the map is a whole-tile
+    rendering of that overflow, so a sub-unit remainder is not painted as a tile.
+    """
+    whole = int(units + 1e-9)
+    if whole <= 0:
+        return 0
+    x, y = pos
+    size = state["size"]
+    occ = state.get("occupancy", {})
+    food = set(state["food"])
+    radius = 1
+    dropped = 0
+    while dropped < whole and radius <= size:
+        cells = sorted(
+            ((nx, ny)
+             for nx in range(max(0, x - radius), min(size, x + radius + 1))
+             for ny in range(max(0, y - radius), min(size, y + radius + 1))
+             if (nx, ny) not in occ and (nx, ny) not in food),
+            key=lambda c: (_chebyshev(c, pos), c))
+        for cell in cells:
+            if dropped >= whole:
+                break
+            if world.place_food(cell[0], cell[1], state):
+                food.add(cell)
+                dropped += 1
+        radius += 1  # widen the ring if the neighbourhood filled up
+    return dropped
+
+
+def settle_estate(deceased: Any, turn: int, state: dict[str, Any]) -> dict[str, Any]:
+    """Distribute the deceased's estate to kin (M4.2). The single inheritance hook.
+
+    Called from population.announce_death (the one funnel for EVERY death — old age,
+    starvation, battle) only when lineage is on and there is wealth to move, AFTER the
+    cell is freed so the ground-drop lands on an unobstructed tile. Zeroes the estate
+    off the deceased (wealth leaves the corpse — no double counting), splits it EQUALLY
+    down _living_heirs' kin-order, and logs + memorises every transfer. Returns an
+    accounting record {estate, kind, per_heir, to_heirs, ground} for tests/verification.
+
+    Conservation (to the exact float): estate == to_heirs + ground. Money (no cap) is
+    always fully distributed; inherited food fills each heir's granary to STORAGE_CAP
+    and the remainder becomes `ground`. ZERO RNG, ZERO LLM.
+    """
+    estate_money = float(deceased.money)
+    estate_food = float(deceased.stockpile)
+    estate = estate_money + estate_food
+    record: dict[str, Any] = {
+        "estate": estate, "kind": "none", "per_heir": 0.0, "to_heirs": 0.0, "ground": 0.0}
+    if estate <= 0.0:
+        return record  # nothing to inherit — no event, no memory (silent as before)
+
+    heirs, kind = _living_heirs(deceased, state)
+    record["kind"] = kind
+    # Wealth leaves the deceased regardless of whether an heir exists.
+    deceased.money = 0.0
+    deceased.stockpile = 0.0
+    if not heirs:
+        # Kinless AND no ruler: the estate vanishes exactly as it did pre-M4.2.
+        state["events"].append(
+            f"turn {turn}: {deceased.name}'s estate of {estate:.2f} vanished (no heir)")
+        return record
+
+    n = len(heirs)
+    money_each = estate_money / n
+    food_each = estate_food / n
+    ground = 0.0
+    to_heirs = 0.0
+    for heir in heirs:  # sorted -> deterministic
+        heir.money += money_each
+        room = max(0.0, storage.STORAGE_CAP - heir.stockpile)
+        into_store = min(food_each, room)
+        heir.stockpile += into_store
+        ground += food_each - into_store  # overflow past the granary cap
+        received = money_each + into_store
+        to_heirs += received
+        if kind == "escheat":
+            world.record_memory(
+                heir, f"The estate of {deceased.name} ({estate:.2f}) escheated to me")
+            state["events"].append(
+                f"turn {turn}: {deceased.name}'s estate of {estate:.2f} "
+                f"escheated to {heir.name} (no kin)")
+        else:
+            world.record_memory(
+                heir, f"Inherited {received:.2f} from {deceased.name}")
+            state["events"].append(
+                f"turn {turn}: {heir.name} inherited {received:.2f} from {deceased.name}")
+
+    dropped = _drop_ground_food(state, deceased.position, ground)
+    if ground > 0.0:
+        state["events"].append(
+            f"turn {turn}: {ground:.2f} of {deceased.name}'s estate dropped as "
+            f"ground food ({dropped} tiles, over the granary cap)")
+
+    record.update(per_heir=money_each + food_each, to_heirs=to_heirs, ground=ground)
+    return record
 
 
 # --- The per-turn update ---------------------------------------------------------

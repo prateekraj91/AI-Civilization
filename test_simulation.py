@@ -5353,6 +5353,214 @@ def test_lineage_mechanics_add_no_llm_calls_and_are_deterministic() -> None:
     print("PASS test_lineage_mechanics_add_no_llm_calls_and_are_deterministic")
 
 
+# --- Inheritance at death (V2 M4.2) -----------------------------------------
+def _rich(name: str, pos: tuple[int, int], *, money: float = 0.0,
+          stockpile: float = 0.0, parents: tuple = (), sid: str | None = "S001",
+          dependent: bool = False) -> Agent:
+    """A living, settled agent carrying wealth and a family link — an estate-builder."""
+    a = _settler(name, pos, sid=sid) if sid is not None else \
+        _settler(name, pos, sid="S001")
+    if sid is None:
+        a.settlement = None
+        world_state["settlements"]["S001"]["members"].discard(name)
+    a.money, a.stockpile = money, stockpile
+    a.parents = parents
+    a.dependent = dependent
+    return a
+
+
+def test_inheritance_equal_split_and_conservation() -> None:
+    """A wealthy parent dies -> its children split the estate EQUALLY, wealth is
+    CONSERVED to the decimal, and food over the granary cap DROPS as ground food."""
+    import lineage
+
+    # Two children, a clean estate that divides evenly and fits under the cap.
+    _lineage_world()
+    parent = _rich("Ada", (5, 5), money=30.0, stockpile=10.0)
+    c1 = _rich("Kade", (5, 6), parents=("Ada", "Ben"))
+    c2 = _rich("Lena", (6, 5), parents=("Ada", "Ben"))
+    rec = lineage.settle_estate(parent, 7, world_state)
+    assert rec["kind"] == "children"
+    # Equal split: each child gets half the money and half the food.
+    assert c1.money == c2.money == 15.0
+    assert c1.stockpile == c2.stockpile == 5.0
+    # Conservation to the decimal: estate == distributed + ground (nothing minted/lost).
+    assert rec["estate"] == 40.0
+    assert abs(rec["to_heirs"] + rec["ground"] - rec["estate"]) < 1e-9
+    assert rec["ground"] == 0.0
+    # Wealth left the corpse — no double counting.
+    assert parent.money == 0.0 and parent.stockpile == 0.0
+
+    # Cap-overflow: food that cannot fit a heir's granary drops as GROUND food.
+    _lineage_world()
+    n_food_before = len(world_state["food"])
+    parent = _rich("Ada", (5, 5), money=0.0, stockpile=40.0)
+    heir = _rich("Kade", (5, 6), parents=("Ada", "Ben"), stockpile=6.0)
+    rec = lineage.settle_estate(parent, 7, world_state)
+    # Sole heir: fills its granary to the cap (20), the rest (26) is overflow.
+    assert heir.stockpile == lineage.storage.STORAGE_CAP  # 20.0
+    assert rec["ground"] == 40.0 - (lineage.storage.STORAGE_CAP - 6.0)  # 26.0
+    # Overflow is not minted, not vanished: it lands as whole ground-food tiles.
+    tiles_added = len(world_state["food"]) - n_food_before
+    assert tiles_added == 26, f"expected 26 ground tiles, got {tiles_added}"
+    assert abs(rec["to_heirs"] + rec["ground"] - rec["estate"]) < 1e-9
+    print("PASS test_inheritance_equal_split_and_conservation")
+
+
+def test_inheritance_kin_order_is_binding() -> None:
+    """Kin-order binds: CHILDREN are preferred over PARENTS over SIBLINGS, and each
+    fallback fires only when the closer tier is empty."""
+    import lineage
+
+    def estate_of(deceased_parents, present):
+        """Build a world where `deceased` (Ada) has `deceased_parents`, plus whatever
+        kin `present` seeds, then settle Ada's estate and return (kind, heir_names)."""
+        _lineage_world()
+        ada = _rich("Ada", (5, 5), money=40.0, parents=deceased_parents)
+        present(ada)
+        rec = lineage.settle_estate(ada, 7, world_state)
+        heirs = sorted(a.name for a in world_state["agents"]
+                       if a.alive and a.money > 0)
+        return rec["kind"], heirs
+
+    # Children present (alongside a parent + a sibling) -> children take all.
+    def with_child(ada):
+        _rich("Milo", (4, 4), parents=("Ben", "Ada"))          # child of Ada
+        _rich("Ben", (6, 6))                                    # a parent of Ada
+        _rich("Nell", (3, 3), parents=("Ben", "Cara"))          # sibling (shares Ben)
+    kind, heirs = estate_of(("Ben", "Cara"), with_child)
+    assert kind == "children" and heirs == ["Milo"], (kind, heirs)
+
+    # No children -> PARENTS (even with a sibling also present).
+    def with_parent(ada):
+        _rich("Ben", (6, 6))                                    # a living parent
+        _rich("Nell", (3, 3), parents=("Ben", "Cara"))          # sibling
+    kind, heirs = estate_of(("Ben", "Cara"), with_parent)
+    assert kind == "parents" and heirs == ["Ben"], (kind, heirs)
+
+    # No children, no living parents -> SIBLINGS (shares at least one parent).
+    def with_sibling(ada):
+        _rich("Nell", (3, 3), parents=("Ben", "Cara"))          # sibling, shares Ben+Cara
+    kind, heirs = estate_of(("Ben", "Cara"), with_sibling)
+    assert kind == "siblings" and heirs == ["Nell"], (kind, heirs)
+    print("PASS test_inheritance_kin_order_is_binding")
+
+
+def test_escheat_to_ruler_else_vanishes() -> None:
+    """A kinless settled agent's estate ESCHEATS to the settlement's ruler (monarch
+    first, else trust-leader); with NO ruler it vanishes exactly as pre-M4.2."""
+    import lineage
+
+    # Escheat to a MONARCH (crown outranks a trust-leader).
+    _lineage_world()
+    world_state["monarchs"]["S001"] = {"monarch": "Rex", "since": 0, "garrison": set()}
+    world_state["leaders"]["S001"] = {"leader": "Cato", "followers": set(), "since": 0}
+    rex = _rich("Rex", (5, 5))
+    _rich("Cato", (4, 4))
+    loner = _rich("Ada", (6, 6), money=25.0)  # no parents, no children, no siblings
+    rec = lineage.settle_estate(loner, 7, world_state)
+    assert rec["kind"] == "escheat"
+    assert rex.money == 25.0, "the crown should absorb a kinless estate"
+
+    # No monarch -> escheat to the TRUST-LEADER.
+    _lineage_world()
+    world_state["leaders"]["S001"] = {"leader": "Cato", "followers": set(), "since": 0}
+    cato = _rich("Cato", (5, 5))
+    loner = _rich("Ada", (6, 6), money=25.0)
+    rec = lineage.settle_estate(loner, 7, world_state)
+    assert rec["kind"] == "escheat" and cato.money == 25.0
+
+    # No kin AND no ruler -> the estate VANISHES, exactly as before M4.2.
+    _lineage_world()
+    loner = _rich("Ada", (6, 6), money=25.0)
+    total_money_before = sum(a.money for a in world_state["agents"] if a is not loner)
+    rec = lineage.settle_estate(loner, 7, world_state)
+    assert rec["kind"] == "none"
+    total_money_after = sum(a.money for a in world_state["agents"] if a is not loner)
+    assert total_money_after == total_money_before, "estate should vanish, not move"
+    assert loner.money == 0.0, "wealth still leaves the corpse"
+    events = "\n".join(world_state["events"])
+    assert "vanished (no heir)" in events
+    print("PASS test_escheat_to_ruler_else_vanishes")
+
+
+def test_inheritance_writes_events_and_memories_via_death_path() -> None:
+    """Inheritance flows through the real death funnel (announce_death) for EVERY
+    cause, logging clear events and writing a memory to each heir."""
+    import lineage
+    import population
+
+    _lineage_world()
+    parent = _rich("Ada", (5, 5), money=20.0, stockpile=8.0)
+    c1 = _rich("Kade", (5, 6), parents=("Ada", "Ben"))
+    c2 = _rich("Lena", (6, 5), parents=("Ada", "Ben"))
+    # Death by OLD-AGE wording, routed through the shared path.
+    population.announce_death(parent, 12, world_state, cause="old age",
+                              final_memory="Died of old age", note="they died of old age")
+    events = "\n".join(world_state["events"])
+    assert "Ada died (old age)" in events
+    assert "Kade inherited 14.00 from Ada" in events  # (20+8)/2 = 14.00
+    assert "Lena inherited 14.00 from Ada" in events
+    assert any("Inherited 14.00 from Ada" in m for m in c1.memory)
+    assert any("Inherited 14.00 from Ada" in m for m in c2.memory)
+    assert not parent.alive  # the death path still marks the deceased dead
+    print("PASS test_inheritance_writes_events_and_memories_via_death_path")
+
+
+def test_inheritance_only_when_lineage_on() -> None:
+    """With lineage OFF, a death moves NO wealth — the estate vanishes as it always
+    did (the byte-identical guarantee holds at the estate level too)."""
+    import population
+
+    _lineage_world()
+    world_state["lineage_on"] = False  # lineage off
+    parent = _rich("Ada", (5, 5), money=20.0, stockpile=8.0)
+    child = _rich("Kade", (5, 6), parents=("Ada", "Ben"))
+    population.announce_death(parent, 12, world_state, cause="starved")
+    assert child.money == 0.0 and child.stockpile == 0.0, \
+        "no inheritance may occur with lineage off"
+    # No wealth even left the corpse's fields (settle_estate never ran).
+    assert parent.money == 20.0 and parent.stockpile == 8.0
+    events = "\n".join(world_state["events"])
+    assert "inherited" not in events and "escheat" not in events
+    print("PASS test_inheritance_only_when_lineage_on")
+
+
+def test_inherited_stockpile_helps_a_dependent_orphan_survive() -> None:
+    """An inheriting CHILD is a real heir: an orphan with an inherited granary
+    outlives an identical orphan with none (grim, but honest)."""
+    import lineage
+    import population
+    import storage
+
+    def orphan_survives(inherit: bool) -> bool:
+        """A lone orphan (no living parent to feed it) faces a food shock; return
+        whether it is still alive after a stretch of hungry, foodless turns."""
+        _lineage_world()
+        world_state["food"].clear()  # a famine: nothing to forage
+        # A dependent child whose parents are both dead/absent — the M4.1 feeder
+        # needs a LIVING parent, so nothing feeds it but its own inherited granary.
+        orphan = _rich("Kade", (5, 5), parents=("Ada", "Ben"), dependent=True)
+        orphan.age, orphan.lifespan, orphan.hunger = 4, 100, 1
+        if inherit:
+            # A dying parent's estate flows to the orphan the moment it dies.
+            parent = _rich("Ada", (6, 6), stockpile=18.0, sid=None)  # 2 drawn meals
+            population.announce_death(parent, 0, world_state, cause="starved")
+            assert orphan.stockpile == 18.0  # inheritance actually landed
+        # 15 hungry turns: each tick raises hunger; only a granary can stave off death.
+        for t in range(1, 16):
+            world.update_hunger(orphan)
+            lineage.update(world_state, t, rng=random.Random(t))
+            if orphan.alive and world.is_dead(orphan):  # the draw-down-or-die step
+                if not storage.draw_down(orphan):
+                    population.announce_death(orphan, t, world_state)
+        return orphan.alive
+
+    assert orphan_survives(inherit=True), "an heir orphan should outlast its hunger"
+    assert not orphan_survives(inherit=False), "a pennyless orphan should starve"
+    print("PASS test_inherited_stockpile_helps_a_dependent_orphan_survive")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -5547,6 +5755,12 @@ def main_runner() -> None:
         test_old_age_death_uses_existing_death_path,
         test_births_primary_respawn_backstop,
         test_lineage_mechanics_add_no_llm_calls_and_are_deterministic,
+        test_inheritance_equal_split_and_conservation,
+        test_inheritance_kin_order_is_binding,
+        test_escheat_to_ruler_else_vanishes,
+        test_inheritance_writes_events_and_memories_via_death_path,
+        test_inheritance_only_when_lineage_on,
+        test_inherited_stockpile_helps_a_dependent_orphan_survive,
     ]
     for t in tests:
         t()

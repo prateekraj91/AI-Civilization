@@ -118,6 +118,17 @@ def announce_death(agent: Any, turn: int, state: dict[str, Any],
             survivor, f"{agent.name} died on turn {turn} — {note}."
         )
 
+    # M4.2 INHERITANCE AT DEATH: the deceased's movable wealth passes to kin (or
+    # escheats to the settlement's ruler) instead of vanishing. This is the ONE hook
+    # every death cause funnels through, so old-age, starvation and battle deaths all
+    # inherit identically. Runs AFTER mark_dead so any cap-overflow ground food drops
+    # on the freed tile. Gated on lineage_on and lazily imported: with lineage OFF
+    # (default) lineage is never even imported here, so the run stays byte-identical
+    # and there is no import cost. Only movable wealth moves — titles are M4.3.
+    if state.get("lineage_on"):
+        import lineage
+        lineage.settle_estate(agent, turn, state)
+
     state.setdefault("pending_respawns", []).append(turn + RESPAWN_DELAY)
     return survivors
 
