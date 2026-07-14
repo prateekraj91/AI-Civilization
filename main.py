@@ -883,8 +883,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "will trigger on this pressure). Zero LLM, zero new RNG. Off by default -> byte-identical.")
     p.add_argument(
         "--uprising", action="store_true",
-        help="V2 M4.5: enable UPRISING — the relief valve that makes M4.4's gauge BLOW (implies "
-             "--discontent). When a settlement's RESENTFUL faction becomes a MAJORITY of its non-ruler "
+        help="V2 M4.5-M4.6: enable UPRISING + THE REVOLUTIONARY — the relief valve that makes M4.4's "
+             "gauge BLOW, and the leader it throws up (implies --discontent and --leadership). When a "
+             "settlement's RESENTFUL faction becomes a MAJORITY of its non-ruler "
              "members AND their aggregate discontent clears a floor, the poor RISE against their "
              "FORCE ruler (monarch/vassal-lord — a consent-based trust-leader is never a target). The "
              "MOB's force is its NUMBERS (unpaid, unarmed — the inverse of M3.4, where force is BOUGHT); "
@@ -892,12 +893,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "MUSTER, so a rich tyrant CRUSHES the rising while a drained one FALLS to numbers (wealth is "
              "the counter-revolutionary weapon). The SAME monarchy.resolve_battle decides it (real deaths "
              "via the normal path, so M4.2 inheritance / M4.3 succession compose). On victory the ruler is "
-             "DEPOSED (title cleared, kingdom secedes via the existing machinery, seat left VACANT), his "
-             "hoard is EXPROPRIATED to the risers (interrupting inheritance — the heirs get nothing), and "
-             "the grievance is answered; on defeat the survivors are cowed (partial reset + fear cooldown, "
-             "grievance persists). The revolutionary LEADER filling the vacant seat is M4.6, not built "
-             "here. Pair with --monarchy/--kingdoms (uprisings need force rulers). Zero LLM, zero new RNG. "
-             "Off by default -> byte-identical.")
+             "DEPOSED (title cleared, kingdom secedes via the existing machinery), his hoard is "
+             "EXPROPRIATED to the risers (interrupting inheritance — the heirs get nothing), and the "
+             "grievance is answered; on defeat the survivors are cowed (partial reset + fear cooldown, "
+             "grievance persists). M4.6 THE REVOLUTIONARY then fills the vacant seat: the rising's LEADER "
+             "— derived from the risers (the angriest COMMONER his fellows most trust, not the richest) — "
+             "takes power by CONSENT through the existing M3.2 leadership path (a leader, NOT a monarch; "
+             "losable like any leader), closing the cycle consent->force->revolt->consent. Pair with "
+             "--monarchy/--kingdoms (uprisings need force rulers). Zero LLM, zero new RNG. Off by default "
+             "-> byte-identical.")
     p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
@@ -1459,7 +1463,9 @@ def main(argv: list[str] | None = None) -> None:
     # M3.3: taxation needs a legitimate LEADER to levy, so --taxation implies --leadership (and so
     # --settlements). It does NOT force --labor: taxation works on whatever wealth exists, but the
     # inequality it BENDS is the M3.1 spiral, so a user demonstrates the collision with --labor too.
-    leadership_on = args.leadership or args.taxation
+    # M4.6: the REVOLUTIONARY rules through existing M3.2 leadership, so --uprising implies
+    # --leadership (the deposed seat is filled by consent, not left permanently empty).
+    leadership_on = args.leadership or args.taxation or args.uprising
     # M3.6: empire BUILDS ON kingdoms (an emperor is a king who conquered another king), so --empire
     # implies --kingdoms.
     kingdoms_on = args.kingdoms or args.empire

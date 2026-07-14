@@ -2,9 +2,17 @@
 uprising.py
 ===========
 
-UPRISING — the revolt FIRES (V2 milestone M4.5, Arc 2: Revolt & Class Conflict). On top of M4.4
-(the discontent GAUGE), all of Arc 1 (M4.1 lineage, M4.2 inheritance, M4.3 dynasties) and all of
-Phases 0-3 (labor, leadership, taxation, monarchy, kingdoms, empire).
+UPRISING — the revolt FIRES (V2 milestone M4.5), and THE REVOLUTIONARY takes power by consent
+(V2 milestone M4.6, which CLOSES Arc 2: Revolt & Class Conflict). On top of M4.4 (the discontent
+GAUGE), all of Arc 1 (M4.1 lineage, M4.2 inheritance, M4.3 dynasties) and all of Phases 0-3 (labor,
+leadership, taxation, monarchy, kingdoms, empire).
+
+M4.6 — THE REVOLUTIONARY (the section at `_pick_revolutionary`/`_seed_leadership` below): M4.5 leaves a
+won rising's seat VACANT; M4.6 fills it with the mob's own leader, DERIVED from the risers (angriest +
+most trusted by his fellow risers) and legitimised by CONSENT through the UNCHANGED M3.2 leadership path —
+power seized by force, then held only while trusted. This closes the cycle consent -> force -> revolt ->
+consent, and produces the project's second emergent great-figure: the REVOLUTIONARY, born of grievance
+(where M3.4's conqueror was born of wealth). See that section's block comment for the full design.
 
 The historical step M4.5 makes — the pressure engine gets its RELIEF VALVE
 -------------------------------------------------------------------------
@@ -79,8 +87,10 @@ from typing import Any
 
 import discontent
 import kingdoms
+import leadership
 import monarchy
 import population
+import trust
 import world
 
 # --- Tunable constants (documented) ----------------------------------------
@@ -111,9 +121,50 @@ FEAR_RETAIN = 0.6
 # oppressor is gone and his hoard is theirs), so it drops sharply toward zero.
 VICTOR_DISCONTENT = 0.0
 
+# --- M4.6 THE REVOLUTIONARY (closes Arc 2): the rising's leader legitimised by consent ------------
+# When a rising WINS, M4.5 leaves the seat VACANT. M4.6 fills it: the agent who LED the mob emerges as
+# the settlement's new LEADER — but NOT as a monarch. Power is seized by FORCE, then LEGITIMISED by
+# CONSENT: the victory SEEDS his standing (surviving risers gain trust in him — a real, earned bump
+# through the v1 trust system), and the UNCHANGED M3.2 leadership machinery then elects him from that
+# trust exactly as it elects any leader — so he holds the seat only while trusted, and falls like any
+# leader if his following erodes (M3.2 hysteresis/displacement, untouched). No new institution, no new
+# title, no special power: the revolutionary rules through existing M3.2 leadership. If the victory bump
+# is too thin (too few survivors to clear MIN_FOLLOWERS), NO leader emerges and the seat stays vacant —
+# honest, not forced. This closes the political cycle: consent (M3.2) -> force (M3.4) -> revolt (M4.5) ->
+# consent again (M4.6); and if the revolutionary later becomes an EXTRACTOR himself (seizes a force-title
+# / over-taxes), the SAME discontent+uprising machinery rises against HIM (the revolution devours its
+# children — verified, needs no new mechanic).
+
+# REV_GRIEVANCE_WEIGHT / REV_TRUST_WEIGHT: the revolutionary is DERIVED from the risers, not assigned —
+# the mob's natural focal point is the riser scoring highest on a WEIGHTED SUM of (a) his own discontent
+# (the angriest — most grievance) and (b) the TRUST his fellow risers place in him (the M3.2 trust-cluster
+# logic: the riser the other risers most trust). Both matter; equal default weights, tunable; name breaks ties.
+REV_GRIEVANCE_WEIGHT = 1.0
+REV_TRUST_WEIGHT = 1.0
+
+# REVOLUTIONARY_WEALTH_MARGIN: the revolutionary must be an ORDINARY riser — a commoner thrown up BY the
+# mob, never a rich agent RIDING it. "Rich" is judged RELATIVE to the mob, not on an absolute bar: a
+# candidate is excluded from LEADING only if his (pre-expropriation) wealth exceeds the MEDIAN rioter's by
+# more than this margin — i.e. a clear wealth OUTLIER. A flat absolute bar would wrongly exclude the very
+# people who feel EXTRACTION grievance (they must hold wealth above the levy threshold to be levied at all),
+# so it is relative: a leader may be modestly better off than the median rioter, but not a class apart.
+# (An excluded outlier still rises and fights — it just does not get to lead the poor it stands above.)
+REVOLUTIONARY_WEALTH_MARGIN = 3 * monarchy.MERC_MAX_WEALTH  # = 15.0 above the median rioter
+
+# VICTORY_TRUST_BUMP: the trust each OTHER surviving riser gains in the revolutionary for leading them to
+# victory — a real, earned bump written through the v1 trust system (logged). Sized to clear the M3.2
+# FORM_TRUST bar from a neutral start, so a genuine following can cohere; a riser who already DISTRUSTS
+# him (a grudge / deep negative) is not dragged over the bar by it — not everyone rallies (honest).
+VICTORY_TRUST_BUMP = leadership.FORM_TRUST + 1  # = 3
+
 
 def _find(state: dict[str, Any], name: str) -> "Any | None":
     return next((a for a in state["agents"] if a.name == name), None)
+
+
+def _wealth(a: Any) -> float:
+    """Liquid wealth = money + stored food (the M3.1 class metric) — used to gate out a rich leader."""
+    return a.money + a.stockpile
 
 
 def _settlement_ruler(state: dict[str, Any], sid: str) -> "tuple[str | None, str]":
@@ -241,6 +292,55 @@ def _reset_discontent(state: dict[str, Any], agents: list[Any], to_value: "float
             gauge[a.name] = max(0.0, gauge.get(a.name, 0.0) * retain)
 
 
+def _pick_revolutionary(state: dict[str, Any], risers: list[Any]) -> "Any | None":
+    """The rising's leader, DERIVED from the risers (M4.6) — not assigned. Returns an agent or None.
+
+    Among the ORDINARY risers (not a wealth OUTLIER riding the mob — wealth within
+    REVOLUTIONARY_WEALTH_MARGIN of the median rioter's), the natural focal point is the one scoring
+    highest on the weighted sum of his own DISCONTENT (the angriest) and the TRUST his FELLOW risers
+    place in him (the M3.2 trust-cluster — the riser the mob most trusts). Deterministic: ties break on
+    name. None if no ordinary candidate survives — then the seat honestly stays vacant.
+    """
+    alive = [r for r in risers if r.alive]
+    if not alive:
+        return None
+    wealths = sorted(_wealth(r) for r in alive)
+    median = wealths[len(wealths) // 2]
+    ceiling = median + REVOLUTIONARY_WEALTH_MARGIN
+    pool = [r for r in alive if _wealth(r) <= ceiling]
+    if not pool:
+        return None
+
+    def score(cand: Any) -> float:
+        grievance = discontent.agent_discontent(cand.name, state)
+        backing = sum(o.relationships.get(cand.name, {}).get("trust", 0)
+                      for o in risers if o.name != cand.name)
+        return REV_GRIEVANCE_WEIGHT * grievance + REV_TRUST_WEIGHT * backing
+
+    return sorted(pool, key=lambda c: (-score(c), c.name))[0]
+
+
+def _seed_leadership(state: dict[str, Any], leader: Any, victors: list[Any],
+                     sid: str, turn: int) -> None:
+    """SEED the revolutionary's legitimacy: the surviving risers gain trust in him (M4.6).
+
+    Writes a real, earned trust bump through the v1 trust system for every OTHER surviving riser
+    (a follower who already carries a grudge against him is refused by adjust_trust — not everyone
+    rallies). It installs NO leader record itself: the UNCHANGED M3.2 `leadership.update` then elects
+    him from this trust exactly as it elects any leader — so he holds the seat purely by CONSENT and
+    only while it lasts. If too few followers clear the bar, M3.2 simply seats no one (vacant, honest).
+    """
+    for v in victors:
+        if v.name == leader.name:
+            continue
+        trust.adjust_trust(v, leader.name, VICTORY_TRUST_BUMP,
+                           f"led the {sid} uprising to victory", turn, state)
+    state["events"].append(
+        f"turn {turn}: {leader.name} led the rising in {sid} — the survivors rally to him "
+        f"(power to be legitimised by consent, M3.2)")
+    world.record_memory(leader, f"Led the {sid} uprising and rallied its survivors")
+
+
 def _rise(state: dict[str, Any], sid: str, turn: int) -> "dict[str, Any] | None":
     """Resolve ONE settlement's potential rising this turn. Returns a result dict if it fired, else None.
 
@@ -279,17 +379,27 @@ def _rise(state: dict[str, Any], sid: str, turn: int) -> "dict[str, Any] | None"
 
     result = {"sid": sid, "ruler": ruler, "kind": kind, "won": won,
               "mob": n_mob, "defenders": n_def, "mob_dead": mob_dead, "def_dead": def_dead,
-              "seized": 0.0, "deposed": False}
+              "seized": 0.0, "deposed": False, "leader": None}
 
     if won:
         living_victors = [r for r in survivors if r.alive]
+        # M4.6: identify the revolutionary from the surviving risers BEFORE the grievance is answered
+        # (the pick reads discontent) — the angriest-and-most-trusted ordinary riser, derived not assigned.
+        revolutionary = _pick_revolutionary(state, living_victors)
         result["seized"] = _expropriate(state, ruler_agent, living_victors, turn)
         _depose(state, ruler_agent, sid, kind, turn)
+        # M4.6: SEED his legitimacy through the trust system; M3.2 leadership.update then elects him by
+        # CONSENT (or seats no one if the following is too thin). No monarch record, no special power.
+        if revolutionary is not None:
+            _seed_leadership(state, revolutionary, living_victors, sid, turn)
+            result["leader"] = revolutionary.name
         _reset_discontent(state, living_victors, VICTOR_DISCONTENT, None)
         result["deposed"] = True
+        vacancy = (f"{revolutionary.name} to rule by consent"
+                   if revolutionary is not None else "the seat lies vacant (no leader emerged)")
         state["events"].append(
             f"turn {turn}: the UPRISING in {sid} TRIUMPHED — {kind} {ruler} is DEPOSED; "
-            f"the seat lies vacant ({len(mob_dead)} risers fell)")
+            f"{vacancy} ({len(mob_dead)} risers fell)")
     else:
         # Crushed. The surviving risers are cowed (partial reset, grievance persists); a fear
         # cooldown falls over the settlement; the ruler's garrison shrinks to its survivors.

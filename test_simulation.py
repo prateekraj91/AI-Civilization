@@ -6404,6 +6404,108 @@ def test_uprising_adds_no_llm_and_is_deterministic() -> None:
     print("PASS test_uprising_adds_no_llm_and_is_deterministic")
 
 
+# --- The Revolutionary (V2 M4.6): a rising's leader rules by consent ---------
+def test_revolutionary_is_derived_from_risers_not_assigned() -> None:
+    """A won rising throws up a leader DERIVED from the risers — the angriest-and-most-trusted
+    ORDINARY riser (not the richest, not arbitrary) — who takes the vacant seat by CONSENT through
+    the EXISTING M3.2 path (a leaders record, never a monarch record)."""
+    import uprising, leadership, trust
+
+    _disc_world()
+    world_state["leadership_on"] = True
+    _settler("King", (5, 5)).money = 0.5                     # a drained tyrant -> the mob wins
+    for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]:
+        _settler(n, p).money = 0.0
+    rex = _settler("Rex", (7, 5)); rex.money = 100.0         # a RICH riser — must NOT become leader
+    _monarch("S001", "King")
+    # Rex is the angriest, but rich; B is the angriest COMMONER and the one his fellows trust.
+    world_state["discontent"] = {"A": 12.0, "B": 20.0, "C": 12.0, "Rex": 25.0}
+    for n in ("A", "C", "Rex"):
+        trust.ensure_relationship(next(a for a in world_state["agents"] if a.name == n), "B")["trust"] = 1
+
+    res = uprising.update(world_state, 10)[0]
+    assert res["won"] and res["leader"] == "B", res            # derived: B, not rich Rex, not arbitrary
+    assert "S001" not in world_state["monarchs"], "the tyrant's crown is gone"
+    assert world_state.get("leaders", {}).get("S001") is None, "the uprising installs NO leader record itself"
+    # The UNCHANGED M3.2 machinery then elects him from the seeded trust — power by consent.
+    leadership.update(world_state, 11)
+    rec = world_state["leaders"].get("S001")
+    assert rec is not None and rec["leader"] == "B", "M3.2 elects the revolutionary by consent"
+    assert "S001" not in world_state["monarchs"], "he rules as a LEADER, not a monarch"
+    print("PASS test_revolutionary_is_derived_from_risers_not_assigned")
+
+
+def test_revolutionary_holds_by_consent_and_can_be_displaced() -> None:
+    """The revolutionary holds the seat only while trusted: when his following erodes below the M3.2
+    keep-bar, the EXISTING leadership machinery strips him — no permanent crown."""
+    import uprising, leadership
+
+    _disc_world()
+    world_state["leadership_on"] = True
+    _settler("King", (5, 5)).money = 0.5
+    risers = [_settler(n, p) for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]]
+    for r in risers:
+        r.money = 0.0
+    _monarch("S001", "King")
+    world_state["discontent"] = {"A": 20.0, "B": 12.0, "C": 12.0}   # A leads
+    uprising.update(world_state, 10)
+    leadership.update(world_state, 11)
+    assert world_state["leaders"]["S001"]["leader"] == "A"
+    # His following collapses (trust falls below KEEP_TRUST) -> M3.2 unseats him next turn.
+    for n in ("B", "C"):
+        f = next(a for a in world_state["agents"] if a.name == n)
+        f.relationships["A"]["trust"] = 0
+    leadership.update(world_state, 12)
+    assert world_state["leaders"].get("S001") is None, "a leader with no following falls (M3.2, untouched)"
+    assert "S001" not in world_state["monarchs"], "he was never a monarch — no permanent grip"
+    print("PASS test_revolutionary_holds_by_consent_and_can_be_displaced")
+
+
+def test_revolution_devours_its_children() -> None:
+    """A revolutionary who becomes an EXTRACTOR himself (seizes a force-title) breeds the SAME
+    discontent and is risen against by the SAME machinery — no immunity, no new mechanic."""
+    import uprising, discontent, monarchy
+
+    _disc_world()
+    # B led a rising and rules; he then SEIZES the crown of S001 (M3.4) — now an extractor by force.
+    b = _settler("B", (5, 5)); b.money = 0.5
+    members = [_settler(n, p) for n, p in [("A", (5, 6)), ("C", (6, 5)), ("D", (6, 7))]]
+    for m in members:
+        m.money = 20.0                                         # solvent -> the levy is felt
+    _monarch("S001", "B")                                      # the former revolutionary, now a monarch
+    for m in members:                                          # the people do NOT consent to his crown
+        m.relationships["B"] = {"trust": -5}
+    for turn in range(1, 13):
+        discontent.update(world_state, turn)
+    assert discontent.settlement_pressure("S001", world_state) >= 2, "his extraction breeds real grievance"
+    res = uprising.update(world_state, 13)
+    assert res and res[0]["won"] and res[0]["deposed"], "the same machinery rises against HIM"
+    assert "S001" not in world_state["monarchs"], "the revolutionary-turned-tyrant is himself overthrown"
+    print("PASS test_revolution_devours_its_children")
+
+
+def test_too_few_survivors_leaves_seat_vacant() -> None:
+    """Honest edge: if a won rising leaves too few survivors to cohere a following, M3.2 seats no
+    one — the leader is not force-installed, the seat simply stays vacant."""
+    import uprising, leadership
+
+    _disc_world()
+    world_state["leadership_on"] = True
+    king = _settler("King", (5, 5)); king.money = 12.0        # funds exactly 2 guards
+    for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]:
+        _settler(n, p).money = 0.0
+    _bystander_mercs([(4, 4), (4, 5)])                        # a pool of exactly 2 hireable guards
+    _monarch("S001", "King")
+    world_state["discontent"] = {"A": 12.0, "B": 12.0, "C": 12.0}
+    res = uprising.update(world_state, 10)[0]
+    # 3 risers > 2 guards -> win, but casualties leave only 2 survivors (a leader + 1 follower).
+    assert res["won"] and len(res["mob_dead"]) == 1
+    leadership.update(world_state, 11)
+    assert world_state["leaders"].get("S001") is None, "one follower cannot cohere a following -> vacant"
+    assert "S001" not in world_state["monarchs"], "and no one is force-installed"
+    print("PASS test_too_few_survivors_leaves_seat_vacant")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -6633,6 +6735,10 @@ def main_runner() -> None:
         test_uprising_deaths_compose_with_succession_and_inheritance,
         test_uprising_off_run_is_byte_identical_to_v1,
         test_uprising_adds_no_llm_and_is_deterministic,
+        test_revolutionary_is_derived_from_risers_not_assigned,
+        test_revolutionary_holds_by_consent_and_can_be_displaced,
+        test_revolution_devours_its_children,
+        test_too_few_survivors_leaves_seat_vacant,
     ]
     for t in tests:
         t()
