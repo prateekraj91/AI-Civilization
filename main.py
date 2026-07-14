@@ -34,6 +34,7 @@ import time
 
 import alliance
 import conversation
+import discontent
 import economy
 import empire
 import god_mode
@@ -48,6 +49,7 @@ import population
 import settlement
 import storage
 import taxation
+import uprising
 from cognition import update_tiers
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -508,10 +510,45 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
             print(f"Age:             {agent.age} of lifespan {agent.lifespan} ({stage})")
             if agent.parents:
                 print(f"Parents:         {agent.parents[0]} and {agent.parents[1]}")
+        # M4.4: read-only discontent overlay — printed ONLY when the gauge is on, so a default run's
+        # summary is byte-identical to v1. Pure read of world_state["discontent"]. A living settled
+        # adult over the resentment bar is flagged so the summary reads the resentful faction at a glance.
+        if world_state.get("discontent_on"):
+            level = discontent.agent_discontent(agent.name, world_state)
+            tag = "  [RESENTFUL]" if level >= discontent.RESENTMENT_THRESHOLD else ""
+            print(f"Discontent:      {level:.1f} / {discontent.DISCONTENT_CAP:.0f}"
+                  f" (resentment at {discontent.RESENTMENT_THRESHOLD:.0f}){tag}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
         print()
+
+
+def print_settlement_pressure() -> None:
+    """M4.4: world-level SETTLEMENT PRESSURE report — printed ONLY when the discontent gauge is on
+    (a default run never calls it, so the default summary is byte-identical to v1).
+
+    For each settlement (sorted), show the size of its RESENTFUL faction (members over the resentment
+    threshold — the number M4.5 will trigger an uprising on) alongside its aggregate discontent, both
+    DERIVED on demand from the per-agent gauge. This is the legible world read-out that lets a
+    tyrant's settlement be ranked against a fair leader's at a glance — a pure read, no action.
+    """
+    print("=" * 56)
+    print("SETTLEMENT PRESSURE (world_state['discontent'], M4.4)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        pressure = discontent.settlement_pressure(sid, world_state)
+        total = discontent.settlement_discontent(sid, world_state)
+        members = sum(1 for m in settlements[sid]["members"]
+                      if any(a.name == m and a.alive for a in world_state["agents"]))
+        flag = "  << PRESSURE" if pressure >= discontent.PRESSURE_UPRISING_HINT else ""
+        print(f"{sid}: {pressure}/{members} resentful (aggregate discontent {total:.1f}){flag}")
+    print()
 
 
 def print_events_log() -> None:
@@ -831,6 +868,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "(Wealth inheritance at death is M4.2; dynastic succession of titles is M4.3 — "
              "not built here.)")
     p.add_argument(
+        "--discontent", action="store_true",
+        help="V2 M4.4: enable DISCONTENT — a legible per-agent CLASS-PRESSURE gauge (opens Arc 2: "
+             "Revolt). Each turn, for every settled adult, three grievance drivers ADD to a personal "
+             "discontent number, all DERIVED from existing state (no new psychology): DEPRIVATION amid "
+             "plenty (hunger felt beside a rich settlement-mate — the strongest), EXPLOITATION (a "
+             "subsistence M3.1 wage), and EXTRACTION (being levied by a monarch / tributed up a "
+             "kingdom), the last weighted by BURDEN relative to means AND buffered by LEGITIMACY (the "
+             "agent's TRUST in its ruler — a consented tax stings far less than a hated levy). The "
+             "gauge RISES fast while a grievance persists and DECAYS slowly once relieved (hysteresis "
+             "— grievances outlast their causes); floored at 0, soft-capped. Per-agent discontent "
+             "shows in the AGENT SUMMARY and settlement PRESSURE (the resentful-faction size) in a "
+             "SETTLEMENT PRESSURE summary. MEASURE ONLY — no uprising fires here (that is M4.5, which "
+             "will trigger on this pressure). Zero LLM, zero new RNG. Off by default -> byte-identical.")
+    p.add_argument(
+        "--uprising", action="store_true",
+        help="V2 M4.5: enable UPRISING — the relief valve that makes M4.4's gauge BLOW (implies "
+             "--discontent). When a settlement's RESENTFUL faction becomes a MAJORITY of its non-ruler "
+             "members AND their aggregate discontent clears a floor, the poor RISE against their "
+             "FORCE ruler (monarch/vassal-lord — a consent-based trust-leader is never a target). The "
+             "MOB's force is its NUMBERS (unpaid, unarmed — the inverse of M3.4, where force is BOUGHT); "
+             "the RULER's defence is his garrison/followers PLUS any mercenaries his war chest can still "
+             "MUSTER, so a rich tyrant CRUSHES the rising while a drained one FALLS to numbers (wealth is "
+             "the counter-revolutionary weapon). The SAME monarchy.resolve_battle decides it (real deaths "
+             "via the normal path, so M4.2 inheritance / M4.3 succession compose). On victory the ruler is "
+             "DEPOSED (title cleared, kingdom secedes via the existing machinery, seat left VACANT), his "
+             "hoard is EXPROPRIATED to the risers (interrupting inheritance — the heirs get nothing), and "
+             "the grievance is answered; on defeat the survivors are cowed (partial reset + fear cooldown, "
+             "grievance persists). The revolutionary LEADER filling the vacant seat is M4.6, not built "
+             "here. Pair with --monarchy/--kingdoms (uprisings need force rulers). Zero LLM, zero new RNG. "
+             "Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -903,7 +971,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    empire_on: bool = False,
                    empire_share: "float | None" = None,
                    stage: "str | None" = None,
-                   lineage_on: bool = False) -> None:
+                   lineage_on: bool = False,
+                   discontent_on: bool = False,
+                   uprising_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1023,6 +1093,19 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     world_state["lineage_on"] = lineage_on
     if lineage_on:
         lineage.init_cast(world_state)
+
+    # M4.4 (opens Arc 2): the DISCONTENT flag — a legible per-agent pressure gauge derived from the
+    # existing class signals (deprivation amid plenty, subsistence wages, buffered extraction). False
+    # (default) -> discontent.update never called, no "discontent" key ever written to world_state ->
+    # byte-identical to v1 (the v1 golden master included). MEASURE ONLY: it never acts on a ruler
+    # (uprisings are M4.5). Zero LLM, zero new RNG.
+    world_state["discontent_on"] = discontent_on
+
+    # M4.5 (Arc 2): the UPRISING flag — the relief valve that CONSUMES M4.4's gauge (the resentful
+    # poor rise against a force ruler). False (default) -> uprising.update never called, no cooldown
+    # key ever written -> byte-identical to v1 (the golden master included). Implies discontent (no
+    # pressure to blow without the gauge). Zero LLM, zero new RNG.
+    world_state["uprising_on"] = uprising_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1206,6 +1289,24 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                     print(f"  *** {baby.name} was born to {baby.parents[0]} and "
                           f"{baby.parents[1]} ***\n")
 
+        # M4.4 (opens Arc 2): DISCONTENT — advance the per-agent class-pressure gauge. Runs LAST,
+        # AFTER every institution and lineage have settled this turn, so it reads the FINAL state the
+        # oppressed actually experience (levies applied, tribute cascaded, births/aging done). It is a
+        # pure MEASURE — it reads existing state and writes only world_state["discontent"], never
+        # touching a ruler (uprisings are M4.5). Zero LLM, zero new RNG; gated on the opt-in flag, so a
+        # default run never calls it (byte-identical to v1, the golden master included).
+        if discontent_on:
+            discontent.update(world_state, turn)
+
+        # M4.5 (Arc 2): UPRISING — the relief valve. Runs LAST, AFTER discontent.update so it reads
+        # THIS turn's fresh gauge: where a resentful majority carries enough aggregate grievance, the
+        # poor RISE against their force ruler and may DEPOSE + EXPROPRIATE him (deaths route through
+        # the normal population.announce_death path, so M4.2 inheritance / M4.3 succession compose).
+        # Zero LLM, zero new RNG; gated on the opt-in flag, so a default run never calls it
+        # (byte-identical to v1). Uprisings need force rulers, so pair with --monarchy/--kingdoms.
+        if uprising_on:
+            uprising.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1256,6 +1357,10 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # --- End-of-run analysis (both modes) -------------------------------
     print()
     print_agent_summary(survived, num_turns)
+    # M4.4: the world-level pressure read-out, printed ONLY when the gauge is on so a default run's
+    # end-of-run output is byte-identical to v1.
+    if world_state.get("discontent_on"):
+        print_settlement_pressure()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1388,6 +1493,9 @@ def main(argv: list[str] | None = None) -> None:
     # scene, and defaults to a call-free heuristic cast so the demo is watchable offline.
     stage = args.stage
     empire_on = args.empire
+    # M4.5: --uprising implies --discontent (there is no pressure to blow without the gauge).
+    uprising_on = args.uprising
+    discontent_on = args.discontent or uprising_on
     if stage is not None:
         monarchy_on = True
         kingdoms_on = kingdoms_on or stage in ("kingdom", "war")
@@ -1435,7 +1543,8 @@ def main(argv: list[str] | None = None) -> None:
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
-                           stage=stage, lineage_on=args.lineage)
+                           stage=stage, lineage_on=args.lineage,
+                           discontent_on=discontent_on, uprising_on=uprising_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1460,7 +1569,8 @@ def main(argv: list[str] | None = None) -> None:
                            monarchy_on=monarchy_on,
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
-                           stage=stage, lineage_on=args.lineage)
+                           stage=stage, lineage_on=args.lineage,
+                           discontent_on=discontent_on, uprising_on=uprising_on)
 
 
 if __name__ == "__main__":

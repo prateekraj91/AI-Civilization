@@ -393,6 +393,11 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
              and _find(state, k) is not None]
     for attacker_name in sorted(kings, key=lambda k: (-imperial_host_size(state, _find(state, k)), k)):
         attacker = _find(state, attacker_name)
+        # M4.3 REGENCY: a DEPENDENT child-king (or child-emperor) holds its realm but wages
+        # no war — the existing is_dependent_child gate keeps its powers dormant until it
+        # comes of age (a no-op when lineage is off, so byte-identical there).
+        if world.is_dependent_child(attacker, state):
+            continue
         att_strength = imperial_host_size(state, attacker)
         # Target the strongest neighbour the attacker can still out-field (deterministic, winnable).
         targets = [t for t in _kingdom_neighbours(state, attacker_name)

@@ -118,16 +118,23 @@ def announce_death(agent: Any, turn: int, state: dict[str, Any],
             survivor, f"{agent.name} died on turn {turn} — {note}."
         )
 
-    # M4.2 INHERITANCE AT DEATH: the deceased's movable wealth passes to kin (or
-    # escheats to the settlement's ruler) instead of vanishing. This is the ONE hook
-    # every death cause funnels through, so old-age, starvation and battle deaths all
-    # inherit identically. Runs AFTER mark_dead so any cap-overflow ground food drops
-    # on the freed tile. Gated on lineage_on and lazily imported: with lineage OFF
-    # (default) lineage is never even imported here, so the run stays byte-identical
-    # and there is no import cost. Only movable wealth moves — titles are M4.3.
+    # M4.2/M4.3 SUCCESSION AT DEATH: the ONE hook every death cause funnels through, so
+    # old-age, starvation and battle deaths all succeed identically. Two transfers fire on
+    # the SAME death, in this order:
+    #   M4.3 — succeed_titles: the IMPARTIBLE seat (monarch/king/vassal/emperor/subject-king)
+    #          passes to the SINGLE eldest heir; the realm STRUCTURE survives under the heir
+    #          but its loyalty does NOT (trust is personal). Runs FIRST so that a same-turn
+    #          escheat (below, or on a later death this turn) routes to the SUCCESSOR, not
+    #          the just-dead ruler. Trust-leadership (M3.2) is consent-based, never inherited.
+    #   M4.2 — settle_estate: the deceased's MOVABLE WEALTH (money + stockpile) splits
+    #          PARTIBLY and EQUALLY among ALL children (else parents/siblings, else escheat).
+    # Runs AFTER mark_dead so any cap-overflow ground food drops on the freed tile. Gated on
+    # lineage_on and lazily imported: with lineage OFF (default) lineage is never even
+    # imported here, so the run stays byte-identical and there is no import cost.
     if state.get("lineage_on"):
         import lineage
-        lineage.settle_estate(agent, turn, state)
+        lineage.succeed_titles(agent, turn, state)  # M4.3: the crown passes to an heir
+        lineage.settle_estate(agent, turn, state)   # M4.2: the gold splits among children
 
     state.setdefault("pending_respawns", []).append(turn + RESPAWN_DELAY)
     return survivors

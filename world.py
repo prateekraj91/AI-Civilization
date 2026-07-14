@@ -408,6 +408,15 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # run_simulation opts in (which then calls lineage.init_cast to rebuild the block).
     world_state["lineage_on"] = False
     world_state.setdefault("lineage", {}).clear()
+    # M4.4: the discontent gauge is per-simulation persistent state — clear the map and reset the
+    # flag OFF so a stale grievance can never leak across runs (which would silently inflate a fresh
+    # settlement's pressure) and a default run is byte-identical to v1 unless run_simulation opts in.
+    world_state.pop("discontent", None)
+    world_state["discontent_on"] = False
+    # M4.5: uprising fear-cooldowns are per-simulation state — clear them and reset the flag OFF so a
+    # stale cooldown can never leak across runs and a default run is byte-identical to v1.
+    world_state.setdefault("uprising_cooldowns", {}).clear()
+    world_state["uprising_on"] = False
     return world_state["grid"]
 
 

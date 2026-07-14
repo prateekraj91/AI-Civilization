@@ -284,6 +284,32 @@ def tribute(state: dict[str, Any], turn: int) -> list[str]:
     return events
 
 
+def secede_settlement(state: dict[str, Any], sid: str, turn: int, reason: str) -> str | None:
+    """Detach settlement `sid` from whatever realm contains it (the realm loses it). Returns the
+    king it left, or None if `sid` was independent. ZERO RNG.
+
+    Factored out of the M3.5 breakaway path (`_check_breakaways`) so any cause that frees a
+    settlement — a vassal's loyalty collapsing (M3.5) OR the people rising against their lord
+    (M4.5 uprising) — cuts the realm tie through the SAME machinery: the settlement leaves the
+    king's `settlements`/`vassals`, its breakaway-hysteresis counter is dropped, a realm left with
+    no settlements is dissolved, and the event is logged. The LOCAL ruler record (monarch/leader)
+    is NOT touched here — this cuts only the realm tie; the caller owns the local seat.
+    """
+    king_name = realm_of(state, sid)
+    if king_name is None:
+        return None
+    rec = state["kingdoms"][king_name]
+    lord = rec["vassals"].pop(sid, None)
+    rec["settlements"].discard(sid)
+    if lord is not None:
+        rec["discontent"].pop(lord, None)
+    state["events"].append(
+        f"turn {turn}: {sid} SECEDED from {king_name}'s realm ({reason}) — independent again")
+    if not rec["settlements"]:
+        state["kingdoms"].pop(king_name)
+    return king_name
+
+
 # --- Conditional loyalty: a pushed vassal breaks away (with hysteresis) -----
 def _check_breakaways(state: dict[str, Any], turn: int) -> list[str]:
     """Drop vassals whose loyalty has collapsed for BREAKAWAY_PATIENCE consecutive turns. M3.5.
@@ -432,6 +458,11 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
         king = _find(state, king_name)
         home = _king_home(state, king_name)
         if home is None:
+            continue
+        # M4.3 REGENCY: a DEPENDENT child-king holds the realm but launches no conquest —
+        # the existing is_dependent_child gate keeps its war powers dormant until it comes
+        # of age (a no-op when lineage is off, so byte-identical there).
+        if world.is_dependent_child(king, state):
             continue
         for sid in _neighbours(state, home):
             defenders, _ = monarchy.defenders_of(state, sid)

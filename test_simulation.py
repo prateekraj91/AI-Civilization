@@ -5561,6 +5561,849 @@ def test_inherited_stockpile_helps_a_dependent_orphan_survive() -> None:
     print("PASS test_inherited_stockpile_helps_a_dependent_orphan_survive")
 
 
+# --- Dynasties (V2 M4.3): titles pass to heirs ------------------------------
+def _crown(sid: str, monarch: str, garrison: set | None = None) -> None:
+    """Install `monarch` on settlement `sid` (a force-based M3.4 seat)."""
+    world_state["monarchs"][sid] = {"monarch": monarch, "since": 0,
+                                    "garrison": set(garrison or set())}
+
+
+def _realm(king: str, home: str, settlements: set, vassals: dict) -> None:
+    """A king's M3.5 realm record with vassal lordships and fresh discontent counters."""
+    world_state["kingdoms"][king] = {
+        "king": king, "home": home, "settlements": set(settlements),
+        "vassals": dict(vassals), "founded": 0,
+        "discontent": {lord: 0 for lord in vassals.values()}}
+
+
+def test_m43_title_transfers_on_every_death_cause() -> None:
+    """A titled ruler's SEAT passes to its eldest heir on EVERY death cause (old age,
+    starvation, battle) — records re-keyed to the heir, realm intact, coronation logged,
+    ZERO added LLM. The pre-M4.3 contrast (records left on the dead king) is shown too."""
+    import lineage, population
+
+    def crown_after(cause: str, transfer: bool):
+        _lineage_world()
+        world_state["settlements"]["S002"] = {"id": "S002", "center": (8, 8),
+                                              "members": set(), "founded": 0}
+        king = _rich("Rex", (5, 5)); king.age = 60
+        heir = _rich("Cyn", (5, 6), parents=("Rex", "Mara")); heir.age = 20
+        _crown("S001", "Rex", {"g"})
+        _realm("Rex", "S001", {"S001", "S002"}, {"S002": "Vale"})
+        _rich("Vale", (8, 8))
+        real = lineage.succeed_titles
+        if not transfer:                       # the pre-M4.3 baseline: titles do NOT pass
+            lineage.succeed_titles = lambda *a, **k: {"heir": None, "kind": "none", "titles": ""}
+        try:
+            population.announce_death(king, 30, world_state, cause=cause,
+                                      final_memory="Died", note="they died")
+        finally:
+            lineage.succeed_titles = real
+        return king
+
+    import llm
+    llm.reset_call_stats()
+    for cause in ("old age", "starved", "fell in battle"):
+        crown_after(cause, transfer=True)
+        assert world_state["monarchs"]["S001"]["monarch"] == "Cyn", cause
+        cyn = world_state["kingdoms"].get("Cyn")
+        assert cyn is not None and cyn["king"] == "Cyn"
+        assert cyn["settlements"] == {"S001", "S002"}   # realm structure survives intact
+        assert cyn["vassals"] == {"S002": "Vale"}       # the vassal lordship carried across
+        assert cyn["discontent"] == {"Vale": 0}
+        assert "Rex" not in world_state["kingdoms"]     # re-keyed off the dead king
+        events = "\n".join(world_state["events"])
+        assert "Cyn succeeded Rex as [" in events and "eldest child" in events
+    calls = llm.get_call_stats()
+    assert calls["strategy"] == 0 and calls["decision"] == 0, "succession must add no LLM"
+
+    # CONTRAST — pre-M4.3 (succession suppressed): the crown does NOT pass; the dead
+    # king's records are simply left (the realm dissolves later via breakaway).
+    crown_after("old age", transfer=False)
+    assert world_state["monarchs"]["S001"]["monarch"] == "Rex"   # a dead holder, un-succeeded
+    assert "Rex" in world_state["kingdoms"] and "Cyn" not in world_state["kingdoms"]
+    print("PASS test_m43_title_transfers_on_every_death_cause")
+
+
+def test_m43_succession_is_eldest_first_with_tiebreaks() -> None:
+    """The single heir is the ELDEST of the closest non-empty kin tier (children ->
+    parents -> siblings), name as the deterministic age-tie tiebreak."""
+    import lineage
+
+    def heir_of(seed_kin):
+        _lineage_world()
+        rex = _rich("Rex", (5, 5), parents=("Gpa", "Gma")); rex.age = 60
+        _crown("S001", "Rex")
+        seed_kin(rex)
+        h, kind = lineage._succession_heir(rex, world_state)
+        return (h.name if h is not None else None), kind
+
+    def two_children(rex):
+        a = _rich("Ada", (5, 6), parents=("Rex", "M")); a.age = 18   # younger
+        b = _rich("Ben", (6, 5), parents=("Rex", "M")); b.age = 25   # ELDEST child
+    assert heir_of(two_children) == ("Ben", "child"), "eldest child preferred"
+
+    def tie(rex):
+        z = _rich("Zed", (5, 6), parents=("Rex", "M")); z.age = 20
+        a = _rich("Ada", (6, 5), parents=("Rex", "M")); a.age = 20   # same age -> name asc
+    assert heir_of(tie) == ("Ada", "child"), "age tie broken by name (Ada < Zed)"
+
+    def parents_only(rex):
+        g1 = _rich("Gpa", (5, 6)); g1.age = 82   # ELDEST parent
+        g2 = _rich("Gma", (6, 5)); g2.age = 78
+    assert heir_of(parents_only) == ("Gpa", "parent"), "no children -> eldest parent"
+
+    def siblings_only(rex):
+        s1 = _rich("Uma", (5, 6), parents=("Gpa", "Gma")); s1.age = 30
+        s2 = _rich("Tom", (6, 5), parents=("Gpa", "X")); s2.age = 40   # ELDEST sibling (shares Gpa)
+    assert heir_of(siblings_only) == ("Tom", "sibling"), "no child/parent -> eldest sibling"
+
+    assert heir_of(lambda rex: None) == (None, "none"), "no kin -> no heir (extinct)"
+    print("PASS test_m43_succession_is_eldest_first_with_tiebreaks")
+
+
+def test_m43_succession_does_not_inherit_loyalty() -> None:
+    """The heir inherits the SEAT, not the LOYALTY: a vassal's trust toward the heir is
+    only its OWN, and the dead king's trust relationships are never copied onto the heir."""
+    import lineage, population, trust
+
+    _lineage_world()
+    world_state["settlements"]["S002"] = {"id": "S002", "center": (8, 8),
+                                          "members": {"Vale"}, "founded": 0}
+    king = _rich("Rex", (5, 5)); king.age = 60
+    heir = _rich("Cyn", (5, 6), parents=("Rex", "Mara")); heir.age = 20
+    vassal = _rich("Vale", (8, 8), sid="S002")
+    _crown("S001", "Rex"); _crown("S002", "Vale")
+    _realm("Rex", "S001", {"S001", "S002"}, {"S002": "Vale"})
+    # The vassal trusted the DEAD king highly, but personally DISTRUSTS the unknown heir.
+    trust.ensure_relationship(vassal, "Rex")["trust"] = 3
+    trust.ensure_relationship(vassal, "Cyn")["trust"] = -3
+    population.announce_death(king, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    assert world_state["kingdoms"]["Cyn"]["vassals"]["S002"] == "Vale"  # seat transferred
+    assert vassal.relationships["Cyn"]["trust"] == -3, "the heir must NOT inherit loyalty"
+    assert vassal.relationships["Rex"]["trust"] == 3, "the dead king's bond is left as memory"
+    # And the heir did not silently gain a relationship record toward its vassals.
+    assert "Vale" not in heir.relationships or heir.relationships["Vale"].get("trust", 0) == 0
+    print("PASS test_m43_succession_does_not_inherit_loyalty")
+
+
+def test_m43_succession_is_a_crisis_test() -> None:
+    """Same realm, two heirs, two fates via the EXISTING breakaway machinery: a TRUSTED
+    heir HOLDS the vassal; a cold/DISTRUSTED heir LOSES it (it breaks away)."""
+    import lineage, population, kingdoms, trust
+
+    def holds_vassal(heir_trust: int) -> bool:
+        _lineage_world()
+        world_state["settlements"]["S002"] = {"id": "S002", "center": (8, 8),
+                                              "members": {"Vale"}, "founded": 0}
+        king = _rich("Rex", (5, 5)); king.age = 60
+        _rich("Cyn", (5, 6), parents=("Rex", "Mara")).age = 20
+        vassal = _rich("Vale", (8, 8), sid="S002")
+        _crown("S001", "Rex")
+        _realm("Rex", "S001", {"S001", "S002"}, {"S002": "Vale"})
+        trust.ensure_relationship(vassal, "Cyn")["trust"] = heir_trust  # personal standing
+        population.announce_death(king, 30, world_state, cause="old age",
+                                  final_memory="Died", note="they died")
+        for t in range(31, 36):       # let the ordinary M3.5 loyalty machinery run
+            kingdoms.update(world_state, t)
+        return ("Cyn" in world_state["kingdoms"]
+                and "S002" in world_state["kingdoms"]["Cyn"]["settlements"])
+
+    assert holds_vassal(heir_trust=3) is True, "a trusted heir HOLDS the realm"
+    assert holds_vassal(heir_trust=-3) is False, "a distrusted heir LOSES the vassal (breakaway)"
+    print("PASS test_m43_succession_is_a_crisis_test")
+
+
+def test_m43_extinct_line_dissolves_and_is_contestable() -> None:
+    """A kinless king's line is EXTINGUISHED (logged distinctly); the records clear as
+    today (the realm dissolves via breakaway) and the vacant seat is re-contestable."""
+    import lineage, population, monarchy, kingdoms
+
+    _lineage_world()
+    world_state["settlements"]["S002"] = {"id": "S002", "center": (8, 8),
+                                          "members": {"Vale"}, "founded": 0}
+    king = _rich("Rex", (5, 5)); king.age = 60           # NO kin at all
+    _rich("Vale", (8, 8), sid="S002")
+    _crown("S001", "Rex"); _realm("Rex", "S001", {"S001", "S002"}, {"S002": "Vale"})
+    population.announce_death(king, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    events = "\n".join(world_state["events"])
+    assert "the line of Rex is extinguished" in events and "lies vacant" in events
+    # No heir: records left exactly as today (an inert dead holder), not re-keyed.
+    assert world_state["monarchs"]["S001"]["monarch"] == "Rex"
+    assert "Rex" in world_state["kingdoms"]
+    # Existing machinery dissolves the realm into independent settlements: the vassal
+    # settlement breaks away from a leaderless (dead) king, freeing S002.
+    for t in range(31, 36):
+        kingdoms.update(world_state, t)
+    assert kingdoms.realm_of(world_state, "S002") is None, \
+        "the vassal settlement breaks free into independence as today"
+    assert "S002" not in world_state["kingdoms"].get("Rex", {}).get("settlements", set())
+    # The vacant HOME seat is contestable by ordinary conquest: an aspirant seizes it.
+    aspirant = _rich("Zara", (5, 4), money=30.0, sid=None)
+    _rich("Merc", (5, 3), money=0.0, sid=None)   # a poor fighter in muster range
+    res = monarchy.attempt_conquest(world_state, aspirant, "S001", 40)
+    assert res["won"] and world_state["monarchs"]["S001"]["monarch"] == "Zara", \
+        "the vacant crown falls to an ordinary aspirant"
+    print("PASS test_m43_extinct_line_dissolves_and_is_contestable")
+
+
+def test_m43_trust_leadership_is_never_hereditary() -> None:
+    """M3.2 trust-LEADERSHIP is consent-based and NOT dynastic: a dead leader's seat is
+    left untouched by succession (no coronation), even with a living child present."""
+    import lineage
+
+    _lineage_world()
+    leader = _rich("Lea", (5, 5)); leader.age = 60
+    _rich("Cyn", (5, 6), parents=("Lea", "Mara")).age = 20
+    world_state["leaders"]["S001"] = {"leader": "Lea", "followers": {"f1"}, "since": 0}
+    rec = lineage.succeed_titles(leader, 30, world_state)
+    assert rec["heir"] is None and rec["kind"] == "none", "a trust-leader holds no force title"
+    assert world_state["leaders"]["S001"]["leader"] == "Lea", "leadership untouched by succession"
+    events = "\n".join(world_state["events"])
+    assert "succeeded" not in events and "extinguished" not in events
+    print("PASS test_m43_trust_leadership_is_never_hereditary")
+
+
+def test_m43_dependent_heir_holds_seat_as_regent() -> None:
+    """A DEPENDENT child heir inherits the seat (a historically-real regency) but its
+    levy/muster/war powers stay dormant via the existing is_dependent_child gate."""
+    import lineage, population, monarchy
+
+    _lineage_world()
+    king = _rich("Rex", (5, 5)); king.age = 60
+    tot = _rich("Tot", (5, 6), parents=("Rex", "Mara"), dependent=True); tot.age = 6
+    member = _rich("Rich", (4, 4), money=50.0)
+    _crown("S001", "Rex", {"g"})
+    population.announce_death(king, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    assert world_state["monarchs"]["S001"]["monarch"] == "Tot", "the child holds the seat"
+    assert "regency" in "\n".join(world_state["events"])
+    before = member.money
+    monarchy.levy(world_state, 31)
+    assert member.money == before, "a child regent extracts NO levy (powers dormant)"
+    assert monarchy.max_fighters(tot) >= 0  # sanity; the aspirant loop excludes it (regent)
+    assert tot not in monarchy._eligible_aspirants(world_state, "S001"), \
+        "a child regent is never an aggressor"
+    print("PASS test_m43_dependent_heir_holds_seat_as_regent")
+
+
+def test_m43_escheat_routes_to_successor_same_turn() -> None:
+    """M4.2 interaction: when a kinless estate would escheat to a ruler who died the SAME
+    turn, it routes to the SUCCESSOR (the living crown), not the dead ruler."""
+    import population
+
+    _lineage_world()
+    king = _rich("Rex", (5, 5)); king.age = 60
+    heir = _rich("Cyn", (5, 6), parents=("Rex", "Mara")); heir.age = 20
+    _crown("S001", "Rex")
+    loner = _rich("Ada", (6, 6), money=25.0)          # kinless commoner, same settlement
+    population.announce_death(king, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    assert world_state["monarchs"]["S001"]["monarch"] == "Cyn"   # succession happened first
+    population.announce_death(loner, 30, world_state, cause="starved")
+    assert heir.money == 25.0, "the kinless estate escheats to the SUCCESSOR"
+    assert "escheated to Cyn" in "\n".join(world_state["events"])
+    print("PASS test_m43_escheat_routes_to_successor_same_turn")
+
+
+def test_m43_multilevel_emperor_and_subject_king_succession() -> None:
+    """Multi-level: an EMPEROR's death passes the imperial throne to his heir; a SUBJECT-
+    KING's death passes his subordinate seat to HIS heir — same rules, one level up."""
+    import population
+
+    _lineage_world()
+    emp = _rich("Emp", (5, 5)); emp.age = 60
+    _rich("Ehe", (5, 6), parents=("Emp", "Mara")).age = 20      # emperor's heir
+    sky = _rich("Sky", (7, 7), sid=None); sky.age = 55          # a subject-king
+    _crown("S001", "Emp")
+    _realm("Emp", "S001", {"S001"}, {})
+    _realm("Sky", "S002", {"S002"}, {})
+    world_state["empires"]["Emp"] = {"emperor": "Emp",
+                                     "subject_kings": {"Sky": {"since": 0}},
+                                     "founded": 0, "discontent": {"Sky": 0}}
+    population.announce_death(emp, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    assert "Ehe" in world_state["empires"] and "Emp" not in world_state["empires"]
+    ehe = world_state["empires"]["Ehe"]
+    assert ehe["emperor"] == "Ehe"
+    assert ehe["subject_kings"] == {"Sky": {"since": 0}}         # subject-king unchanged
+    assert ehe["discontent"] == {"Sky": 0}
+    assert world_state["kingdoms"]["Ehe"]["king"] == "Ehe"       # his own realm re-keyed too
+    assert world_state["monarchs"]["S001"]["monarch"] == "Ehe"
+
+    # Now the subject-king dies -> HIS heir takes the subordinate seat + his own realm.
+    _rich("Ski", (7, 8), parents=("Sky", "Nel")).age = 20
+    population.announce_death(sky, 31, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    ehe = world_state["empires"]["Ehe"]
+    assert "Ski" in ehe["subject_kings"] and "Sky" not in ehe["subject_kings"]
+    assert ehe["discontent"].get("Ski") == 0
+    assert world_state["kingdoms"]["Ski"]["king"] == "Ski"
+    print("PASS test_m43_multilevel_emperor_and_subject_king_succession")
+
+
+def test_m43_succession_only_when_lineage_on() -> None:
+    """With lineage OFF, a titled ruler's death moves NO title — the records are left
+    exactly as pre-M4.3 (the byte-identical guarantee holds at the title level too)."""
+    import population
+
+    _lineage_world()
+    world_state["lineage_on"] = False
+    king = _rich("Rex", (5, 5)); king.age = 60
+    _rich("Cyn", (5, 6), parents=("Rex", "Mara")).age = 20
+    _crown("S001", "Rex")
+    _realm("Rex", "S001", {"S001"}, {})
+    population.announce_death(king, 30, world_state, cause="old age",
+                              final_memory="Died", note="they died")
+    assert world_state["monarchs"]["S001"]["monarch"] == "Rex"   # no succession off
+    assert "Rex" in world_state["kingdoms"] and "Cyn" not in world_state["kingdoms"]
+    assert "succeeded" not in "\n".join(world_state["events"])
+    print("PASS test_m43_succession_only_when_lineage_on")
+
+
+# --- Discontent (V2 M4.4): the class-pressure gauge -------------------------
+def _disc_world() -> None:
+    """A clean world (lineage OFF) with one settlement S001 at (5, 5), ready for the gauge."""
+    _fresh_world()
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5),
+                                          "members": set(), "founded": 0}
+
+
+def _monarch(sid: str, name: str) -> None:
+    world_state["monarchs"][sid] = {"monarch": name, "since": 0, "garrison": set()}
+
+
+def _employ(employer: str, worker: str, wage: float) -> None:
+    world_state.setdefault("employments", []).append(
+        {"employer": employer, "worker": worker, "wage": wage, "since": 0})
+
+
+def test_discontent_off_run_is_byte_identical_to_v1() -> None:
+    """discontent_on=False (default) leaves the run byte-identical to the no-param run,
+    AND stacked on every other institution it still changes nothing when off."""
+    def run(**kw):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, **kw)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base, off = run(), run(discontent_on=False)
+        stacked_base = run(settlements=True, labor_on=True, economy_on=True, monarchy_on=True)
+        stacked_off = run(settlements=True, labor_on=True, economy_on=True, monarchy_on=True,
+                          discontent_on=False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "discontent_on=False diverged from the default run"
+    assert stacked_base == stacked_off, "discontent_on=False changed an institution run"
+    # And with it OFF, world_state carries no gauge key at all.
+    assert "discontent" not in world_state
+    print("PASS test_discontent_off_run_is_byte_identical_to_v1")
+
+
+def test_each_driver_raises_gauge_only_when_its_condition_holds() -> None:
+    """Each of the three drivers, in isolation, raises the gauge — and ONLY while its
+    grievance condition holds; with all conditions absent the gauge stays flat at zero."""
+    import discontent
+
+    # DEPRIVATION: a hungry agent beside a rich settlement-mate resents; fed OR alone it does not.
+    def deprivation_case(hunger: int, neighbour_wealth: float) -> float:
+        _disc_world()
+        poor = _settler("Poor", (5, 5), hunger=hunger)
+        rich = _settler("Rich", (6, 5))
+        rich.money = neighbour_wealth
+        for t in range(1, 6):
+            discontent.update(world_state, t)
+        return discontent.agent_discontent("Poor", world_state)
+
+    assert deprivation_case(hunger=8, neighbour_wealth=30.0) > 0, "hunger amid plenty must resent"
+    assert deprivation_case(hunger=1, neighbour_wealth=30.0) == 0, "a fed agent feels no deprivation"
+    assert deprivation_case(hunger=8, neighbour_wealth=0.0) == 0, "no plenty next door -> no injustice"
+
+    # EXPLOITATION: a subsistence wage bites; a wage near full output does not.
+    def wage_case(wage: float) -> float:
+        _disc_world()
+        w = _settler("Worker", (5, 5))
+        w.money = 20.0                       # fed & solvent so ONLY the wage driver is live
+        _settler("Boss", (6, 5)).money = 20.0
+        _employ("Boss", "Worker", wage)
+        for t in range(1, 6):
+            discontent.update(world_state, t)
+        return discontent.agent_discontent("Worker", world_state)
+
+    import labor
+    assert wage_case(labor.SUBSISTENCE_WAGE) > 0, "a subsistence wage must resent"
+    assert wage_case(labor.LABOR_OUTPUT) == 0, "a full-output wage captures nothing -> no grievance"
+
+    # EXTRACTION: a levying monarch bites; an unruled settlement does not.
+    def extraction_case(with_monarch: bool) -> float:
+        _disc_world()
+        subj = _settler("Subj", (5, 5))
+        subj.money = 20.0                    # wealth above the levy threshold, and fed
+        if with_monarch:
+            _settler("King", (6, 5))
+            _monarch("S001", "King")
+        for t in range(1, 6):
+            discontent.update(world_state, t)
+        return discontent.agent_discontent("Subj", world_state)
+
+    assert extraction_case(with_monarch=True) > 0, "a levying monarch must draw grievance"
+    assert extraction_case(with_monarch=False) == 0, "no ruler -> no extraction grievance"
+
+    # ALL OFF: fed, unemployed, unruled -> the gauge never leaves zero.
+    _disc_world()
+    calm = _settler("Calm", (5, 5))
+    calm.money = 20.0
+    _settler("Peer", (6, 5)).money = 20.0
+    for t in range(1, 8):
+        discontent.update(world_state, t)
+    assert discontent.agent_discontent("Calm", world_state) == 0.0, "no grievance -> flat zero"
+    print("PASS test_each_driver_raises_gauge_only_when_its_condition_holds")
+
+
+def test_legitimacy_buffers_extraction_grievance() -> None:
+    """The SAME levy by a TRUSTED ruler draws materially less grievance than by a
+    DISTRUSTED one — consent is the difference between a tax and a theft."""
+    import discontent, trust
+
+    def levied_under(heir_trust: int) -> float:
+        _disc_world()
+        subj = _settler("Subj", (5, 5))
+        subj.money = 20.0
+        _settler("King", (6, 5))
+        _monarch("S001", "King")
+        trust.ensure_relationship(subj, "King")["trust"] = heir_trust
+        for t in range(1, 6):
+            discontent.update(world_state, t)
+        return discontent.agent_discontent("Subj", world_state)
+
+    hated = levied_under(-5)
+    trusted = levied_under(5)
+    neutral = levied_under(0)
+    assert trusted < neutral < hated, (trusted, neutral, hated)
+    assert trusted < 0.5 * hated, "a trusted ruler's levy must sting far less"
+    print("PASS test_legitimacy_buffers_extraction_grievance")
+
+
+def test_extraction_burden_is_bounded_by_means() -> None:
+    """The burden weighting is due/max(wealth, MEANS_FLOOR), CAPPED at 1 — so a near-broke
+    agent's grievance stays bounded (the MEANS_FLOOR keeps 'burden relative to means' sane
+    at the bottom) rather than dividing a tiny levy by a tiny wealth into a crushing burden.
+
+    NOTE (honest): the institutions levy PROPORTIONALLY (a rate of wealth above a threshold),
+    so due/wealth is roughly flat across wealth — this weighting differentiates a FLAT sum, not
+    a proportional levy, and does not by itself make the poor resent a proportional levy more."""
+    import discontent
+
+    _disc_world()
+    _monarch("S001", "King")
+    _settler("King", (6, 5))
+    # A near-broke subject: burden must be clamped to <= 1, not explode.
+    broke = _settler("Broke", (5, 5))
+    broke.money = 5.01                    # a hair over the levy threshold -> a tiny due
+    inc, ruler, kind = discontent.extraction(broke, world_state)
+    assert ruler == "King" and 0.0 < inc <= discontent.EXTRACTION_WEIGHT, inc
+    print("PASS test_extraction_burden_is_bounded_by_means")
+
+
+def test_decay_is_asymmetric_with_a_floor() -> None:
+    """Grievances outlast their causes: the gauge RISES fast under oppression and DECAYS
+    slowly once relieved (asymmetric slopes), and never falls below zero."""
+    import discontent
+
+    _disc_world()
+    poor = _settler("Poor", (5, 5), hunger=8)
+    _settler("Rich", (6, 5)).money = 30.0
+
+    # RISE: five turns of hunger amid plenty.
+    for t in range(1, 6):
+        discontent.update(world_state, t)
+    peak = discontent.agent_discontent("Poor", world_state)
+    rise_slope = peak / 5.0
+    assert peak > 0
+
+    # RELIEF: feed the agent (grievance goes silent), then let it ebb.
+    poor.hunger = 1
+    discontent.update(world_state, 6)
+    after_one = discontent.agent_discontent("Poor", world_state)
+    fall_slope = peak - after_one
+    assert fall_slope > 0, "relieved discontent must ebb"
+    assert fall_slope < rise_slope, "it must fall SLOWER than it rose (hysteresis)"
+    assert fall_slope < 0.5 * rise_slope, (fall_slope, rise_slope)
+
+    # SUSTAINED relief returns it to zero and FLOORS there.
+    for t in range(7, 60):
+        discontent.update(world_state, t)
+    assert discontent.agent_discontent("Poor", world_state) == 0.0, "must decay to a hard floor of 0"
+    print("PASS test_decay_is_asymmetric_with_a_floor")
+
+
+def test_no_decay_while_grievance_persists() -> None:
+    """The gauge does not decay on a turn where a grievance is still active — it only
+    accumulates; relief (decay) happens ONLY when every driver is silent."""
+    import discontent
+
+    _disc_world()
+    poor = _settler("Poor", (5, 5), hunger=8)
+    _settler("Rich", (6, 5)).money = 30.0
+    prev = 0.0
+    for t in range(1, 6):
+        discontent.update(world_state, t)
+        now = discontent.agent_discontent("Poor", world_state)
+        assert now > prev, "a live grievance must keep the gauge monotonically rising"
+        prev = now
+    print("PASS test_no_decay_while_grievance_persists")
+
+
+def test_settlement_pressure_counts_only_above_threshold_members() -> None:
+    """settlement_pressure is the count of a settlement's LIVING members whose gauge is at
+    or above the resentment threshold — nobody below, nobody dead, nobody from elsewhere."""
+    import discontent
+
+    _disc_world()
+    world_state["settlements"]["S002"] = {"id": "S002", "center": (9, 9),
+                                          "members": set(), "founded": 0}
+    a = _settler("A", (5, 5))
+    b = _settler("B", (5, 6))
+    c = _settler("C", (6, 5))
+    _settler("D", (9, 9), sid="S002")        # in ANOTHER settlement — must not count for S001
+    thr = discontent.RESENTMENT_THRESHOLD
+    world_state["discontent"] = {"A": thr, "B": thr - 0.1, "C": thr + 5, "D": thr + 9}
+    assert discontent.settlement_pressure("S001", world_state) == 2      # A and C only
+    assert discontent.settlement_pressure("S002", world_state) == 1      # D
+    # A dead resentful member drops out of the count.
+    c.alive = False
+    assert discontent.settlement_pressure("S001", world_state) == 1      # only A now
+    # settlement_discontent sums the LIVING members' gauge.
+    assert discontent.settlement_discontent("S001", world_state) == thr + (thr - 0.1)
+    print("PASS test_settlement_pressure_counts_only_above_threshold_members")
+
+
+def test_threshold_crossing_logs_sparsely() -> None:
+    """Crossing INTO resentment logs exactly ONE line naming the dominant driver; further
+    increments above the line log nothing (the events log stays readable)."""
+    import discontent
+
+    _disc_world()
+    poor = _settler("Poor", (5, 5), hunger=9)
+    _settler("Rich", (6, 5)).money = 30.0
+    for t in range(1, 15):
+        discontent.update(world_state, t)
+    seethes = [e for e in world_state["events"] if "Poor seethes" in e]
+    assert len(seethes) == 1, seethes
+    assert "hunger amid plenty" in seethes[0], seethes[0]
+    assert discontent.agent_discontent("Poor", world_state) >= discontent.RESENTMENT_THRESHOLD
+    print("PASS test_threshold_crossing_logs_sparsely")
+
+
+def test_regency_levy_draws_no_extraction_grievance() -> None:
+    """A DEPENDENT-CHILD monarch (M4.3 regency) levies nothing — so, exactly as the levy
+    code skips it, the gauge registers no extraction from a phantom levy."""
+    import discontent
+
+    _disc_world()
+    world_state["lineage_on"] = True                 # regency only exists under lineage
+    subj = _settler("Subj", (5, 5))
+    subj.money = 20.0
+    child = _settler("Tot", (6, 5))
+    child.dependent = True                           # a minor on the throne
+    _monarch("S001", "Tot")
+    for t in range(1, 6):
+        discontent.update(world_state, t)
+    assert discontent.agent_discontent("Subj", world_state) == 0.0, "a regent levies nothing"
+    print("PASS test_regency_levy_draws_no_extraction_grievance")
+
+
+def test_discontent_adds_no_llm_and_is_deterministic() -> None:
+    """The gauge draws ZERO ADDED LLM calls (identical counts with it on vs off) and no new
+    RNG (two seeded on-runs are byte-identical to each other)."""
+    def run(on: bool):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, labor_on=True, economy_on=True,
+                                monarchy_on=True, discontent_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    saved = llm.PROVIDER
+    try:
+        _, off_calls = run(False)
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+    finally:
+        llm.PROVIDER = saved
+    assert on_calls == off_calls, (on_calls, off_calls)   # discontent adds no LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_discontent_adds_no_llm_and_is_deterministic")
+
+
+# --- Uprising (V2 M4.5): the revolt fires -----------------------------------
+def _resentful(names: dict, level: float = 12.0) -> None:
+    """Stamp the discontent gauge directly (the mob's readiness) for a set of names."""
+    world_state["discontent"] = dict(names) if isinstance(names, dict) else {n: level for n in names}
+
+
+def _bystander_mercs(positions, money: float = 0.5) -> list:
+    """Poor NOMAD bystanders (not settlement members) a ruler could hire as guards."""
+    out = []
+    for i, p in enumerate(positions):
+        a = Agent(name=f"merc{i}", personality="x")
+        place_agent(a, *p)
+        a.hunger, a.age, a.lifespan, a.money, a.settlement = 1, 30, 100, money, None
+        out.append(a)
+    return out
+
+
+def test_uprising_requires_both_trigger_gates() -> None:
+    """A rising needs BOTH gates: a resentful MAJORITY (fraction) AND aggregate discontent over
+    the floor. Either alone does not fire."""
+    import uprising
+
+    # Fraction gate: 1 of 4 resentful (even at huge discontent) is not a majority -> no rise;
+    # 2 of 4 resentful clears both fraction and the floor -> rises.
+    def fraction_case(n_resentful: int) -> bool:
+        _disc_world()
+        _settler("King", (5, 5))
+        for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 6)), ("D", (7, 5))]:
+            _settler(n, p).money = 0.5
+        _monarch("S001", "King")
+        _resentful({n: 12.0 for n in list("ABCD")[:n_resentful]})
+        return uprising.would_rise(world_state, "S001", 10)
+
+    assert fraction_case(1) is False, "a lone resenter is not a majority"
+    assert fraction_case(2) is True, "half the commoners resentful -> the majority gate opens"
+
+    # Aggregate gate: a sole non-ruler member resentful at exactly the threshold (6) is a majority
+    # but under the aggregate floor (12) -> no rise; raise its grievance over the floor -> rises.
+    def aggregate_case(level: float) -> bool:
+        _disc_world()
+        _settler("King", (5, 5))
+        _settler("Lone", (5, 6)).money = 0.5
+        _monarch("S001", "King")
+        _resentful({"Lone": level})
+        return uprising.would_rise(world_state, "S001", 10)
+
+    import discontent
+    assert aggregate_case(discontent.RESENTMENT_THRESHOLD) is False, "a bare majority under the floor waits"
+    assert aggregate_case(uprising.UPRISING_MIN_PRESSURE + 1) is True, "real accumulated weight fires it"
+    print("PASS test_uprising_requires_both_trigger_gates")
+
+
+def test_consent_led_settlement_never_rises() -> None:
+    """A settlement whose only authority is a consent-based trust-leader (M3.2) is NEVER a valid
+    target — the people chose them, so there is nothing to overthrow (even if the gauge is maxed)."""
+    import uprising
+
+    _disc_world()
+    _settler("Led", (5, 5))
+    for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 6))]:
+        _settler(n, p).money = 0.5
+    world_state["leadership_on"] = True
+    world_state["leaders"]["S001"] = {"leader": "Led", "followers": {"A", "B", "C"}, "since": 0}
+    _resentful({"A": 25.0, "B": 25.0, "C": 25.0})     # maxed grievance, no force ruler
+    assert uprising.would_rise(world_state, "S001", 10) is False
+    assert uprising.update(world_state, 10) == [], "a consent-led town cannot rise"
+    print("PASS test_consent_led_settlement_never_rises")
+
+
+def test_mob_is_numbers_penniless_wins_funded_ruler_crushes() -> None:
+    """The mob's force is its NUMBERS: a penniless mob overwhelms an undefended ruler, but the SAME
+    mob is crushed by a rich ruler who buys guards. Wealth is the counter-revolutionary weapon."""
+    import uprising
+
+    def rising(king_money: float, with_merc_pool: bool):
+        _disc_world()
+        king = _settler("King", (5, 5)); king.money = king_money
+        risers = [_settler(n, p) for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]]
+        for r in risers:
+            r.money = 0.0                              # a truly PENNILESS mob
+        if with_merc_pool:
+            _bystander_mercs([(4, 4), (4, 5), (5, 4), (4, 6), (6, 4)])
+        _monarch("S001", "King")
+        _resentful({"A": 12.0, "B": 12.0, "C": 12.0})
+        res = uprising.update(world_state, 10)
+        return res[0], king
+
+    # Undefended ruler (no garrison, no one to hire): the penniless mob WINS on numbers.
+    r, king = rising(king_money=0.0, with_merc_pool=False)
+    assert r["won"] and r["deposed"] and not king.alive, r
+
+    # Rich ruler with a mercenary pool: he musters guards that OUTNUMBER the mob -> CRUSHED.
+    r, king = rising(king_money=200.0, with_merc_pool=True)
+    assert not r["won"] and king.alive and r["defenders"] > r["mob"], r
+    assert world_state["monarchs"]["S001"]["monarch"] == "King", "the crown holds"
+    print("PASS test_mob_is_numbers_penniless_wins_funded_ruler_crushes")
+
+
+def test_crushed_rising_partial_reset_cooldown_and_persistent_grievance() -> None:
+    """A crushed rising: survivors are cowed (partial reset, NOT to zero — the grievance persists),
+    a fear cooldown blocks re-rising, and the ruler holds."""
+    import uprising
+
+    _disc_world()
+    king = _settler("King", (5, 5)); king.money = 200.0
+    for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]:
+        _settler(n, p).money = 0.0
+    _bystander_mercs([(4, 4), (4, 5), (5, 4), (4, 6), (6, 4)])
+    _monarch("S001", "King")
+    _resentful({"A": 12.0, "B": 12.0, "C": 12.0})
+    res = uprising.update(world_state, 10)
+    assert not res[0]["won"]
+    # A survivor (deaths are by name order, so C outlives A/B) keeps a REDUCED but non-zero gauge.
+    surv = next(a for a in world_state["agents"] if a.name == "C" and a.alive)
+    g = world_state["discontent"]["C"]
+    assert 0.0 < g < 12.0, g
+    assert abs(g - 12.0 * uprising.FEAR_RETAIN) < 1e-9, g
+    # Cooldown set; it blocks re-rising even while still resentful.
+    assert world_state["uprising_cooldowns"]["S001"] == 10 + uprising.UPRISING_COOLDOWN
+    world_state["discontent"] = {"A": 12.0, "B": 12.0, "C": 12.0}  # re-anger everyone
+    assert uprising.would_rise(world_state, "S001", 12) is False, "cooldown holds the peace"
+    assert uprising.would_rise(world_state, "S001", 10 + uprising.UPRISING_COOLDOWN) is True, "then it can rise again"
+    print("PASS test_crushed_rising_partial_reset_cooldown_and_persistent_grievance")
+
+
+def test_victory_deposes_clears_title_and_breaks_kingdom_away() -> None:
+    """A successful rising in a VASSAL settlement: the lord is deposed, his monarch record cleared,
+    and the settlement SECEDES from the realm via the existing kingdoms machinery — seat left vacant."""
+    import uprising, kingdoms
+
+    _disc_world()
+    world_state["settlements"]["S000"] = {"id": "S000", "center": (1, 1), "members": {"King"}, "founded": 0}
+    king = _settler("King", (1, 1), sid="S000"); king.money = 50.0
+    lord = _settler("Lord", (5, 5)); lord.money = 0.0            # a DRAINED vassal lord
+    for n, p in [("A", (5, 6)), ("B", (6, 5)), ("C", (6, 7))]:
+        _settler(n, p).money = 0.0
+    _monarch("S001", "Lord")                                     # the lord holds S001 by force
+    _crown("S000", "King")
+    _realm("King", "S000", {"S000", "S001"}, {"S001": "Lord"})   # S001 is a vassal of King
+    assert kingdoms.realm_of(world_state, "S001") == "King"
+    _resentful({"A": 12.0, "B": 12.0, "C": 12.0})
+    res = uprising.update(world_state, 10)
+    r = next(x for x in res if x["sid"] == "S001")
+    assert r["won"] and r["deposed"]
+    assert "S001" not in world_state["monarchs"], "the local force-title is cleared"
+    assert kingdoms.realm_of(world_state, "S001") is None, "the settlement seceded from the realm"
+    assert not lord.alive, "the deposed lord is killed through the normal path"
+    assert any("SECEDED from King" in e for e in world_state["events"])
+    print("PASS test_victory_deposes_clears_title_and_breaks_kingdom_away")
+
+
+def test_expropriation_conserved_and_preempts_inheritance() -> None:
+    """A successful rising SEIZES the ruler's hoard, splits it among the risers (conserved to the
+    decimal), and — because the seizure precedes the death — his M4.2 HEIRS inherit NOTHING. The
+    contrast: the SAME ruler dying of old age leaves the whole estate to the heir."""
+    import uprising, population
+
+    def build_and(fate: str):
+        _disc_world()
+        world_state["lineage_on"] = True
+        king = _settler("King", (5, 5)); king.money = 40.0
+        heir = _settler("Heir", (5, 6)); heir.parents = ("King", "Q"); heir.dependent = True; heir.age = 6
+        risers = [_settler(n, p) for n, p in [("A", (6, 5)), ("B", (6, 6)), ("C", (7, 5))]]
+        for r in risers:
+            r.money = 0.0
+        _monarch("S001", "King")
+        _resentful({"A": 12.0, "B": 12.0, "C": 12.0})
+        if fate == "uprising":
+            res = uprising.update(world_state, 10)[0]
+            victors = [a for a in world_state["agents"] if a.name in ("A", "B", "C") and a.alive]
+            return king, heir, res, victors
+        else:  # the same king dies of old age instead
+            population.announce_death(king, 10, world_state, cause="old age",
+                                      final_memory="Died of old age", note="they died of old age")
+            return king, heir, None, []
+
+    king, heir, res, victors = build_and("uprising")
+    assert res["won"] and abs(res["seized"] - 40.0) < 1e-9
+    got = sum(v.money for v in victors)
+    assert abs(got - 40.0) < 1e-9, got                 # conserved to the decimal
+    assert heir.money == 0.0, "revolution interrupts inheritance — the heir gets nothing"
+    assert king.money == 0.0 and king.stockpile == 0.0
+
+    # CONTRAST: dying of old age, the heir DOES inherit the whole estate.
+    king2, heir2, _, _ = build_and("oldage")
+    assert heir2.money == 40.0, "an ordinary death still passes the estate to the heir"
+    print("PASS test_expropriation_conserved_and_preempts_inheritance")
+
+
+def test_uprising_deaths_compose_with_succession_and_inheritance() -> None:
+    """Deaths route through population.announce_death, so a deposed ruler's death is a first-class
+    event — but because the title was cleared and the hoard seized first, NO heir succeeds the crown
+    and NO estate settles (Arc 1 composes: the dynasty simply ends)."""
+    import uprising
+
+    _disc_world()
+    world_state["lineage_on"] = True
+    king = _settler("King", (5, 5)); king.money = 30.0
+    heir = _settler("Heir", (5, 6)); heir.parents = ("King", "Q"); heir.age = 25   # an ADULT heir
+    for n, p in [("A", (6, 5)), ("B", (6, 6)), ("C", (7, 5))]:
+        _settler(n, p).money = 0.0
+    _monarch("S001", "King")
+    _resentful({"A": 12.0, "B": 12.0, "C": 12.0})
+    uprising.update(world_state, 10)
+    events = "\n".join(world_state["events"])
+    assert "King died (deposed in the uprising)" in events, events
+    assert "succeeded King" not in events, "the cleared title cannot pass to an heir"
+    assert "S001" not in world_state["monarchs"] and heir.money == 0.0
+    print("PASS test_uprising_deaths_compose_with_succession_and_inheritance")
+
+
+def test_uprising_off_run_is_byte_identical_to_v1() -> None:
+    """uprising_on=False (default) leaves the run byte-identical, alone and stacked on institutions,
+    and writes no cooldown state."""
+    def run(**kw):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, **kw)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base, off = run(), run(uprising_on=False)
+        stacked = run(settlements=True, monarchy_on=True, discontent_on=True)
+        stacked_off = run(settlements=True, monarchy_on=True, discontent_on=True, uprising_on=False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "uprising_on=False diverged from the default run"
+    assert stacked == stacked_off, "uprising_on=False changed an institution run"
+    assert not world_state.get("uprising_cooldowns"), "off run must write no cooldown state"
+    print("PASS test_uprising_off_run_is_byte_identical_to_v1")
+
+
+def test_uprising_adds_no_llm_and_is_deterministic() -> None:
+    """The uprising system draws ZERO added LLM (identical counts on vs off) and no new RNG (two
+    seeded on-runs are byte-identical)."""
+    def run(on: bool):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, discontent_on=True,
+                                uprising_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    saved = llm.PROVIDER
+    try:
+        _, off_calls = run(False)
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+    finally:
+        llm.PROVIDER = saved
+    assert on_calls == off_calls, (on_calls, off_calls)
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_uprising_adds_no_llm_and_is_deterministic")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -5761,6 +6604,35 @@ def main_runner() -> None:
         test_inheritance_writes_events_and_memories_via_death_path,
         test_inheritance_only_when_lineage_on,
         test_inherited_stockpile_helps_a_dependent_orphan_survive,
+        test_m43_title_transfers_on_every_death_cause,
+        test_m43_succession_is_eldest_first_with_tiebreaks,
+        test_m43_succession_does_not_inherit_loyalty,
+        test_m43_succession_is_a_crisis_test,
+        test_m43_extinct_line_dissolves_and_is_contestable,
+        test_m43_trust_leadership_is_never_hereditary,
+        test_m43_dependent_heir_holds_seat_as_regent,
+        test_m43_escheat_routes_to_successor_same_turn,
+        test_m43_multilevel_emperor_and_subject_king_succession,
+        test_m43_succession_only_when_lineage_on,
+        test_discontent_off_run_is_byte_identical_to_v1,
+        test_each_driver_raises_gauge_only_when_its_condition_holds,
+        test_legitimacy_buffers_extraction_grievance,
+        test_extraction_burden_is_bounded_by_means,
+        test_decay_is_asymmetric_with_a_floor,
+        test_no_decay_while_grievance_persists,
+        test_settlement_pressure_counts_only_above_threshold_members,
+        test_threshold_crossing_logs_sparsely,
+        test_regency_levy_draws_no_extraction_grievance,
+        test_discontent_adds_no_llm_and_is_deterministic,
+        test_uprising_requires_both_trigger_gates,
+        test_consent_led_settlement_never_rises,
+        test_mob_is_numbers_penniless_wins_funded_ruler_crushes,
+        test_crushed_rising_partial_reset_cooldown_and_persistent_grievance,
+        test_victory_deposes_clears_title_and_breaks_kingdom_away,
+        test_expropriation_conserved_and_preempts_inheritance,
+        test_uprising_deaths_compose_with_succession_and_inheritance,
+        test_uprising_off_run_is_byte_identical_to_v1,
+        test_uprising_adds_no_llm_and_is_deterministic,
     ]
     for t in tests:
         t()

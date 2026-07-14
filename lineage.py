@@ -31,13 +31,15 @@ SCOPE BOUNDARIES (stated, deliberate — do not blur):
     "Inheritance at death" section below). A newborn still starts with nothing
     (stockpile 0, money 0 — no wealth is inherited AT BIRTH); what M4.2 adds is
     that a dead agent's wealth no longer vanishes — it PASSES TO KIN.
-  * DYNASTIC SUCCESSION of titles is M4.3 — NOT built here. M4.2 moves only the
-    deceased's MOVABLE WEALTH (money + stockpile); it never transfers a crown or
-    vassal seat. A ruler ages and dies like everyone, and its TITLE records clear
-    exactly as they do today when a ruler dies in battle (the institution updates
-    already handle a dead holder). Escheat (kinless death) pays the estate to the
-    settlement's current ruler as WEALTH — the crown profits from a kinless death
-    — but the seat itself still passes by conquest/trust, never by blood (M4.3).
+  * DYNASTIC SUCCESSION of titles IS built here (M4.3 — see succeed_titles and the
+    "Dynastic succession of titles" section below). Unlike M4.2's PARTIBLE wealth, a
+    title is IMPARTIBLE: on a holder's death the SEAT (monarch/king/vassal/emperor/
+    subject-king) passes by PRIMOGENITURE to the SINGLE eldest heir, while ALL children
+    still split the gold. Both fire on the same death. The heir inherits the SEAT, not
+    the LOYALTY — trust is personal and is never copied, so a weak heir can lose what its
+    father built through the existing breakaway machinery. Trust-LEADERSHIP (M3.2, by
+    consent) is NOT hereditary. A kinless holder's line is EXTINGUISHED (records clear as
+    today). Escheat (kinless WEALTH) still pays the estate to the settlement's ruler.
 
 The design, mechanically
 ------------------------
@@ -92,16 +94,33 @@ The design, mechanically
    than vanishing. Wealth is strictly CONSERVED: estate == sum distributed to
    heirs + ground-drop overflow (no minting, no leakage). Every transfer logs an
    event ("X inherited N from Y", escheat logged distinctly) and writes a memory
-   to each heir. This moves only MOVABLE WEALTH — a dead ruler's TITLE still clears
-   exactly as today; dynastic succession of the seat is M4.3.
+   to each heir. This moves only MOVABLE WEALTH; the deceased's TITLE passes
+   separately by M4.3 succession (item 7).
+7. DYNASTIC SUCCESSION OF TITLES (M4.3 — succeed_titles) — death stops evaporating
+   CROWNS and starts passing them on, so realms outlive their founders. On ANY death
+   (same single hook, population.announce_death, run just before settle_estate), the
+   deceased's FORCE titles (monarch seats, kingdom crowns, vassal lordships, imperial
+   thrones, subject-king seats) pass IMPARTIBLY to the SINGLE eldest surviving heir down
+   the SAME kin-order M4.2 uses (children -> parents -> siblings; eldest-first, name as
+   tiebreak). The realm STRUCTURE survives intact under the heir (records re-keyed to the
+   heir's name, tribute/vassal/discontent bookkeeping carried across), a coronation is
+   logged, and — crucially — NO trust is copied: the heir holds the realm only on its OWN
+   standing, so an unknown/distrusted heir's vassals erode and BREAK AWAY through the
+   EXISTING M3.5/M3.6 loyalty machinery (succession is a CRISIS TEST, no new mechanic). A
+   DEPENDENT child heir takes the seat as a REGENT (its levy/muster/war powers stay dormant
+   via the existing is_dependent_child gate). A holder with NO living kin has its LINE
+   EXTINGUISHED — the records clear as today (the existing breakaway/re-conquest machinery
+   dissolves the leaderless realm) and the extinction is logged distinctly. Trust-
+   LEADERSHIP (M3.2, consent) is NOT hereditary and is never touched.
 
 Cost & determinism
 ------------------
 ZERO LLM calls — pure Python over world_state. All randomness (trait jitter,
 lifespans) comes from the seeded sim stream, drawn in stable sorted order, so a
-seeded run reproduces exactly. Inheritance (M4.2) draws NO RNG at all — an equal
-split down a sorted kin-order and a deterministic ground-drop placement — so it
-too is reproducible under seed. Everything is gated on world_state["lineage_on"]
+seeded run reproduces exactly. Inheritance (M4.2) and title succession (M4.3) draw
+NO RNG at all — an equal split down a sorted kin-order, a deterministic ground-drop
+placement, and an eldest-first single-heir choice over sorted records — so both are
+reproducible under seed. Everything is gated on world_state["lineage_on"]
 (the --lineage flag): with it OFF (default) no function here is ever called, no
 RNG is drawn, and the run — including respawn — is byte-identical to today.
 """
@@ -645,6 +664,217 @@ def settle_estate(deceased: Any, turn: int, state: dict[str, Any]) -> dict[str, 
     return record
 
 
+# --- Dynastic succession of titles (M4.3) ------------------------------------
+# WEALTH is PARTIBLE (M4.2 — split equally among all children); a TITLE is
+# IMPARTIBLE — a crown cannot be divided. On a title-holder's death the SEAT passes
+# by PRIMOGENITURE-style SINGLE succession to the ELDEST surviving kin (the same M4.2
+# kin tiers — children -> parents -> siblings — but eldest-first, not an equal split).
+# Both fire on the SAME death: the eldest gets the crown; ALL children still split the
+# gold (settle_estate is untouched).
+#
+# SCOPE (stated, deliberate): only FORCE-based titles are dynastic — MONARCH seats
+# (M3.4), KINGDOMS and their VASSAL LORDSHIPS (M3.5), and EMPIRES / SUBJECT-KING seats
+# (M3.6). Trust-LEADERSHIP (M3.2) is CONSENT-based and is NOT hereditary: a dead
+# trust-leader's `leaders[sid]` record is left to clear exactly as today (leadership
+# re-emerges from trust next turn), and succeed_titles never touches it.
+#
+# THE HEIR INHERITS THE SEAT, NOT THE LOYALTY. Title RECORDS transfer to the heir's
+# name (the realm structure — kingdom, vassals, tribute flow — survives intact under
+# the heir), but TRUST is PERSONAL and is NEVER copied: a vassal's/subject-king's
+# loyalty toward the heir is only what it PERSONALLY holds (plus any M4.1 kin-trust if
+# family). So a trusted heir holds the realm while an unknown/distrusted one inherits a
+# realm whose vassals erode and BREAK AWAY through the EXISTING M3.5/M3.6 machinery —
+# succession is a CRISIS TEST, with NO new loyalty mechanic added here.
+#
+# EXTINCT LINES: a holder who dies with NO living kin leaves the title records to clear
+# exactly as they do today (a dead king's realm dissolves via the existing breakaway
+# logic; a vacant monarch seat is re-contested by the ordinary conquest machinery) —
+# succeed_titles only logs the line's extinction distinctly and moves nothing.
+def _eldest(cands: list[Any]) -> "Any | None":
+    """The single heir among `cands`: ELDEST first, NAME as the deterministic tiebreak."""
+    return sorted(cands, key=lambda a: (-a.age, a.name))[0] if cands else None
+
+
+def _succession_heir(deceased: Any, state: dict[str, Any]) -> "tuple[Any | None, str]":
+    """The SINGLE title-heir of `deceased`, by primogeniture down the M4.2 kin-order.
+
+    Returns (heir, kind) with kind "child" | "parent" | "sibling" | "none". The tiers
+    are M4.2's (children -> parents -> siblings), but a title is impartible so exactly
+    ONE heir is chosen — the ELDEST of the closest non-empty tier (age desc, then name
+    as a deterministic tiebreak). A DEPENDENT child is a valid heir (a child monarch —
+    see succeed_titles). Only LIVING agents other than the deceased are ever heirs; pure
+    read, ZERO RNG. Mirrors M4.2's _living_heirs so wealth and titles follow the SAME
+    bloodline, differing only in partible-all vs impartible-eldest.
+    """
+    living = [a for a in state["agents"] if a.alive and a is not deceased]
+    child = _eldest([a for a in living if deceased.name in (a.parents or ())])
+    if child is not None:
+        return child, "child"
+    by_name = {a.name: a for a in living}
+    parent = _eldest([by_name[n] for n in (deceased.parents or ()) if n in by_name])
+    if parent is not None:
+        return parent, "parent"
+    dparents = set(deceased.parents or ())
+    if dparents:
+        sibling = _eldest([a for a in living if dparents & set(a.parents or ())])
+        if sibling is not None:
+            return sibling, "sibling"
+    return None, "none"
+
+
+def _holds_force_title(name: str, state: dict[str, Any]) -> bool:
+    """True iff `name` holds ANY dynastic FORCE title (monarch/king/vassal/emperor/
+    subject-king). A pure trust-leader (M3.2, consent) holds none — leadership is not
+    hereditary. Pure read."""
+    if any(m["monarch"] == name for m in state.get("monarchs", {}).values()):
+        return True
+    if name in state.get("kingdoms", {}):
+        return True
+    if any(name in k["vassals"].values() for k in state.get("kingdoms", {}).values()):
+        return True
+    if name in state.get("empires", {}):
+        return True
+    if any(name in e["subject_kings"] for e in state.get("empires", {}).values()):
+        return True
+    return False
+
+
+def _title_summary(name: str, state: dict[str, Any]) -> str:
+    """A deterministic human string of every FORCE title `name` currently holds (for the
+    coronation / extinction log). Sorted throughout; reads only, mutates nothing."""
+    parts: list[str] = []
+    for sid in sorted(s for s, m in state.get("monarchs", {}).items() if m["monarch"] == name):
+        parts.append(f"monarch of {sid}")
+    if name in state.get("kingdoms", {}):
+        sids = ", ".join(sorted(state["kingdoms"][name]["settlements"])) or "no lands"
+        parts.append(f"king of the realm of {sids}")
+    for sid in sorted(sid for k in state.get("kingdoms", {}).values()
+                      for sid, lord in k["vassals"].items() if lord == name):
+        parts.append(f"vassal lord of {sid}")
+    if name in state.get("empires", {}):
+        parts.append("emperor")
+    if any(name in e["subject_kings"] for e in state.get("empires", {}).values()):
+        parts.append("subject-king")
+    return "; ".join(parts) if parts else "no title"
+
+
+def _transfer_titles(state: dict[str, Any], old: str, new: str) -> None:
+    """Rewrite EVERY force-title record from name `old` to `new` (the seat passes intact).
+
+    Re-keys the name-keyed realm/empire dicts and rewrites the sid-keyed monarch/vassal
+    holder fields, carrying the discontent (breakaway-hysteresis) counters across so the
+    realm STRUCTURE survives whole. It copies NO trust — the heir stands on its OWN
+    loyalty. Garrison/follower rosters (real fighters) are left untouched: the heir is a
+    figurehead, not a soldier, and the dead are filtered out of them elsewhere. Leadership
+    (leaders[sid], M3.2 consent) is never touched. Deterministic; ZERO RNG.
+    """
+    kingdoms = state.get("kingdoms", {})
+    empires = state.get("empires", {})
+
+    # 1. MONARCH seats (sid-keyed) — the heir holds the seat the deceased held.
+    for m in state.get("monarchs", {}).values():
+        if m["monarch"] == old:
+            m["monarch"] = new
+
+    # 2. KINGDOM (name-keyed) — re-key the realm and rename its king field.
+    if old in kingdoms:
+        rec = kingdoms.pop(old)
+        rec["king"] = new
+        if new in kingdoms:  # rare personal union — the heir already wore a crown
+            keep = kingdoms[new]
+            keep["settlements"] |= rec["settlements"]
+            keep["vassals"].update(rec["vassals"])
+            keep["discontent"].update(rec["discontent"])
+        else:
+            kingdoms[new] = rec
+
+    # 3. VASSAL LORDSHIPS + their discontent counters (across every realm).
+    for krec in kingdoms.values():
+        for sid, lord in list(krec["vassals"].items()):
+            if lord == old:
+                krec["vassals"][sid] = new
+        if old in krec["discontent"]:
+            krec["discontent"][new] = krec["discontent"].pop(old)
+
+    # 4. EMPIRE (name-keyed) — re-key the empire and rename its emperor field.
+    if old in empires:
+        erec = empires.pop(old)
+        erec["emperor"] = new
+        if new in empires:  # rare personal union of empires
+            keep = empires[new]
+            keep["subject_kings"].update(erec["subject_kings"])
+            keep["discontent"].update(erec["discontent"])
+        else:
+            empires[new] = erec
+
+    # 5. SUBJECT-KING seats + their discontent counters (across every empire).
+    for erec in empires.values():
+        if old in erec["subject_kings"]:
+            erec["subject_kings"][new] = erec["subject_kings"].pop(old)
+        if old in erec["discontent"]:
+            erec["discontent"][new] = erec["discontent"].pop(old)
+
+    # 6. Cleanup — a crown cannot be its own vassal/subject (if the heir already held a
+    #    subordinate seat inside the realm it now leads, that seat folds into the crown).
+    for king, krec in kingdoms.items():
+        for sid in [s for s, lord in krec["vassals"].items() if lord == king]:
+            krec["vassals"].pop(sid)
+            krec["discontent"].pop(king, None)
+    for emperor, erec in empires.items():
+        if emperor in erec["subject_kings"]:
+            erec["subject_kings"].pop(emperor)
+            erec["discontent"].pop(emperor, None)
+
+
+def succeed_titles(deceased: Any, turn: int, state: dict[str, Any]) -> dict[str, Any]:
+    """Pass the deceased's FORCE titles to a single heir by primogeniture (M4.3).
+
+    The second hook (alongside settle_estate) inside population.announce_death — the ONE
+    funnel EVERY death cause runs through, so old-age, starvation and battle deaths all
+    succeed identically. Returns an accounting dict {heir, kind, titles} for tests/verify.
+
+      * The deceased holds NO force title (a commoner, or a consent-only trust-leader) ->
+        nothing happens (leadership is not hereditary).
+      * A living heir exists -> ALL title records transfer to the heir (_transfer_titles);
+        the realm structure survives intact under the heir; a coronation is logged; NO
+        trust is copied (the heir must hold the realm on its own standing). A DEPENDENT
+        child heir still takes the seat but its levy/muster/war powers stay dormant via the
+        existing is_dependent_child gate until it comes of age — a historically-real child
+        REGENCY (the seat is defended by its inherited garrison; it just wages nothing).
+      * NO living kin -> the LINE IS EXTINGUISHED: the records clear exactly as today (the
+        existing breakaway/re-conquest machinery dissolves the leaderless realm), logged
+        distinctly. succeed_titles moves nothing in this case.
+
+    Deterministic; ZERO RNG; ZERO LLM. Runs only when lineage is on (the caller gates it),
+    so a lineage-off run never calls this and stays byte-identical.
+    """
+    result: dict[str, Any] = {"heir": None, "kind": "none", "titles": ""}
+    if not _holds_force_title(deceased.name, state):
+        return result  # no dynastic title to pass (commoner / trust-leader only)
+
+    titles = _title_summary(deceased.name, state)
+    result["titles"] = titles
+    heir, kind = _succession_heir(deceased, state)
+
+    if heir is None:
+        # Extinct line — leave the records to the existing dissolution machinery.
+        result["kind"] = "extinct"
+        state["events"].append(
+            f"turn {turn}: the line of {deceased.name} is extinguished; "
+            f"the crown of [{titles}] lies vacant")
+        world.record_memory(deceased, f"Died with no heir — the line of {deceased.name} is extinguished")
+        return result
+
+    _transfer_titles(state, deceased.name, heir.name)
+    result.update(heir=heir.name, kind=kind)
+    regency = " (a minor — the crown is held in regency)" if getattr(heir, "dependent", False) else ""
+    state["events"].append(
+        f"turn {turn}: {heir.name} succeeded {deceased.name} as [{titles}] "
+        f"(eldest {kind}){regency}")
+    world.record_memory(heir, f"Succeeded {deceased.name} as [{titles}]{regency}")
+    return result
+
+
 # --- The per-turn update ---------------------------------------------------------
 def update(state: dict[str, Any], turn: int,
            rng: "random.Random | None" = None) -> list[Any]:
@@ -662,9 +892,9 @@ def update(state: dict[str, Any], turn: int,
     dependents whose age reaches CHILDHOOD_TURNS come of age (full agents from
     next turn); (2) agents at their lifespan die of OLD AGE via the existing
     death path (announce_death, distinct wording — survivor memories, events,
-    post-mortem all standard; title records of a dead ruler clear exactly as
-    they do today when a ruler dies in battle — dynastic succession is M4.3, NOT
-    built); (3) parents feed dependent children; (4) births.
+    post-mortem all standard; a dead ruler's titles now pass to an heir via M4.3
+    succeed_titles, which announce_death runs on every death); (3) parents feed
+    dependent children; (4) births.
     """
     r = rng or random
 

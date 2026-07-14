@@ -316,6 +316,11 @@ def levy(state: dict[str, Any], turn: int) -> list[str]:
         rec = state.get("settlements", {}).get(sid)
         if crown is None or rec is None:
             continue
+        # M4.3 REGENCY: a DEPENDENT child who inherited a crown holds the seat but wields
+        # no power — the existing is_dependent_child gate keeps its levy dormant until it
+        # comes of age (a no-op when lineage is off, so byte-identical there).
+        if world.is_dependent_child(crown, state):
+            continue
         taken = 0.0
         for name in sorted(rec["members"]):
             subject = living.get(name)
@@ -363,6 +368,7 @@ def _eligible_aspirants(state: dict[str, Any], sid: str) -> list[Any]:
     aspirants = [a for a in state["agents"]
                  if a.alive and a.name != holder and max_fighters(a) > 0
                  and a.name not in members  # an outsider marches on the town (no internal coup yet)
+                 and not world.is_dependent_child(a, state)  # M4.3: a child regent wages no war
                  and _chebyshev(a.position, center) <= ATTACK_RADIUS]
     return sorted(aspirants, key=lambda a: (-_wealth(a), a.name))
 
