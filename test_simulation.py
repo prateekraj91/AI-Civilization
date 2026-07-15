@@ -6849,6 +6849,312 @@ def test_religion_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_religion_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Culture (V2 M4.9): identity, friction, assimilation --------------------
+def _cul_world() -> None:
+    _fresh_world()
+    for f in ("beliefs_on", "religion_on", "culture_on"):
+        world_state[f] = True
+
+
+def _csettle(sid, center) -> None:
+    world_state["settlements"][sid] = {"id": sid, "center": center, "members": set(), "founded": 0}
+
+
+def _cagent(name, pos, sid="S001", *, believes=None, money=0.0, dependent=False, age=30, parents=()):
+    a = Agent(name=name, personality="x")
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.money = 1, age, 100, money
+    a.settlement, a.dependent, a.parents = sid, dependent, parents
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    if believes is not None:
+        world_state.setdefault("beliefs", {})[name] = set(believes)
+    return a
+
+
+def test_same_vs_foreign_rule_breeds_chronic_friction() -> None:
+    """A ruler of the SAME culture integrates with little extra discontent; a FOREIGN-culture ruler
+    breeds CHRONIC, sustained loyalty loss and hotter discontent from the SAME extraction."""
+    import culture, beliefs, discontent
+    native = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+    foreign = {beliefs.STRONG_TAKE, beliefs.WEALTH_IS_VIRTUE}
+
+    def reign(foreign_king):
+        _cul_world(); world_state["discontent_on"] = True; _csettle("S001", (5, 5))
+        _cagent("King", (4, 4), believes=(foreign if foreign_king else native), money=100.0)
+        members = [_cagent(n, p, believes=native, money=20.0)
+                   for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5))]]
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        for t in range(1, 8):
+            culture.update(world_state, t)
+            discontent.update(world_state, t)
+        return members[0].relationships.get("King", {}).get("trust", 0), \
+            discontent.agent_discontent("A", world_state)
+
+    trust_same, disc_same = reign(False)
+    trust_foreign, disc_foreign = reign(True)
+    assert trust_foreign < trust_same, (trust_foreign, trust_same)   # chronic loyalty tax
+    assert disc_foreign > disc_same, (disc_foreign, disc_same)
+    print("PASS test_same_vs_foreign_rule_breeds_chronic_friction")
+
+
+def test_foreign_province_breaks_away_where_same_culture_holds() -> None:
+    """A FOREIGN-culture king loses his vassal province to breakaway (through the existing M3.5
+    machinery, fed by cultural friction), where a SAME-culture king holds it."""
+    import culture, beliefs, kingdoms, trust
+    native = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+    foreign = {beliefs.STRONG_TAKE, beliefs.WEALTH_IS_VIRTUE}
+
+    def realm(foreign_king):
+        _cul_world(); _csettle("S001", (1, 1)); _csettle("S002", (8, 8))
+        world_state["tribute_rate"] = 0.25   # <= consent, so tribute itself adds no backlash
+        _cagent("King", (1, 1), "S001", believes=(foreign if foreign_king else native), money=50.0)
+        lord = _cagent("Lord", (8, 8), "S002", believes=native, money=8.0)
+        for n, p in [("Va", (8, 7)), ("Vb", (7, 8))]:
+            _cagent(n, p, "S002", believes=native)
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        world_state["monarchs"]["S002"] = {"monarch": "Lord", "since": 0, "garrison": set()}
+        world_state["kingdoms"]["King"] = {"king": "King", "home": "S001",
+                                           "settlements": {"S001", "S002"}, "vassals": {"S002": "Lord"},
+                                           "founded": 0, "discontent": {"Lord": 0}}
+        trust.ensure_relationship(lord, "King")["trust"] = 2   # Lord's fealty
+        for t in range(1, 9):
+            culture.update(world_state, t)
+            kingdoms.update(world_state, t)
+        return kingdoms.realm_of(world_state, "S002") == "King"
+
+    assert realm(foreign_king=False), "a same-culture king holds the province"
+    assert not realm(foreign_king=True), "a foreign-culture king loses it to breakaway"
+    print("PASS test_foreign_province_breaks_away_where_same_culture_holds")
+
+
+def test_children_assimilate_but_adults_do_not() -> None:
+    """Under sustained foreign rule a dependent CHILD adopts the ruler's culture while the ADULTS
+    keep theirs — assimilation is generational, not immediate."""
+    import culture, beliefs
+    native = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+    foreign = {beliefs.STRONG_TAKE, beliefs.WEALTH_IS_VIRTUE}
+
+    _cul_world(); world_state["lineage_on"] = True; _csettle("S001", (5, 5))
+    _cagent("King", (4, 4), believes=foreign, money=100.0)
+    for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5))]:
+        _cagent(n, p, believes=set(native), money=20.0)
+    _cagent("Kid", (6, 6), believes=set(native), dependent=True, age=6, parents=("A", "B"))
+    world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+    rng = random.Random(1)
+    for t in range(1, 40):
+        culture.update(world_state, t, rng)
+    assert culture._shares(world_state["beliefs"]["Kid"], frozenset(foreign)), \
+        world_state["beliefs"]["Kid"]                       # the child took on the ruler's culture
+    assert world_state["beliefs"]["A"] == native, "the adult kept its culture"
+    print("PASS test_children_assimilate_but_adults_do_not")
+
+
+def test_assimilation_completes_over_generations_and_fault_line_fades() -> None:
+    """As enough of a town assimilates, its dominant culture drifts to the ruler's — he is no longer
+    foreign and the friction fades (the fault line heals). Negligible in a few turns, done over many."""
+    import culture, beliefs
+    native = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+    foreign = {beliefs.STRONG_TAKE, beliefs.WEALTH_IS_VIRTUE}
+
+    _cul_world(); world_state["lineage_on"] = True; _csettle("S001", (5, 5))
+    _cagent("King", (4, 4), believes=foreign, money=100.0)
+    _cagent("Elder", (5, 5), believes=set(native))          # one adult holdout
+    kids = [_cagent(n, p, believes=set(native), dependent=True, age=6, parents=("Elder", "X"))
+            for n, p in [("K1", (5, 6)), ("K2", (6, 5)), ("K3", (6, 6))]]
+    world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+    rng = random.Random(2)
+
+    culture.update(world_state, 1, rng)
+    assert culture.is_foreign_ruled(world_state, "S001"), "the fault line is open at conquest"
+    early = culture.assimilation_progress(world_state, "S001")
+    for t in range(2, 60):
+        culture.update(world_state, t, rng)
+    late = culture.assimilation_progress(world_state, "S001")
+    assert late > early
+    # Once the children (the majority) hold the ruler's culture, the signature drifts and he is native.
+    assert not culture.is_foreign_ruled(world_state, "S001"), "the fault line healed as generations assimilated"
+    print("PASS test_assimilation_completes_over_generations_and_fault_line_fades")
+
+
+def test_culture_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """culture_on=False (default) is byte-identical to the religion-only baseline and adds ZERO LLM."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, discontent_on=True,
+                                beliefs_on=True, religion_on=True, culture_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, discontent_on=True,
+                                beliefs_on=True, religion_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "culture_on=False diverged from the religion-only baseline"
+    assert on_calls == off_calls, (on_calls, off_calls)   # culture is STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_culture_off_run_is_byte_identical_and_adds_no_llm")
+
+
+# --- Writing & records (V2 M4.10): institutional memory ---------------------
+def _writing_world() -> None:
+    _fresh_world()
+    world_state["writing_on"] = True
+
+
+def _wsettle(sid, center) -> None:
+    world_state["settlements"][sid] = {"id": sid, "center": center, "members": set(), "founded": 0}
+
+
+def _wagent(name, pos, sid="S001", *, knows=None, age=40, parents=()):
+    a = Agent(name=name, personality="x")
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.settlement, a.parents = 1, age, 100, sid, parents
+    if knows:
+        a.knowledge.update(knows)
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    return a
+
+
+def test_writing_discovery_prereqs_bind() -> None:
+    """Writing is invented ONLY with the prior tech tools AND from a settlement holding a food surplus;
+    knocking out either prereq (or the settlement) yields no writing."""
+    import writing
+
+    def can_invent(has_tools, settled, surplus):
+        _writing_world(); _wsettle("S001", (5, 5))
+        a = _wagent("S", (5, 5), sid=("S001" if settled else None),
+                    knows=({"tools"} if has_tools else set()))
+        if surplus:
+            for x, y in [(4, 4), (5, 4), (6, 4), (4, 5), (6, 5), (4, 6), (5, 6), (6, 6)]:
+                world.place_food(x, y)
+        rng = random.Random(0)
+        for _ in range(500):
+            writing.discover_writing(world_state, 1, rng)
+            if "writing" in a.knowledge:
+                return True
+        return False
+
+    assert can_invent(True, True, True), "tools + settled + surplus should invent writing"
+    assert not can_invent(True, True, False), "no surplus -> no writing (scribes need spare capacity)"
+    assert not can_invent(False, True, True), "no prior tech (tools) -> no writing"
+    assert not can_invent(True, False, True), "no settlement -> no writing"
+    print("PASS test_writing_discovery_prereqs_bind")
+
+
+def test_heir_inherits_written_law_only_when_literate() -> None:
+    """A literate ruler's policy is inscribed and the M4.3 heir INHERITS the written law across
+    succession; the identical succession in an illiterate town leaves a blank slate."""
+    import writing, population
+
+    def law_after_succession(literate):
+        _writing_world(); world_state["lineage_on"] = True; _wsettle("S001", (5, 5))
+        king = _wagent("King", (5, 5), knows=({"writing"} if literate else set()), age=60)
+        _wagent("Heir", (5, 6), knows=({"writing"} if literate else set()), parents=("King", "Q"), age=25)
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        writing.update(world_state, 1)                       # King inscribes the law (if literate)
+        population.announce_death(king, 2, world_state, cause="old age", final_memory="d", note="d")
+        writing.update(world_state, 3)                       # heir inherits (if literate)
+        return writing.written_law(world_state, "S001")
+
+    lit = law_after_succession(True)
+    assert lit is not None and lit["set_by"] == "Heir" and lit["inherited_from"] == "King"
+    assert law_after_succession(False) is None, "an illiterate town's policy dies with its ruler"
+    print("PASS test_heir_inherits_written_law_only_when_literate")
+
+
+def test_literacy_cures_knowledge_extinction() -> None:
+    """A literate settlement RE-TEACHES a skill whose last living master died from its records; an
+    identical illiterate settlement suffers the knowledge-extinction collapse (the skill is gone)."""
+    import writing
+
+    def recovers(literate):
+        _writing_world(); _wsettle("S001", (5, 5))
+        master = _wagent("Master", (5, 5),
+                         knows=({"writing", "tools", "farming"} if literate else {"tools", "farming"}))
+        _wagent("Pupil", (5, 6), knows=({"writing"} if literate else set()))
+        writing.update(world_state, 1)                       # archive farming (if literate)
+        master.knowledge.discard("farming")                  # the last farmer forgets / dies out
+        writing.update(world_state, 2)                       # re-teach from the records (if literate)
+        return any("farming" in a.knowledge for a in world_state["agents"] if a.alive)
+
+    assert recovers(True), "a literate town re-teaches forgotten farming from its records"
+    assert not recovers(False), "an illiterate town cannot recover the lost skill"
+    print("PASS test_literacy_cures_knowledge_extinction")
+
+
+def test_chronicle_accumulates_only_when_literate() -> None:
+    """A literate settlement records its MAJOR events to a persistent chronicle (minor ticks omitted);
+    an illiterate settlement keeps no lasting record."""
+    import writing
+
+    def chronicle(literate):
+        _writing_world(); _wsettle("S001", (5, 5))
+        _wagent("A", (5, 5), knows=({"writing"} if literate else set()))
+        world_state["events"].append("turn 5: an UPRISING in S001 — 3 risers rise")   # major
+        world_state["events"].append("turn 5: A052 trust in B: 1 -> 2 (talk)")        # minor tick
+        writing.update(world_state, 5)
+        return writing.chronicle_of(world_state, "S001")
+
+    lit = chronicle(True)
+    assert len(lit) == 1 and "UPRISING" in lit[0]["event"], lit    # the major only
+    assert chronicle(False) == [], "an illiterate settlement records nothing"
+    print("PASS test_chronicle_accumulates_only_when_literate")
+
+
+def test_writing_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """writing_on=False (default) is byte-identical to the tech-tree baseline and adds ZERO LLM."""
+    import knowledge
+
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, tech_tree=knowledge.TECH_TREE, writing_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, tech_tree=knowledge.TECH_TREE)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "writing_on=False diverged from the tech-tree baseline"
+    assert not world_state.get("laws") and not world_state.get("chronicles"), "off writes no records"
+    assert on_calls == off_calls, (on_calls, off_calls)   # records are STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_writing_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -7092,6 +7398,16 @@ def main_runner() -> None:
         test_aligned_ruler_generates_less_discontent_and_more_loyalty,
         test_defiant_king_erodes_vassal_loyalty_and_prophet_amplifies,
         test_religion_off_run_is_byte_identical_and_adds_no_llm,
+        test_same_vs_foreign_rule_breeds_chronic_friction,
+        test_foreign_province_breaks_away_where_same_culture_holds,
+        test_children_assimilate_but_adults_do_not,
+        test_assimilation_completes_over_generations_and_fault_line_fades,
+        test_culture_off_run_is_byte_identical_and_adds_no_llm,
+        test_writing_discovery_prereqs_bind,
+        test_heir_inherits_written_law_only_when_literate,
+        test_literacy_cures_knowledge_extinction,
+        test_chronicle_accumulates_only_when_literate,
+        test_writing_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

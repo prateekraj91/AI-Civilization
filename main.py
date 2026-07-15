@@ -35,6 +35,7 @@ import time
 import alliance
 import beliefs
 import conversation
+import culture
 import discontent
 import economy
 import empire
@@ -52,6 +53,7 @@ import settlement
 import storage
 import taxation
 import uprising
+import writing
 from cognition import update_tiers
 from agents import Agent
 from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
@@ -591,6 +593,60 @@ def print_belief_cultures() -> None:
     print()
 
 
+def print_records() -> None:
+    """M4.10: world-level WRITTEN RECORDS report — printed ONLY when writing is on (a default run
+    never calls it, so the default summary is byte-identical to v1).
+
+    Per settlement: whether it is LITERATE, its written LAW (if any, with who it descends from), its
+    archived techs, and its CHRONICLE length — the institutional memory Arc 6 will surface."""
+    print("=" * 56)
+    print("WRITTEN RECORDS (M4.10 — literacy, law, archive, chronicle)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        if not writing.is_literate(world_state, sid):
+            print(f"{sid}: illiterate (no lasting records)")
+            continue
+        law = writing.written_law(world_state, sid)
+        arch = sorted(writing.archive_of(world_state, sid))
+        chron = writing.chronicle_of(world_state, sid)
+        print(f"{sid}: LITERATE")
+        if law is not None:
+            desc = f" (from {law['inherited_from']})" if law.get("inherited_from") else ""
+            print(f"    law set by {law['set_by']}{desc}: tax {law['tax_rate']}, levy {law['levy_rate']}")
+        print(f"    archive: {arch if arch else '(none)'}   chronicle: {len(chron)} entries")
+    print()
+
+
+def print_cultures() -> None:
+    """M4.9: world-level CULTURE report — printed ONLY when culture is on (a default run never calls
+    it, so the default summary is byte-identical to v1).
+
+    For each settlement: its culture signature (dominant beliefs), whether it is FOREIGN-RULED (an
+    imperial fault line), and — if so — its ASSIMILATION progress toward the ruler's culture."""
+    print("=" * 56)
+    print("CULTURES (M4.9 — identity, foreign rule, assimilation)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        sig = sorted(culture.culture_signature(world_state, sid))
+        line = f"{sid}: culture {sig if sig else '(none)'}"
+        if culture.is_foreign_ruled(world_state, sid):
+            ruler = religion._sovereign(world_state, sid)
+            prog = culture.assimilation_progress(world_state, sid)
+            line += f"   FOREIGN-RULED by {ruler} (assimilation {prog*100:.0f}%)"
+        print(line)
+    print()
+
+
 def print_faiths() -> None:
     """M4.8: world-level FAITHS report — printed ONLY when religion is on (a default run never calls
     it, so the default summary is byte-identical to v1).
@@ -1006,6 +1062,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "are NOT built here. Pair with --monarchy/--kingdoms/--discontent to see the teeth. Zero LLM, "
              "zero RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--culture", action="store_true",
+        help="V2 M4.9: enable CULTURAL IDENTITY & FRICTION — the imperial problem, CLOSING Arc 3 "
+             "(implies --religion -> --beliefs). A settlement's CULTURE is its dominant belief set "
+             "(M4.7) + faith (M4.8). Conquering a SAME-culture town integrates almost frictionlessly; "
+             "conquering a FOREIGN one breeds CHRONIC unrest — every turn under an alien-culture ruler, "
+             "its members withdraw loyalty (SUSTAINED), which the UNCHANGED M4.4/M3.5/M4.5 machinery "
+             "turns into hotter discontent, likelier BREAKAWAY, and REVOLT (no separate 'independence "
+             "movement' — cultural revolt EMERGES from the existing systems). And it only becomes his "
+             "over GENERATIONS: dependent CHILDREN raised in the town adopt the RULER's beliefs at the "
+             "childhood rate while adults keep theirs, so the town's culture DRIFTS toward the ruler's "
+             "as generations turn — a RACE between assimilation (the fault line fades) and revolt (it "
+             "fractures the empire), neither scripted; lose the ruler first and the town reverts (drift "
+             "persists in the assimilated). Per-settlement culture/foreign-rule/assimilation show in the "
+             "summary. Zero LLM (culture is STATE); friction deterministic, assimilation seeded. Off by "
+             "default -> byte-identical.")
+    p.add_argument(
+        "--writing", action="store_true",
+        help="V2 M4.10: enable WRITING & RECORDS — institutional memory (opens Arc 4, the road to "
+             "modernity; implies --tech-tree). WRITING is a tech: an agent invents it only with the prior "
+             "tech TOOLS and from a SETTLEMENT holding a food SURPLUS (scribes need stability), through "
+             "the EXISTING M1.2 discovery + M1.1 diffusion (unscripted, seeded). A settlement that becomes "
+             "LITERATE gains three powers of the written word: PERSISTENT LAW (a ruler's tax/levy policy is "
+             "inscribed and the M4.3 heir INHERITS the written framework instead of a blank slate — an "
+             "illiterate town's policy dies with its ruler); KNOWLEDGE PRESERVATION (archived techs are "
+             "RE-TAUGHT if their last living master dies, so a literate civilization cannot forget farming "
+             "— the cure for the knowledge-extinction collapse an illiterate town still suffers); and "
+             "RECORDED HISTORY (major events append to a persistent settlement CHRONICLE — structured "
+             "entries, the substrate Arc 6 will read). LAW is minimal here (written policy survives "
+             "succession; NO courts/enforcement). Literacy/laws/chronicle lengths show in the summary. "
+             "Zero LLM (records are STATE); only discovery draws RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1082,7 +1169,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    discontent_on: bool = False,
                    uprising_on: bool = False,
                    beliefs_on: bool = False,
-                   religion_on: bool = False) -> None:
+                   religion_on: bool = False,
+                   culture_on: bool = False,
+                   writing_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1228,6 +1317,21 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # existing M4.4/M3.5/M4.5 systems already read). False (default) -> religion.update never called, no
     # "faiths" key written -> byte-identical to v1. Implies beliefs (no faith without belief). Zero LLM/RNG.
     world_state["religion_on"] = religion_on
+
+    # M4.9 (Arc 3 close): the CULTURE flag — cultural identity + conquest FRICTION + generational
+    # ASSIMILATION. A settlement's culture is derived from its beliefs/faith; a foreign-culture ruler
+    # breeds chronic unrest (by SUSTAINING the trust/discontent dials M4.4/M3.5/M4.5 read) and is
+    # assimilated only as its children grow up in his culture (M4.1). False (default) -> culture.update
+    # never called -> byte-identical to v1. Implies religion (-> beliefs). Zero LLM; friction
+    # deterministic, assimilation draws seeded RNG.
+    world_state["culture_on"] = culture_on
+
+    # M4.10 (opens Arc 4): the WRITING flag — institutional memory. A settlement that becomes LITERATE
+    # (invents/learns writing) gains persistent LAW (survives succession), knowledge PRESERVATION
+    # (archived skills re-taught, curing knowledge-extinction) and recorded HISTORY (a persistent
+    # chronicle). False (default) -> writing.update never called, no laws/archives/chronicles written ->
+    # byte-identical to v1. Rides the tech tree (implies --tech-tree). Zero LLM; records are STATE.
+    world_state["writing_on"] = writing_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1446,6 +1550,24 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if religion_on:
             religion.update(world_state, turn)
 
+        # M4.9 (Arc 3 close): CULTURE — sustain the conquest-friction loyalty tax on foreign-ruled
+        # towns and assimilate their children toward the ruler's culture. Runs AFTER religion.update so
+        # it reads this turn's beliefs/faith; it writes ONLY trust (which next turn's M4.4/M3.5/M4.5
+        # read) and children's beliefs (M4.7 state), touching no other system. Friction is
+        # deterministic; assimilation draws the seeded RNG; gated on the flag so a default run never
+        # calls it (byte-identical to v1).
+        if culture_on:
+            culture.update(world_state, turn)
+
+        # M4.10 (Arc 4): WRITING & RECORDS — invent writing (M1.2 machinery, seeded), then exercise the
+        # three powers of literacy: inscribe/inherit written LAW, ARCHIVE + re-teach techs (curing
+        # knowledge-extinction), and append MAJOR events to a persistent CHRONICLE. Runs LATE so it reads
+        # this turn's settled rulers and institutional events; writing spreads via the ordinary M1.1
+        # diffusion. Zero LLM; only discovery draws RNG; gated on the flag so a default run never calls it
+        # (byte-identical to v1).
+        if writing_on:
+            writing.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1506,6 +1628,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.8: the world-level faiths read-out, printed ONLY when religion is on.
     if world_state.get("religion_on"):
         print_faiths()
+    # M4.9: the world-level cultures read-out, printed ONLY when culture is on.
+    if world_state.get("culture_on"):
+        print_cultures()
+    # M4.10: the world-level written-records read-out, printed ONLY when writing is on.
+    if world_state.get("writing_on"):
+        print_records()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1592,7 +1720,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # M1.2: --tech-tree turns on unscripted discovery using the canonical TECH_TREE.
     # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
-    tech_tree = knowledge.TECH_TREE if args.tech_tree else None
+    # M4.10: --writing rides the tech tree (writing's prereq is `tools`), so it implies --tech-tree.
+    tech_tree = knowledge.TECH_TREE if (args.tech_tree or args.writing) else None
 
     # M2.3/M3.1: the economy builds ON settlement + storage; wage labor (M3.1) builds ON the
     # economy. So --labor implies --economy, and --economy implies --settlements + --storage (a
@@ -1643,8 +1772,10 @@ def main(argv: list[str] | None = None) -> None:
     # M4.5: --uprising implies --discontent (there is no pressure to blow without the gauge).
     uprising_on = args.uprising
     discontent_on = args.discontent or uprising_on
+    # M4.9: --culture implies --religion (-> --beliefs): culture is built from faith + belief.
+    culture_on = args.culture
     # M4.8: --religion implies --beliefs (no faith without belief).
-    religion_on = args.religion
+    religion_on = args.religion or culture_on
     beliefs_on = args.beliefs or religion_on
     if stage is not None:
         monarchy_on = True
@@ -1695,7 +1826,8 @@ def main(argv: list[str] | None = None) -> None:
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
-                           beliefs_on=beliefs_on, religion_on=religion_on)
+                           beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
+                           writing_on=args.writing)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1722,7 +1854,8 @@ def main(argv: list[str] | None = None) -> None:
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
-                           beliefs_on=beliefs_on, religion_on=religion_on)
+                           beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
+                           writing_on=args.writing)
 
 
 if __name__ == "__main__":

@@ -426,6 +426,15 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # runs and a default run is byte-identical to v1.
     world_state.pop("faiths", None)
     world_state["religion_on"] = False
+    # M4.9: culture derives from beliefs/faith and writes only trust + children's beliefs (all reset
+    # above) — it holds no state of its own, so only the flag needs resetting OFF for byte-identical v1.
+    world_state["culture_on"] = False
+    # M4.10: written records (law/archive/chronicle) are per-simulation state — clear them and reset the
+    # flag OFF so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("laws", None)
+    world_state.pop("archives", None)
+    world_state.pop("chronicles", None)
+    world_state["writing_on"] = False
     return world_state["grid"]
 
 
