@@ -46,6 +46,7 @@ import knowledge
 import labor
 import leadership
 import lineage
+import metallurgy
 import monarchy
 import population
 import religion
@@ -593,6 +594,30 @@ def print_belief_cultures() -> None:
     print()
 
 
+def print_metallurgy() -> None:
+    """M4.11: world-level METALLURGY report — printed ONLY when metallurgy is on (a default run never
+    calls it, so the default summary is byte-identical to v1). Per settlement: whether it has a FORGE
+    (knows metalworking) and can field ARMED fighters (knows weapons) — the material balance of power."""
+    print("=" * 56)
+    print("METALLURGY (M4.11 — forges & arms)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        forge = metallurgy.is_metallurgical(world_state, sid)
+        armed = metallurgy.is_armed_settlement(world_state, sid)
+        tags = []
+        if forge:
+            tags.append("FORGE (better tools)")
+        if armed:
+            tags.append("ARMED (weapons)")
+        print(f"{sid}: {' + '.join(tags) if tags else 'neolithic (no metallurgy)'}")
+    print()
+
+
 def print_records() -> None:
     """M4.10: world-level WRITTEN RECORDS report — printed ONLY when writing is on (a default run
     never calls it, so the default summary is byte-identical to v1).
@@ -1093,6 +1118,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "succession; NO courts/enforcement). Literacy/laws/chronicle lengths show in the summary. "
              "Zero LLM (records are STATE); only discovery draws RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--metallurgy", action="store_true",
+        help="V2 M4.11: enable METALLURGY & ARMS — technology transforms war and work (Arc 4; implies "
+             "--tech-tree). A small tech chain past TOOLS — metalworking (better tools) then weapons "
+             "(arms) — invented from a SETTLEMENT with food SURPLUS through the EXISTING M1.2 discovery "
+             "+ M1.1 diffusion (unscripted, seeded). TWO effects: (1) ECONOMY — a farmer who knows "
+             "metalworking grows food at double the base yield, so a metallurgical town out-produces a "
+             "neolithic one; (2) ARMS — an ARMED combatant (knows weapons) counts ~1.8x an unarmed head "
+             "in the shared battle math, so a SMALLER armed host beats a LARGER unarmed one everywhere "
+             "battles resolve (conquest, inter-kingdom war, AND uprising). Because arms spread by tech "
+             "diffusion, WHO knows weapons is decisive: an armed ruler's garrison CRUSHES an unarmed "
+             "peasant mob (steel beats numbers), but a mob that ALSO learned weapons wins on numbers "
+             "again (revolt survives in armed societies). Era progression (Bronze/Iron) is M4.12, NOT "
+             "here. Zero LLM; only discovery draws RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1171,7 +1210,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    beliefs_on: bool = False,
                    religion_on: bool = False,
                    culture_on: bool = False,
-                   writing_on: bool = False) -> None:
+                   writing_on: bool = False,
+                   metallurgy_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1332,6 +1372,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # chronicle). False (default) -> writing.update never called, no laws/archives/chronicles written ->
     # byte-identical to v1. Rides the tech tree (implies --tech-tree). Zero LLM; records are STATE.
     world_state["writing_on"] = writing_on
+
+    # M4.11 (Arc 4): the METALLURGY flag — technology transforms war and work. A metallurgical settlement
+    # (knows metalworking) out-produces a neolithic one, and ARMED combatants (know weapons) multiply
+    # force in the shared battle math (conquest/war/uprising) so knowledge beats numbers. False (default)
+    # -> metallurgy.update never called, no one learns metalworking/weapons -> byte-identical to v1 (the
+    # farm boost and battle multiplier are both no-ops without the skills). Rides the tech tree. Zero LLM.
+    world_state["metallurgy_on"] = metallurgy_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1568,6 +1615,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if writing_on:
             writing.update(world_state, turn)
 
+        # M4.11 (Arc 4): METALLURGY — invent the metalworking->weapons chain (M1.2 machinery, seeded);
+        # it spreads via ordinary M1.1 diffusion, and its effects are read live elsewhere (the farm
+        # yield boost in knowledge.farm, the armed force multiplier in monarchy.resolve_battle). Zero
+        # LLM; only discovery draws RNG; gated on the flag so a default run never calls it and — with no
+        # one knowing metalworking/weapons — the boost and multiplier are no-ops (byte-identical to v1).
+        if metallurgy_on:
+            metallurgy.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1634,6 +1689,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.10: the world-level written-records read-out, printed ONLY when writing is on.
     if world_state.get("writing_on"):
         print_records()
+    # M4.11: the world-level metallurgy read-out, printed ONLY when metallurgy is on.
+    if world_state.get("metallurgy_on"):
+        print_metallurgy()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1720,8 +1778,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # M1.2: --tech-tree turns on unscripted discovery using the canonical TECH_TREE.
     # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
-    # M4.10: --writing rides the tech tree (writing's prereq is `tools`), so it implies --tech-tree.
-    tech_tree = knowledge.TECH_TREE if (args.tech_tree or args.writing) else None
+    # M4.10/M4.11: --writing and --metallurgy ride the tech tree (their prereqs are `tools`), so each
+    # implies --tech-tree.
+    tech_tree = knowledge.TECH_TREE if (args.tech_tree or args.writing or args.metallurgy) else None
 
     # M2.3/M3.1: the economy builds ON settlement + storage; wage labor (M3.1) builds ON the
     # economy. So --labor implies --economy, and --economy implies --settlements + --storage (a
@@ -1827,7 +1886,7 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=args.writing)
+                           writing_on=args.writing, metallurgy_on=args.metallurgy)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1855,7 +1914,7 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=args.writing)
+                           writing_on=args.writing, metallurgy_on=args.metallurgy)
 
 
 if __name__ == "__main__":

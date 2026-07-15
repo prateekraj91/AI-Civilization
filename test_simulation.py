@@ -7155,6 +7155,165 @@ def test_writing_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_writing_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Metallurgy & arms (V2 M4.11): technology transforms war and work -------
+def _metal_world() -> None:
+    _fresh_world()
+    world_state["metallurgy_on"] = True
+
+
+def _msettle(sid, center) -> None:
+    world_state["settlements"][sid] = {"id": sid, "center": center, "members": set(), "founded": 0}
+
+
+def _magent(name, pos, sid="S001", *, knows=None, money=0.0):
+    a = Agent(name=name, personality="curious and creative")
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.money, a.settlement = 1, 30, 100, money, sid
+    if knows:
+        a.knowledge.update(knows)
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    return a
+
+
+def _msurplus(center=(5, 5)) -> None:
+    cx, cy = center
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if (dx, dy) != (0, 0):
+                world.place_food(cx + dx, cy + dy)
+
+
+def test_metallurgy_prereqs_bind() -> None:
+    """Metalworking is invented only with the prior tech tools AND a settlement holding surplus; weapons
+    needs metalworking. Knocking out any prereq yields nothing."""
+    import metallurgy
+
+    def can_invent(item, has_prereq, settled, surplus):
+        _metal_world(); _msettle("S001", (5, 5))
+        prereq = "tools" if item == "metalworking" else "metalworking"
+        a = _magent("S", (5, 5), sid=("S001" if settled else None),
+                    knows=({prereq} if has_prereq else set()))
+        if surplus:
+            _msurplus()
+        rng = random.Random(0)
+        for _ in range(800):
+            metallurgy.discover(world_state, 1, rng)
+            if item in a.knowledge:
+                return True
+        return False
+
+    assert can_invent("metalworking", True, True, True)
+    assert not can_invent("metalworking", True, True, False), "no surplus -> no metalworking"
+    assert not can_invent("metalworking", False, True, True), "no tools -> no metalworking"
+    assert not can_invent("metalworking", True, False, True), "no settlement -> no metalworking"
+    assert can_invent("weapons", True, True, True), "weapons needs metalworking"
+    assert not can_invent("weapons", False, True, True), "no metalworking -> no weapons"
+    print("PASS test_metallurgy_prereqs_bind")
+
+
+def test_metalworking_boosts_farm_yield() -> None:
+    """A farmer who knows metalworking (better tools) grows measurably more food than a neolithic one."""
+    import metallurgy, knowledge
+
+    def food_grown(metal):
+        _metal_world(); _msettle("S001", (5, 5))
+        _magent("F", (5, 5), knows=({"farming", "metalworking"} if metal else {"farming"}))
+        rng = random.Random(5)
+        total = 0
+        for t in range(1, 60):
+            knowledge.farm(world_state, t, rng)
+            total += len(world_state["food"])
+            world_state["food"].clear()
+        return total
+
+    neolithic, metallurgical = food_grown(False), food_grown(True)
+    assert metallurgical > neolithic * 1.4, (metallurgical, neolithic)   # a real yield gap
+    print("PASS test_metalworking_boosts_farm_yield")
+
+
+def test_arms_multiply_force_in_battle() -> None:
+    """In the shared battle math a smaller ARMED host beats a larger UNARMED one; equal arms fall back
+    to numbers; and with no arms at all the result is the plain head count (byte-identical)."""
+    import monarchy, metallurgy
+
+    def battle(att_n, att_armed, def_n, def_armed):
+        _metal_world()
+        A = [_magent(f"A{i}", (0, i), sid=None, knows=({"weapons"} if att_armed else set()))
+             for i in range(att_n)]
+        D = [_magent(f"D{i}", (1, i), sid=None, knows=({"weapons"} if def_armed else set()))
+             for i in range(def_n)]
+        won, _, _, _ = monarchy.resolve_battle(world_state, A, D, 1, "att", "def")
+        return won
+
+    assert battle(3, True, 4, False), "3 armed should beat 4 unarmed (knowledge beats numbers)"
+    assert not battle(3, False, 4, False), "3 unarmed lose to 4 unarmed (numbers)"
+    assert not battle(3, True, 4, True), "3 armed lose to 4 armed (equal arms -> numbers)"
+    assert not battle(4, False, 4, False), "an unarmed tie is held by the defender (byte-identical rule)"
+    print("PASS test_arms_multiply_force_in_battle")
+
+
+def test_uprising_arms_shifts_revolt_balance() -> None:
+    """The sharp composition: an ARMED garrison crushes an unarmed mob (steel beats numbers); but when
+    the COMMONERS are also armed, the mob's numbers win again — who controls weapons decides who revolts."""
+    import uprising
+
+    def uprising_wins(ruler_armed, mob_armed):
+        _metal_world(); world_state["discontent_on"] = True; world_state["uprising_on"] = True
+        _msettle("S001", (5, 5))
+        _magent("King", (4, 4), money=0.5)          # drained: cannot hire fresh mercs
+        gk = {"weapons"} if ruler_armed else set()
+        garr = [_magent(f"g{i}", (3, 3 + i), knows=set(gk)) for i in range(3)]
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0,
+                                           "garrison": {g.name for g in garr}}
+        mk = {"weapons"} if mob_armed else set()
+        for i, p in enumerate([(5, 5), (5, 6), (6, 5), (6, 6), (5, 4)]):
+            _magent(f"m{i}", p, knows=set(mk))
+        world_state["discontent"] = {f"m{i}": 12.0 for i in range(5)}
+        res = uprising.update(world_state, 10)
+        return bool(res and res[0]["won"])
+
+    assert not uprising_wins(ruler_armed=True, mob_armed=False), "armed garrison crushes an unarmed mob"
+    assert uprising_wins(ruler_armed=True, mob_armed=True), "an armed mob's numbers win against an armed garrison"
+    assert uprising_wins(ruler_armed=False, mob_armed=False), "unarmed vs unarmed -> numbers"
+    print("PASS test_uprising_arms_shifts_revolt_balance")
+
+
+def test_metallurgy_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """metallurgy_on=False (default) is byte-identical to the tech-tree baseline and adds ZERO LLM."""
+    import knowledge
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True,
+                                tech_tree=knowledge.TECH_TREE, metallurgy_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, tech_tree=knowledge.TECH_TREE)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "metallurgy_on=False diverged from the tech-tree baseline"
+    assert on_calls == off_calls, (on_calls, off_calls)   # metallurgy is STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_metallurgy_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -7408,6 +7567,11 @@ def main_runner() -> None:
         test_literacy_cures_knowledge_extinction,
         test_chronicle_accumulates_only_when_literate,
         test_writing_off_run_is_byte_identical_and_adds_no_llm,
+        test_metallurgy_prereqs_bind,
+        test_metalworking_boosts_farm_yield,
+        test_arms_multiply_force_in_battle,
+        test_uprising_arms_shifts_revolt_balance,
+        test_metallurgy_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

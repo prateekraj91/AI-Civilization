@@ -435,6 +435,9 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state.pop("archives", None)
     world_state.pop("chronicles", None)
     world_state["writing_on"] = False
+    # M4.11: metallurgy's effects live in agent.knowledge (reset with the agents above) and are read live
+    # by knowledge.farm / resolve_battle — it holds no world_state of its own, so only the flag resets OFF.
+    world_state["metallurgy_on"] = False
     return world_state["grid"]
 
 

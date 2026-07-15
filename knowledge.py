@@ -132,6 +132,12 @@ DISCOVERY_HUNGER_CUTOFF = SURVIVAL_HUNGER
 # starving — survival improves as a CONSEQUENCE of the economy, never a scripted win.
 FARM_YIELD = 0.5                # per fed-farmer-per-turn chance of growing one food tile
 FARM_HUNGER_CUTOFF = SURVIVAL_HUNGER  # a farmer hungrier than this is busy surviving
+
+# M4.11 metallurgy: a farmer who knows 'metalworking' (better tools) grows food at this MULTIPLE of the
+# base rate — the economy effect of the metallurgy branch. Gated on the metallurgy flag AND the skill, so
+# a run without metallurgy (nobody knows metalworking) is byte-identical: the boost never applies, and the
+# per-farmer draw count is unchanged regardless (only the success threshold moves).
+METALWORK_YIELD_MULT = 2.0
 FARM_FOOD_PER_CAPITA = 2.0      # farmers rest once the world holds this much food/agent
 
 # --- Adoption model --------------------------------------------------------
@@ -354,9 +360,14 @@ def farm(state: dict[str, Any], turn: int,
     if len(state["food"]) >= FARM_FOOD_PER_CAPITA * living:
         return []
     draw = (rng or random).random
+    # M4.11: metalworking farmers grow food faster (better tools). Gated on the flag + the skill, so a
+    # non-metallurgy run is byte-identical (the multiplier is 1.0 and the draw count is unchanged).
+    metal_on = state.get("metallurgy_on", False)
     produced: list[tuple[str, tuple[int, int]]] = []
     for agent in farmers:  # world_state["agents"] order is stable
-        if draw() < FARM_YIELD:
+        yield_p = FARM_YIELD * (METALWORK_YIELD_MULT
+                                if metal_on and "metalworking" in agent.knowledge else 1.0)
+        if draw() < yield_p:
             cell = _empty_adjacent_cell(agent, state)
             if cell is not None:
                 world.place_food(cell[0], cell[1], state)

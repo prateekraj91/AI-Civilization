@@ -234,17 +234,25 @@ def resolve_battle(state: dict[str, Any], attackers: list[Any], defenders: list[
                    turn: int, att_side: str, def_side: str) -> tuple[bool, list[str], list[str], list[Any]]:
     """Resolve a clash between two mustered forces. Deterministic, ZERO RNG (M3.4, reused by M3.5).
 
-    The attacker WINS iff its force strictly OUTNUMBERS the defenders (`att > def_`); a tie is held
-    by the defender (the incumbent's advantage). Each side then loses `round(CASUALTY_RATE *
-    opposing_force)` fighters (capped at its own size), slain by name order via `_fell_in_battle`
-    (a real, logged death + queued respawn). Returns (won, att_dead, def_dead, survivors). Shared by
-    M3.4 single-settlement conquest and M3.5 realm conquest so BOTH use the identical fight maths.
+    The attacker WINS iff its effective FORCE strictly outweighs the defenders'; a tie is held by the
+    defender (the incumbent's advantage). Each side then loses `round(CASUALTY_RATE * opposing_force)`
+    fighters (capped at its own size), slain by name order via `_fell_in_battle` (a real, logged death +
+    queued respawn). Returns (won, att_dead, def_dead, survivors). Shared by M3.4 conquest, M3.5 realm
+    conquest, M3.6 war AND M4.5 uprising, so ALL use the identical fight maths.
+
+    M4.11 METALLURGY: effective force is `metallurgy.combat_force` — an ARMED combatant (knows weapons)
+    counts for ARMED_MULTIPLIER of an unarmed head, so a smaller armed host beats a larger unarmed one and
+    two armed sides fall back to a count. When NO combatant is armed (metallurgy off) the force is exactly
+    the head count, so the resolution is byte-identical to before. Casualties are capped at the real body
+    COUNT (weapons win fights; they do not conjure extra corpses).
     """
+    import metallurgy
     att, def_ = len(attackers), len(defenders)
-    won = att > def_  # strict: the attacker must OVERCOME the defence; a tie is held by the seat
-    # Casualties: each side loses round(CASUALTY_RATE * opposing_force), capped at its own size.
-    att_loss = min(att, round(CASUALTY_RATE * def_))
-    def_loss = min(def_, round(CASUALTY_RATE * att))
+    att_force, def_force = metallurgy.combat_force(attackers), metallurgy.combat_force(defenders)
+    won = att_force > def_force  # strict: the attacker must OVERCOME the defence; a tie is held by the seat
+    # Casualties: each side loses round(CASUALTY_RATE * opposing_FORCE), capped at its own body count.
+    att_loss = min(att, round(CASUALTY_RATE * def_force))
+    def_loss = min(def_, round(CASUALTY_RATE * att_force))
     att_dead = _fell_in_battle(state, attackers, att_loss, turn, att_side)
     def_dead = _fell_in_battle(state, defenders, def_loss, turn, def_side)
     survivors = [f for f in attackers if f.alive]
