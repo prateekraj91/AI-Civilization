@@ -7466,6 +7466,164 @@ def test_eras_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_eras_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Diplomacy (V2 M4.13): relations & treaties -----------------------------
+def _dip_world() -> None:
+    create_world(size=60)
+    world_state["agents"].clear()
+    world_state["food"].clear()
+    world_state["turn"] = 0
+    world_state["diplomacy_on"] = True
+
+
+def _dip_settled(n, p, sid=None, money=0.0):
+    a = Agent(name=n, personality="x")
+    place_agent(a, *p)
+    a.hunger, a.age, a.lifespan, a.money, a.settlement = 1, 30, 100, money, sid
+    return a
+
+
+def _dip_mercs(prefix, near, n):
+    for i in range(n):
+        _dip_settled(f"{prefix}{i}", (near[0] + i % 2, near[1] + 2), sid=None, money=0.5)
+
+
+def _dip_realm(king, kmoney, home_c):
+    home = f"{king}_home"
+    world_state["settlements"][home] = {"id": home, "center": home_c, "members": {king}, "founded": 0}
+    _dip_settled(king, home_c, sid=home, money=kmoney)
+    world_state["monarchs"][home] = {"monarch": king, "since": 0, "garrison": set()}
+    world_state["kingdoms"][king] = {"king": king, "home": home, "settlements": {home},
+                                     "vassals": {}, "founded": 0, "discontent": {}}
+
+
+def test_stance_derived_from_history_and_decays() -> None:
+    """Stance is derived from history: a war sours a pair to hostile; shared culture warms a pair to
+    friendly over time; and an idle pair decays back toward neutral."""
+    import diplomacy
+
+    _dip_world(); _dip_realm("A", 100.0, (10, 10)); _dip_realm("B", 100.0, (18, 10))
+    assert diplomacy.stance(world_state, "A", "B") == "neutral"
+    diplomacy.record_war(world_state, "A", "B", 1)
+    assert diplomacy.stance(world_state, "A", "B") == "hostile"
+    for t in range(2, 12):
+        diplomacy.update(world_state, t)                 # quiet turns -> decays to neutral
+    assert diplomacy.stance(world_state, "A", "B") == "neutral", diplomacy.stance_score(world_state, "A", "B")
+
+    # Shared culture warms a pair toward friendly.
+    _dip_world(); world_state["culture_on"] = True; world_state["beliefs_on"] = True
+    _dip_realm("A", 100.0, (10, 10)); _dip_realm("B", 100.0, (18, 10))
+    import beliefs
+    creed = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+    world_state["beliefs"] = {"A": set(creed), "B": set(creed)}   # two kings of one culture
+    for t in range(1, 8):
+        diplomacy.update(world_state, t)
+    assert diplomacy.stance(world_state, "A", "B") == "friendly", diplomacy.stance_score(world_state, "A", "B")
+    print("PASS test_stance_derived_from_history_and_decays")
+
+
+def test_pact_prevents_a_war_the_loop_would_launch_and_breaks_on_souring() -> None:
+    """A non-aggression pact stops a war the M3.6 loop would otherwise launch; when the stance sours the
+    pact BREAKS (betrayal) and the war becomes possible again."""
+    import diplomacy, empire
+
+    def run(with_pact):
+        _dip_world()
+        _dip_realm("Rich", 500.0, (10, 10)); _dip_realm("Poor", 50.0, (18, 10))
+        _dip_mercs("R", (10, 10), 5); _dip_mercs("P", (18, 10), 2)
+        if with_pact:
+            world_state["diplomacy"] = {"stance": {("Poor", "Rich"): 3}, "pacts": set(), "alliances": set()}
+        diplomacy.update(world_state, 1)
+        empire.update(world_state, 1)
+        return empire.is_sovereign(world_state, "Poor")   # True = NOT subjugated (war prevented)
+
+    assert not run(with_pact=False), "with no pact the M3.6 loop launches the war and subjugates Poor"
+    assert run(with_pact=True), "a pact prevents the war — Poor stays sovereign"
+
+    # The pact BREAKS when the stance sours, and it is logged as a betrayal.
+    _dip_world()
+    _dip_realm("Rich", 500.0, (10, 10)); _dip_realm("Poor", 50.0, (18, 10))
+    world_state["diplomacy"] = {"stance": {("Poor", "Rich"): 3}, "pacts": {("Poor", "Rich")},
+                                "alliances": set()}
+    diplomacy.record_war(world_state, "Rich", "Poor", 1)   # a shock sours the pair past the break line
+    ev = diplomacy.update(world_state, 2)
+    assert not diplomacy.has_pact(world_state, "Rich", "Poor"), "a soured stance breaks the pact"
+    assert any("BROKEN" in e for e in ev), ev
+    print("PASS test_pact_prevents_a_war_the_loop_would_launch_and_breaks_on_souring")
+
+
+def test_alliance_adds_ally_host_to_defence() -> None:
+    """A defensive alliance brings the ally's whole host to the defence: an attacker who beats the lone
+    defender LOSES against the combined hosts."""
+    import diplomacy, empire
+
+    def war(with_alliance):
+        _dip_world()
+        _dip_realm("Rich", 500.0, (10, 10)); _dip_realm("Poor", 50.0, (30, 10))
+        _dip_realm("Ally", 400.0, (50, 10))
+        _dip_mercs("R", (10, 10), 5); _dip_mercs("P", (30, 10), 2); _dip_mercs("Y", (50, 10), 4)
+        if with_alliance:
+            world_state["diplomacy"] = {"stance": {("Ally", "Poor"): 3}, "pacts": set(),
+                                        "alliances": {("Ally", "Poor")}}
+        res = empire.wage_war(world_state, "Rich", "Poor", 1)
+        return res["won"], res["def_host"]
+
+    won_lone, def_lone = war(False)
+    won_allied, def_allied = war(True)
+    assert won_lone and not won_allied, (won_lone, won_allied)
+    assert def_allied > def_lone, "the ally's host joined the defence"
+    print("PASS test_alliance_adds_ally_host_to_defence")
+
+
+def test_lapsed_honour_ally_fails_to_answer() -> None:
+    """Alliances are conditional: an ally whose stance with the defender has soured below the honour
+    line does NOT answer the call, leaving the defender to fall alone."""
+    import diplomacy, empire
+
+    _dip_world()
+    _dip_realm("Rich", 500.0, (10, 10)); _dip_realm("Poor", 50.0, (30, 10)); _dip_realm("Ally", 400.0, (50, 10))
+    _dip_mercs("R", (10, 10), 5); _dip_mercs("P", (30, 10), 2); _dip_mercs("Y", (50, 10), 4)
+    world_state["diplomacy"] = {"stance": {("Ally", "Poor"): -5},   # honour has lapsed (soured)
+                                "pacts": set(), "alliances": {("Ally", "Poor")}}
+    assert diplomacy.defensive_allies(world_state, "Poor") == [], "a soured ally does not answer"
+    res = empire.wage_war(world_state, "Rich", "Poor", 1)
+    assert res["won"] and res["def_host"] == 2, "the defender falls alone (no ally host)"
+    print("PASS test_lapsed_honour_ally_fails_to_answer")
+
+
+def test_diplomacy_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """diplomacy_on=False (default) is byte-identical to the empire baseline and adds ZERO LLM."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", diplomacy_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war")
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "diplomacy_on=False diverged from the empire baseline"
+    assert not world_state.get("diplomacy"), "an off run writes no diplomacy state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # stance is derived STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_diplomacy_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -7729,6 +7887,11 @@ def main_runner() -> None:
         test_era_yield_curve,
         test_era_exposed_in_state_and_drives_rendering,
         test_eras_off_run_is_byte_identical_and_adds_no_llm,
+        test_stance_derived_from_history_and_decays,
+        test_pact_prevents_a_war_the_loop_would_launch_and_breaks_on_souring,
+        test_alliance_adds_ally_host_to_defence,
+        test_lapsed_honour_ally_fails_to_answer,
+        test_diplomacy_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

@@ -442,6 +442,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # clear it and reset the flag OFF so nothing leaks across runs and a default run is byte-identical to v1.
     world_state.pop("eras", None)
     world_state["eras_on"] = False
+    # M4.13: inter-kingdom stance + treaties are per-simulation state — clear them and reset the flag OFF
+    # so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("diplomacy", None)
+    world_state["diplomacy_on"] = False
     return world_state["grid"]
 
 

@@ -36,6 +36,7 @@ import alliance
 import beliefs
 import conversation
 import culture
+import diplomacy
 import discontent
 import economy
 import empire
@@ -592,6 +593,31 @@ def print_belief_cultures() -> None:
         else:
             profile = "(no shared beliefs)"
         print(f"{sid}: {profile}")
+    print()
+
+
+def print_diplomacy() -> None:
+    """M4.13: world-level DIPLOMACY report — printed ONLY when diplomacy is on (a default run never
+    calls it, so the default summary is byte-identical to v1). Pairwise stances among sovereign kings,
+    with active pacts and alliances flagged — the interstate relations M4.14/M4.15 and the renderer read."""
+    print("=" * 56)
+    print("DIPLOMACY (M4.13 — stance, pacts, alliances)")
+    print("=" * 56)
+    dip = world_state.get("diplomacy", {})
+    kings = sorted(k for k in world_state.get("kingdoms", {})
+                   if empire.is_sovereign(world_state, k) and any(a.name == k and a.alive
+                                                                  for a in world_state["agents"]))
+    printed = False
+    for i, k1 in enumerate(kings):
+        for k2 in kings[i + 1:]:
+            st = diplomacy.stance(world_state, k1, k2)
+            tie = ("ALLIANCE" if diplomacy.has_alliance(world_state, k1, k2)
+                   else "pact" if diplomacy.has_pact(world_state, k1, k2) else "")
+            print(f"{k1} <-> {k2}: {st} ({diplomacy.stance_score(world_state, k1, k2):+d})"
+                  f"{'  [' + tie + ']' if tie else ''}")
+            printed = True
+    if not printed:
+        print("(no sovereign kingdom pairs)")
     print()
 
 
@@ -1165,6 +1191,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Industrial/Modern are a pure data addition (a marked seam in eras.py). Per-settlement era "
              "shows in the summary. Zero LLM, zero RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--diplomacy", action="store_true",
+        help="V2 M4.13: enable RELATIONS & TREATIES — kingdoms gain a second verb (opens Arc 5; implies "
+             "--kingdoms). Each kingdom-PAIR gets a STANCE (hostile/neutral/friendly) DERIVED from history "
+             "— past WARS cool it, shared CULTURE/FAITH (M4.7-9) warm it, a broken treaty sours it, and it "
+             "decays toward neutral over quiet time. Warm pairs sign a NON-AGGRESSION PACT that STOPS a war "
+             "the M3.6 loop would otherwise launch (diplomacy genuinely prevents wars); warmer pairs form a "
+             "DEFENSIVE ALLIANCE that brings a friend's whole loyal host to a defender's aid (an attacker "
+             "faces the COMBINED hosts) — but honour is CONDITIONAL, and a soured ally does not answer. "
+             "Treaties are PERSONAL: a cold heir (M4.3) does not renew his father's pact, reopening the war "
+             "it prevented. Inter-kingdom TRADE (M4.14) and COALITIONS (M4.15) are NOT built here. Pair "
+             "with --empire to see the war-prevention teeth. Zero LLM, zero RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1245,7 +1283,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    culture_on: bool = False,
                    writing_on: bool = False,
                    metallurgy_on: bool = False,
-                   eras_on: bool = False) -> None:
+                   eras_on: bool = False,
+                   diplomacy_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1421,6 +1460,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # Implies metallurgy + writing (so the gating techs are reachable). Zero LLM, zero RNG.
     world_state["eras_on"] = eras_on
 
+    # M4.13 (opens Arc 5): the DIPLOMACY flag — inter-kingdom stance + treaties. Each kingdom-pair gets a
+    # stance derived from history (wars cool, shared culture/faith warm); non-aggression pacts constrain
+    # the M3.6 war loop, and defensive alliances bring a friend's host to a defender's aid. False (default)
+    # -> diplomacy.update never called, the war loop never checks a pact -> byte-identical to v1. Implies
+    # kingdoms (its wars are M3.6/empire — pair with --empire to see the teeth). Zero LLM, zero RNG.
+    world_state["diplomacy_on"] = diplomacy_on
+
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
     counters: dict[str, int] = {"agent_turns": 0}
@@ -1581,6 +1627,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # rise AND fall). Runs AFTER kingdoms.update so this turn's realms/loyalties are the ones that
         # war, and reuses the SAME fight (resolve_battle). War kills agents on BOTH sides. Zero LLM/RNG;
         # gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
+        # M4.13 (Arc 5): DIPLOMACY — recompute each kingdom-pair's stance from history and form/break
+        # non-aggression pacts + defensive alliances. Runs BEFORE empire.update so this turn's war loop
+        # reads the current treaties (a pact stays a war; an alliance deters one / joins a defence). Zero
+        # LLM, zero RNG; gated on the flag so a default run never calls it (byte-identical to v1).
+        if diplomacy_on:
+            diplomacy.update(world_state, turn)
+
         if empire_on:
             empire.update(world_state, turn)
 
@@ -1744,6 +1797,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.12: the world-level eras read-out, printed ONLY when era progression is on.
     if world_state.get("eras_on"):
         print_eras()
+    # M4.13: the world-level diplomacy read-out, printed ONLY when diplomacy is on.
+    if world_state.get("diplomacy_on"):
+        print_diplomacy()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1854,7 +1910,10 @@ def main(argv: list[str] | None = None) -> None:
     leadership_on = args.leadership or args.taxation or args.uprising
     # M3.6: empire BUILDS ON kingdoms (an emperor is a king who conquered another king), so --empire
     # implies --kingdoms.
-    kingdoms_on = args.kingdoms or args.empire
+    # M4.13: --diplomacy operates on kingdoms, so it implies --kingdoms (its war-prevention teeth act on
+    # the M3.6 war loop — pair with --empire to see them).
+    diplomacy_on = args.diplomacy
+    kingdoms_on = args.kingdoms or args.empire or diplomacy_on
     # M3.5: kingdoms BUILD ON monarchy (a king is a monarch who expanded), so --kingdoms implies
     # --monarchy; both need a settlement to seize/realm.
     monarchy_on = args.monarchy or kingdoms_on
@@ -1943,7 +2002,8 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on)
+                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
+                           diplomacy_on=diplomacy_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1971,7 +2031,8 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on)
+                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
+                           diplomacy_on=diplomacy_on)
 
 
 if __name__ == "__main__":

@@ -321,6 +321,19 @@ def wage_war(state: dict[str, Any], attacker_name: str, defender_name: str, turn
     att_host = imperial_host(state, attacker, {attacker_name, defender_name})
     taken = {f.name for f in att_host} | {attacker_name, defender_name}
     def_host = imperial_host(state, defender, taken)
+    # M4.13 DIPLOMACY: this war leaves a lasting grievance, and the defender's honouring ALLIES bring
+    # their whole loyal hosts to the defence — so an attacker faces the COMBINED hosts of all who answer.
+    # Gated on diplomacy_on (lazily imported), so a non-diplomacy run is byte-identical.
+    if state.get("diplomacy_on"):
+        import diplomacy
+        diplomacy.record_war(state, attacker_name, defender_name, turn)
+        for ally_name in diplomacy.defensive_allies(state, defender_name):
+            ally = _find(state, ally_name)
+            if ally is None:
+                continue
+            contingent = imperial_host(state, ally, taken | {ally_name})
+            taken |= {f.name for f in contingent}
+            def_host.extend(contingent)
     n_att, n_def = len(att_host), len(def_host)
 
     won, att_dead, def_dead, _ = monarchy.resolve_battle(
@@ -400,8 +413,20 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
             continue
         att_strength = imperial_host_size(state, attacker)
         # Target the strongest neighbour the attacker can still out-field (deterministic, winnable).
-        targets = [t for t in _kingdom_neighbours(state, attacker_name)
-                   if att_strength > imperial_host_size(state, _find(state, t))]
+        # M4.13 DIPLOMACY (gated, lazily imported -> byte-identical off): a NON-AGGRESSION pact bars the
+        # war outright, and an alliance is DETERRENCE — the attacker weighs the defender's host PLUS every
+        # honouring ally's, so it refrains from a war it would lose against the combined defence.
+        diplo = state.get("diplomacy_on")
+        if diplo:
+            import diplomacy
+        targets = []
+        for t in _kingdom_neighbours(state, attacker_name):
+            if diplo and diplomacy.war_forbidden(state, attacker_name, t):
+                continue
+            def_size = (diplomacy.defensive_host_size(state, t) if diplo
+                        else imperial_host_size(state, _find(state, t)))
+            if att_strength > def_size:
+                targets.append(t)
         if not targets:
             continue
         target = max(targets, key=lambda t: (imperial_host_size(state, _find(state, t)), t))
