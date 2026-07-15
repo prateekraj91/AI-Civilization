@@ -240,15 +240,15 @@ def resolve_battle(state: dict[str, Any], attackers: list[Any], defenders: list[
     queued respawn). Returns (won, att_dead, def_dead, survivors). Shared by M3.4 conquest, M3.5 realm
     conquest, M3.6 war AND M4.5 uprising, so ALL use the identical fight maths.
 
-    M4.11 METALLURGY: effective force is `metallurgy.combat_force` — an ARMED combatant (knows weapons)
-    counts for ARMED_MULTIPLIER of an unarmed head, so a smaller armed host beats a larger unarmed one and
-    two armed sides fall back to a count. When NO combatant is armed (metallurgy off) the force is exactly
-    the head count, so the resolution is byte-identical to before. Casualties are capped at the real body
-    COUNT (weapons win fights; they do not conjure extra corpses).
+    M4.11/M4.12 TECH: effective force is `eras.combat_force` — a soldier's MARTIAL-ERA weight (iron >
+    bronze > stone arms) multiplies its head, so a smaller advanced host beats a larger primitive one and
+    same-era falls back to a count. With eras off this delegates to the M4.11 armed multiplier, and when NO
+    combatant has martial tech the force is exactly the head count, so the resolution is byte-identical to
+    before. Casualties are capped at the real body COUNT (arms win fights; they do not conjure corpses).
     """
-    import metallurgy
+    import eras
     att, def_ = len(attackers), len(defenders)
-    att_force, def_force = metallurgy.combat_force(attackers), metallurgy.combat_force(defenders)
+    att_force, def_force = eras.combat_force(attackers, state), eras.combat_force(defenders, state)
     won = att_force > def_force  # strict: the attacker must OVERCOME the defence; a tie is held by the seat
     # Casualties: each side loses round(CASUALTY_RATE * opposing_FORCE), capped at its own body count.
     att_loss = min(att, round(CASUALTY_RATE * def_force))

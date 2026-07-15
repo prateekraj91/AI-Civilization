@@ -360,19 +360,42 @@ def farm(state: dict[str, Any], turn: int,
     if len(state["food"]) >= FARM_FOOD_PER_CAPITA * living:
         return []
     draw = (rng or random).random
-    # M4.11: metalworking farmers grow food faster (better tools). Gated on the flag + the skill, so a
-    # non-metallurgy run is byte-identical (the multiplier is 1.0 and the draw count is unchanged).
+    # M4.11/M4.12: better tools grow food faster. With ERAS on the multiplier follows the settlement's
+    # era curve (Bronze>Neolithic, Iron>Bronze — eras.yield_mult); else it is M4.11's metalworking boost.
+    # Both are gated on the flag + the skill, so a non-metallurgy/non-era run is byte-identical (multiplier
+    # 1.0, and the per-farmer draw COUNT is unchanged regardless — only the success threshold moves).
     metal_on = state.get("metallurgy_on", False)
+    eras_on = state.get("eras_on", False)
+    if eras_on:
+        import eras
     produced: list[tuple[str, tuple[int, int]]] = []
     for agent in farmers:  # world_state["agents"] order is stable
-        yield_p = FARM_YIELD * (METALWORK_YIELD_MULT
-                                if metal_on and "metalworking" in agent.knowledge else 1.0)
-        if draw() < yield_p:
-            cell = _empty_adjacent_cell(agent, state)
-            if cell is not None:
+        if eras_on:
+            # M4.12: an era lifts the production CEILING (Bronze > Neolithic, Iron > Bronze) — the
+            # expected tiles/turn is FARM_YIELD*era_mult, realised as int(exp) guaranteed tiles plus one
+            # more with the fractional chance (one draw/farmer), so a higher era genuinely out-yields a
+            # lower one instead of saturating at the probability cap. Extensible to any future era.
+            expected = FARM_YIELD * eras.yield_mult(state, agent)
+            n_tiles = int(expected) + (1 if draw() < (expected - int(expected)) else 0)
+            grew = False
+            for _ in range(n_tiles):
+                cell = _empty_adjacent_cell(agent, state)
+                if cell is None:
+                    break
                 world.place_food(cell[0], cell[1], state)
-                world.record_memory(agent, "Tended crops")
                 produced.append((agent.name, cell))
+                grew = True
+            if grew:
+                world.record_memory(agent, "Tended crops")
+        else:
+            # v1 / M4.11 path — one draw, one tile: byte-identical when eras are off.
+            mult = METALWORK_YIELD_MULT if (metal_on and "metalworking" in agent.knowledge) else 1.0
+            if draw() < FARM_YIELD * mult:
+                cell = _empty_adjacent_cell(agent, state)
+                if cell is not None:
+                    world.place_food(cell[0], cell[1], state)
+                    world.record_memory(agent, "Tended crops")
+                    produced.append((agent.name, cell))
     return produced
 
 

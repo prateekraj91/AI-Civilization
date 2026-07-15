@@ -240,6 +240,22 @@ _STIPPLE_STEP = 4             # stipple sampling stride in pixels (coarser = che
 # settlement, rebuilt only when its membership/ruler/cell changes, so per-frame cost stays low.
 _WALL_TONES = ((156, 128, 96), (172, 150, 118), (140, 116, 90), (178, 160, 128), (150, 132, 104))
 _ROOF_TONES = ((122, 84, 66), (150, 98, 70), (98, 74, 56), (112, 100, 68), (132, 90, 72))
+
+# M4.12 ERAS: a settlement's building STYLE keys off its era (written to world_state["eras"] by the sim,
+# read-only here). Neolithic = the earthy mud-and-thatch default; Bronze = richer timber + a forge; Iron
+# = grey dressed STONE with a wall ring. Each style has its own wall/roof tone set so towns VISIBLY evolve
+# by age. Unknown/absent era falls back to 'neolithic', so a non-era run renders exactly as before.
+_ERA_STYLE = {"Bronze Age": "bronze", "Iron Age": "iron"}   # era NAME -> style key (else 'neolithic')
+_ERA_WALL_TONES = {
+    "neolithic": _WALL_TONES,
+    "bronze": ((150, 120, 84), (168, 138, 96), (134, 106, 74), (176, 146, 104), (144, 116, 82)),
+    "iron": ((150, 150, 156), (168, 168, 174), (132, 132, 140), (178, 178, 184), (142, 142, 150)),
+}
+_ERA_ROOF_TONES = {
+    "neolithic": _ROOF_TONES,
+    "bronze": ((120, 92, 60), (146, 110, 68), (100, 80, 52), (128, 100, 60), (134, 104, 66)),
+    "iron": ((96, 100, 110), (118, 122, 132), (84, 88, 98), (126, 130, 140), (104, 108, 118)),
+}
 _DOOR = PALETTE["door"]
 _WINDOW_LIT = PALETTE["window_lit"]   # a warm lit window (flickers gently, slice 9)
 _WINDOW_DARK = PALETTE["window_dark"]
@@ -581,7 +597,8 @@ def _pick(seq: tuple, t: float):
 
 
 def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str | None,
-                    ruler_color: tuple[int, int, int], emperor: bool, cell: int) -> dict[str, Any]:
+                    ruler_color: tuple[int, int, int], emperor: bool, cell: int,
+                    era_style: str = "neolithic") -> dict[str, Any]:
     """Lay out a settlement's buildings + civic structure deterministically (pure, no pygame).
 
     GROWTH: the number of detailed houses scales with `n_members` (a hamlet shows a couple of
@@ -598,6 +615,10 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
 
     def nz(i: int, s: int) -> float:                 # deterministic [0,1) per (building i, channel s)
         return terrain_noise(cxh, cyh, i * 131 + s * 17 + 1)
+
+    # M4.12: era-specific building palette (earthy Neolithic -> timber Bronze -> stone Iron).
+    wall_tones = _ERA_WALL_TONES.get(era_style, _WALL_TONES)
+    roof_tones = _ERA_ROOF_TONES.get(era_style, _ROOF_TONES)
 
     n_buildings = min(_MAX_TOWN_BUILDINGS, max(_MIN_TOWN_BUILDINGS, int(n_members)))
     base_r = cell * 1.15
@@ -616,8 +637,8 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
             buildings.append({
                 "dx": int(rad * math.cos(ang)), "dy": int(rad * math.sin(ang)),
                 "w": w, "h": h,
-                "wall": _pick(_WALL_TONES, nz(placed, 5)),
-                "roof": _pick(_ROOF_TONES, nz(placed, 6)),
+                "wall": _pick(wall_tones, nz(placed, 5)),
+                "roof": _pick(roof_tones, nz(placed, 6)),
                 "hip": nz(placed, 7) > 0.5,           # hip vs gable roof
                 "lit": nz(placed, 8) > 0.45,          # lit windows
             })
@@ -641,6 +662,10 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
         "cluster_r": cluster_r,
         "plaza_r": max(cell, int(base_r * 0.95)),
         "path_w": max(1, cell // 6),
+        # M4.12 ERAS: the visible age of the town — its build style, a Bronze+ forge, and Iron stone walls.
+        "era_style": era_style,
+        "forge": era_style in ("bronze", "iron"),     # a smithy appears once a town works metal
+        "stone_wall": era_style == "iron",             # the palisade hardens into dressed stone
     }
 
 
@@ -2209,10 +2234,12 @@ class PygameRenderer:
                 else:
                     kind, ruler, is_emp = None, None, False
                 color = agent_color(personality_by_name.get(ruler, "")) if ruler else _DEFAULT_RULER
-                key = (count, kind, ruler, is_emp, cell)
+                # M4.12: the town's build style follows its ERA (read-only from world_state["eras"]).
+                era_style = _ERA_STYLE.get(state.get("eras", {}).get(sid), "neolithic")
+                key = (count, kind, ruler, is_emp, cell, era_style)
                 cached = self._town_plans.get(sid)
-                if cached is None or cached[0] != key:          # rebuild ONLY on membership/ruler change
-                    cached = (key, build_town_plan(center, count, kind, color, is_emp, cell))
+                if cached is None or cached[0] != key:          # rebuild on membership/ruler/ERA change
+                    cached = (key, build_town_plan(center, count, kind, color, is_emp, cell, era_style))
                     self._town_plans[sid] = cached
                 self._draw_town(cx, cy, cached[1])
                 top_y = cy - cached[1]["cluster_r"]

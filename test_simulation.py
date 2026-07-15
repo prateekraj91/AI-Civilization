@@ -7314,6 +7314,158 @@ def test_metallurgy_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_metallurgy_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Era progression (V2 M4.12): the march of ages --------------------------
+_NEO = frozenset({"fire", "tools", "farming"})
+_BRONZE = _NEO | {"metalworking"}
+_IRON = _BRONZE | {"weapons", "writing"}
+
+
+def _era_world() -> None:
+    _fresh_world()
+    world_state["eras_on"] = True
+
+
+def _esettle(sid, center) -> None:
+    world_state["settlements"][sid] = {"id": sid, "center": center, "members": set(), "founded": 0}
+
+
+def _eagent(name, pos, sid="S001", *, knows=None):
+    a = Agent(name=name, personality="x")
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.settlement = 1, 30, 100, sid
+    if knows:
+        a.knowledge.update(knows)
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    return a
+
+
+def test_era_derived_from_tech_and_advance_logged_and_extensible() -> None:
+    """A settlement's era is derived from the tech its populace masters (thresholds binding); crossing
+    a threshold is logged as an ADVANCE; and a hypothetical higher era slots in as a pure data addition."""
+    import eras
+
+    _era_world(); _esettle("S001", (5, 5))
+    a = _eagent("A", (5, 5), knows=set(_NEO))
+    assert eras.settlement_era(world_state, "S001") == "Neolithic"
+    eras.update(world_state, 1)
+    a.knowledge.update({"metalworking"})
+    ev = eras.update(world_state, 2)
+    assert eras.settlement_era(world_state, "S001") == "Bronze Age"
+    assert any("entered the Bronze Age" in e for e in ev), ev
+    a.knowledge.update({"weapons", "writing"})
+    ev = eras.update(world_state, 3)
+    assert eras.settlement_era(world_state, "S001") == "Iron Age"
+    assert any("entered the Iron Age" in e for e in ev)
+
+    # EXTENSIBILITY: appending an era to the ladder is all it takes for a town to reach it — no new code.
+    steel = eras.Era("Steel Age", _IRON | {"steelmaking"}, 3.6, "steel")
+    eras.ERAS.append(steel)
+    try:
+        assert eras.settlement_era(world_state, "S001") == "Iron Age"   # not yet — lacks steelmaking
+        a.knowledge.add("steelmaking")
+        assert eras.settlement_era(world_state, "S001") == "Steel Age"  # the new rung slots straight in
+    finally:
+        eras.ERAS.pop()
+    print("PASS test_era_derived_from_tech_and_advance_logged_and_extensible")
+
+
+def test_era_gap_multiplies_combat_force() -> None:
+    """An era GAP is a force multiplier: a smaller Iron host beats a larger Neolithic one (and Bronze
+    beats Neolithic), while same-era forces fall back to numbers."""
+    import monarchy
+
+    def battle(att_n, att_tech, def_n, def_tech):
+        _era_world()
+        A = [_eagent(f"A{i}", (0, i), sid=None, knows=set(att_tech)) for i in range(att_n)]
+        D = [_eagent(f"D{i}", (1, i), sid=None, knows=set(def_tech)) for i in range(def_n)]
+        won, _, _, _ = monarchy.resolve_battle(world_state, A, D, 1, "a", "d")
+        return won
+
+    assert battle(3, _IRON, 5, _NEO), "3 Iron should beat 5 Neolithic (knowledge beats numbers on the era curve)"
+    assert battle(3, _BRONZE, 4, _NEO), "3 Bronze should beat 4 Neolithic"
+    assert not battle(4, _IRON, 4, _IRON), "same era -> numbers (a tie is held by the defender)"
+    assert not battle(3, _IRON, 6, _IRON), "same era -> the larger side wins"
+    print("PASS test_era_gap_multiplies_combat_force")
+
+
+def test_era_yield_curve() -> None:
+    """A higher era out-produces a lower one: Iron > Bronze > Neolithic farm output."""
+    import eras, knowledge
+
+    def food_grown(era_tech):
+        _era_world(); _esettle("S001", (5, 5))
+        _eagent("F", (5, 5), knows=set(era_tech) | {"farming"})
+        rng = random.Random(5)
+        total = 0
+        for t in range(1, 50):
+            knowledge.farm(world_state, t, rng)
+            total += len(world_state["food"])
+            world_state["food"].clear()
+        return total
+
+    neo, bronze, iron = food_grown(_NEO), food_grown(_BRONZE), food_grown(_IRON)
+    assert neo < bronze < iron, (neo, bronze, iron)
+    print("PASS test_era_yield_curve")
+
+
+def test_era_exposed_in_state_and_drives_rendering() -> None:
+    """The settlement's era is exposed in world_state (for the read-only renderer), and the town-plan
+    keys its building STYLE off the era — so towns render differently by age."""
+    import eras
+    from renderer.pygame_renderer import build_town_plan
+
+    _era_world(); _esettle("S001", (5, 5))
+    _eagent("A", (5, 5), knows=set(_IRON))
+    eras.update(world_state, 1)
+    assert world_state["eras"]["S001"] == "Iron Age"          # exposed in state for the renderer
+    assert eras.building_style(world_state, "S001") == "iron"
+
+    neo_plan = build_town_plan((5, 5), 6, None, (200, 200, 200), False, 10, "neolithic")
+    iron_plan = build_town_plan((5, 5), 6, None, (200, 200, 200), False, 10, "iron")
+    assert neo_plan["era_style"] == "neolithic" and iron_plan["era_style"] == "iron"
+    assert iron_plan["stone_wall"] and iron_plan["forge"] and not neo_plan["stone_wall"]
+    assert neo_plan["buildings"][0]["wall"] != iron_plan["buildings"][0]["wall"], "towns look different by age"
+    print("PASS test_era_exposed_in_state_and_drives_rendering")
+
+
+def test_eras_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """eras_on=False (default) is byte-identical to the metallurgy+writing baseline and adds ZERO LLM."""
+    import knowledge
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, tech_tree=knowledge.TECH_TREE,
+                                metallurgy_on=True, writing_on=True, eras_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, tech_tree=knowledge.TECH_TREE,
+                                metallurgy_on=True, writing_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "eras_on=False diverged from the metallurgy+writing baseline"
+    assert not world_state.get("eras"), "an off run writes no era state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # eras are derived STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_eras_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -7572,6 +7724,11 @@ def main_runner() -> None:
         test_arms_multiply_force_in_battle,
         test_uprising_arms_shifts_revolt_balance,
         test_metallurgy_off_run_is_byte_identical_and_adds_no_llm,
+        test_era_derived_from_tech_and_advance_logged_and_extensible,
+        test_era_gap_multiplies_combat_force,
+        test_era_yield_curve,
+        test_era_exposed_in_state_and_drives_rendering,
+        test_eras_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

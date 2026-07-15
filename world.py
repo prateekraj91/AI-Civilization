@@ -438,6 +438,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # M4.11: metallurgy's effects live in agent.knowledge (reset with the agents above) and are read live
     # by knowledge.farm / resolve_battle — it holds no world_state of its own, so only the flag resets OFF.
     world_state["metallurgy_on"] = False
+    # M4.12: per-settlement era is derived state cached in world_state["eras"] (for the renderer/summary) —
+    # clear it and reset the flag OFF so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("eras", None)
+    world_state["eras_on"] = False
     return world_state["grid"]
 
 

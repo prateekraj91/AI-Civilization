@@ -39,6 +39,7 @@ import culture
 import discontent
 import economy
 import empire
+import eras
 import god_mode
 import heuristic
 import kingdoms
@@ -594,6 +595,23 @@ def print_belief_cultures() -> None:
     print()
 
 
+def print_eras() -> None:
+    """M4.12: world-level ERAS report — printed ONLY when era progression is on (a default run never
+    calls it, so the default summary is byte-identical to v1). Per settlement: the age it has reached —
+    the visible march from stone toward modernity."""
+    print("=" * 56)
+    print("ERAS (M4.12 — the march of ages)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        print(f"{sid}: {eras.settlement_era(world_state, sid)}")
+    print()
+
+
 def print_metallurgy() -> None:
     """M4.11: world-level METALLURGY report — printed ONLY when metallurgy is on (a default run never
     calls it, so the default summary is byte-identical to v1). Per settlement: whether it has a FORGE
@@ -1132,6 +1150,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "again (revolt survives in armed societies). Era progression (Bronze/Iron) is M4.12, NOT "
              "here. Zero LLM; only discovery draws RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--eras", action="store_true",
+        help="V2 M4.12: enable ERA PROGRESSION — the march of ages, CLOSING Arc 4 (implies --metallurgy "
+             "and --writing so the gating techs are reachable; all imply --tech-tree). A settlement's ERA "
+             "is DERIVED from the tech its populace has mastered — Neolithic (fire+tools+farming) -> Bronze "
+             "(+metalworking) -> Iron (+weapons+writing) — advancing as discovery/diffusion spread the "
+             "techs (logged: 'S001 entered the Bronze Age'; seed-varying, some towns lag). Each era "
+             "transforms THREE things: ECONOMY (a higher era lifts farm yield along a curve, so an advanced "
+             "town out-produces a primitive one), WAR (a soldier's martial era multiplies its force in the "
+             "shared battle math, so a SMALLER advanced host beats a LARGER primitive one — knowledge beats "
+             "numbers on an era curve, in conquest/war/uprising), and APPEARANCE (the era is exposed in "
+             "state and the read-only renderer draws era-appropriate buildings: huts -> timber+forge -> "
+             "stone+walls, so towns visibly evolve). The ladder is EXTENSIBLE — Medieval/Renaissance/"
+             "Industrial/Modern are a pure data addition (a marked seam in eras.py). Per-settlement era "
+             "shows in the summary. Zero LLM, zero RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1211,7 +1244,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    religion_on: bool = False,
                    culture_on: bool = False,
                    writing_on: bool = False,
-                   metallurgy_on: bool = False) -> None:
+                   metallurgy_on: bool = False,
+                   eras_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1379,6 +1413,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # -> metallurgy.update never called, no one learns metalworking/weapons -> byte-identical to v1 (the
     # farm boost and battle multiplier are both no-ops without the skills). Rides the tech tree. Zero LLM.
     world_state["metallurgy_on"] = metallurgy_on
+
+    # M4.12 (Arc 4 close): the ERAS flag — era progression. A settlement's ERA is derived from the tech
+    # its populace has mastered (Neolithic -> Bronze -> Iron), lifting its economy, its combat weight, and
+    # its rendered appearance. False (default) -> eras.update never called, no "eras" key, the combat
+    # weighting delegates to the M4.11 model and the yield curve is never consulted -> byte-identical to v1.
+    # Implies metallurgy + writing (so the gating techs are reachable). Zero LLM, zero RNG.
+    world_state["eras_on"] = eras_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1623,6 +1664,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if metallurgy_on:
             metallurgy.update(world_state, turn)
 
+        # M4.12 (Arc 4 close): ERAS — recompute each settlement's era from the tech its populace has
+        # mastered, log any ADVANCE, and cache the era to world_state["eras"] for the renderer/summary. Its
+        # economy (yield curve) and war (combat weight) effects are read live in knowledge.farm /
+        # resolve_battle. Zero LLM, zero RNG; gated on the flag so a default run never calls it
+        # (byte-identical to v1). Runs after the tech steps so it reads this turn's discoveries/diffusion.
+        if eras_on:
+            eras.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1692,6 +1741,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.11: the world-level metallurgy read-out, printed ONLY when metallurgy is on.
     if world_state.get("metallurgy_on"):
         print_metallurgy()
+    # M4.12: the world-level eras read-out, printed ONLY when era progression is on.
+    if world_state.get("eras_on"):
+        print_eras()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1778,9 +1830,14 @@ def main(argv: list[str] | None = None) -> None:
 
     # M1.2: --tech-tree turns on unscripted discovery using the canonical TECH_TREE.
     # Absent it, tech_tree is None -> discovery is a no-op -> v1 byte-identical.
+    # M4.12: --eras implies --metallurgy AND --writing (so its gating techs — metalworking/weapons/
+    # writing — are reachable); each of those rides the tech tree, so --eras implies --tech-tree too.
+    eras_on = args.eras
+    metallurgy_on = args.metallurgy or eras_on
+    writing_on = args.writing or eras_on
     # M4.10/M4.11: --writing and --metallurgy ride the tech tree (their prereqs are `tools`), so each
     # implies --tech-tree.
-    tech_tree = knowledge.TECH_TREE if (args.tech_tree or args.writing or args.metallurgy) else None
+    tech_tree = knowledge.TECH_TREE if (args.tech_tree or writing_on or metallurgy_on) else None
 
     # M2.3/M3.1: the economy builds ON settlement + storage; wage labor (M3.1) builds ON the
     # economy. So --labor implies --economy, and --economy implies --settlements + --storage (a
@@ -1886,7 +1943,7 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=args.writing, metallurgy_on=args.metallurgy)
+                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1914,7 +1971,7 @@ def main(argv: list[str] | None = None) -> None:
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
-                           writing_on=args.writing, metallurgy_on=args.metallurgy)
+                           writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on)
 
 
 if __name__ == "__main__":
