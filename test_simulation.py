@@ -6668,6 +6668,187 @@ def test_beliefs_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_beliefs_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Religion (V2 M4.8): shared belief becomes power ------------------------
+def _relig_world() -> None:
+    _fresh_world()
+    world_state["beliefs_on"] = True
+    world_state["religion_on"] = True
+
+
+def _rsettle(sid, center) -> None:
+    world_state["settlements"][sid] = {"id": sid, "center": center, "members": set(), "founded": 0}
+
+
+def _believer(name, pos, sid="S001", *, believes=None, money=0.0):
+    a = Agent(name=name, personality="x")
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.money, a.settlement = 1, 30, 100, money, sid
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    if believes:
+        world_state.setdefault("beliefs", {})[name] = set(believes)
+    return a
+
+
+def test_faith_forms_on_coherence_not_when_fractured() -> None:
+    """A coherent shared core crystallises a faith; a fractured town forms none; two towns with the
+    same core share ONE faith, divergent cores form TWO — emergent from M4.7 clustering, not declared."""
+    import religion, beliefs
+    core = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    _relig_world(); _rsettle("S001", (5, 5))
+    for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5)), ("D", (6, 6))]:
+        _believer(n, p, believes=core)
+    religion.form_faiths(world_state, 1)
+    f = religion.faith_of_settlement(world_state, "S001")
+    assert f is not None and f["core"] == frozenset(core) and len(f["followers"]) == 4
+
+    _relig_world(); _rsettle("S001", (5, 5))    # fractured: every member a different belief
+    _believer("A", (5, 5), believes={beliefs.LAND_PROVIDES})
+    _believer("B", (5, 6), believes={beliefs.WORLD_IS_CRUEL})
+    _believer("C", (6, 5), believes={beliefs.WEALTH_IS_VIRTUE})
+    religion.form_faiths(world_state, 1)
+    assert religion.faith_of_settlement(world_state, "S001") is None
+
+    _relig_world(); _rsettle("S001", (2, 2)); _rsettle("S002", (8, 8))
+    for n, p in [("A", (2, 2)), ("B", (2, 3)), ("C", (3, 2))]:
+        _believer(n, p, "S001", believes=core)
+    for n, p in [("E", (8, 8)), ("F", (8, 9)), ("G", (9, 8))]:
+        _believer(n, p, "S002", believes=core)
+    religion.form_faiths(world_state, 1)
+    assert len(world_state["faiths"]) == 1, "same core -> one shared faith"
+    for n in ("E", "F", "G"):     # S002 diverges to a different core
+        world_state["beliefs"][n] = {beliefs.WORLD_IS_CRUEL, beliefs.STRONG_TAKE}
+    religion.form_faiths(world_state, 2)
+    assert len(world_state["faiths"]) == 2, "divergent cores -> two faiths"
+    print("PASS test_faith_forms_on_coherence_not_when_fractured")
+
+
+def test_prophet_is_derived_from_devotion_and_trust_not_assigned() -> None:
+    """The prophet is the most devout-and-trusted follower (derived), not the richest; a faith whose
+    followers trust no one enough has NO prophet."""
+    import religion, trust, beliefs
+    core = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    _relig_world(); _rsettle("S001", (5, 5))
+    devout = [_believer(n, p, believes=core) for n, p in
+              [("Pa", (5, 5)), ("Pb", (5, 6)), ("Pc", (6, 5)), ("Pd", (6, 6))]]
+    rich = _believer("Croesus", (6, 6), believes=core, money=500.0)  # richest, but not most trusted
+    world_state["settlements"]["S001"]["members"].add("Croesus")
+    for a in devout:                               # the flock trusts Pb, not the rich outsider
+        if a.name != "Pb":
+            trust.ensure_relationship(a, "Pb")["trust"] = 3
+    religion.form_faiths(world_state, 1)
+    religion.choose_prophets(world_state, 1)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] == "Pb"
+
+    # No one trusted enough -> no prophet (honest).
+    _relig_world(); _rsettle("S001", (5, 5))
+    for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5))]:
+        _believer(n, p, believes=core)
+    religion.form_faiths(world_state, 1)
+    religion.choose_prophets(world_state, 1)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] is None
+    print("PASS test_prophet_is_derived_from_devotion_and_trust_not_assigned")
+
+
+def test_aligned_ruler_generates_less_discontent_and_more_loyalty() -> None:
+    """The SAME monarch doing the SAME levy generates LESS discontent and MORE loyalty when ALIGNED
+    with the local faith than when DEFIANT — faith moving M4.4's legitimacy dial."""
+    import religion, discontent, beliefs
+    core = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    def reign(monarch_aligned):
+        _relig_world(); world_state["discontent_on"] = True; _rsettle("S001", (5, 5))
+        _believer("King", (4, 4), believes=(core if monarch_aligned else {beliefs.STRONG_TAKE}),
+                  money=100.0)
+        members = [_believer(n, p, believes=core, money=20.0)
+                   for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5))]]
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        for t in range(1, 8):
+            religion.update(world_state, t)
+            discontent.update(world_state, t)
+        return members[0].relationships.get("King", {}).get("trust", 0), \
+            discontent.agent_discontent("A", world_state)
+
+    trust_aligned, disc_aligned = reign(True)
+    trust_defiant, disc_defiant = reign(False)
+    assert trust_aligned > trust_defiant, (trust_aligned, trust_defiant)
+    assert disc_aligned < disc_defiant, (disc_aligned, disc_defiant)
+    print("PASS test_aligned_ruler_generates_less_discontent_and_more_loyalty")
+
+
+def test_defiant_king_erodes_vassal_loyalty_and_prophet_amplifies() -> None:
+    """A defiant king's believing vassal loses loyalty toward the M3.5 breakaway floor — and a prophet
+    opposing him erodes it FASTER (a moral authority against the crown)."""
+    import religion, trust, beliefs, kingdoms
+    core = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    def erosion(with_prophet):
+        _relig_world(); _rsettle("S001", (1, 1)); _rsettle("S002", (8, 8))
+        _believer("King", (1, 1), "S001", believes={beliefs.STRONG_TAKE}, money=50.0)  # DEFIANT
+        lord = _believer("Lord", (8, 8), "S002", believes=core, money=10.0)
+        flock = [_believer(n, p, "S002", believes=core) for n, p in [("Va", (8, 7)), ("Vb", (7, 8))]]
+        world_state["monarchs"]["S001"] = {"monarch": "King", "since": 0, "garrison": set()}
+        world_state["monarchs"]["S002"] = {"monarch": "Lord", "since": 0, "garrison": set()}
+        world_state["kingdoms"]["King"] = {"king": "King", "home": "S001",
+                                           "settlements": {"S001", "S002"}, "vassals": {"S002": "Lord"},
+                                           "founded": 0, "discontent": {"Lord": 0}}
+        trust.ensure_relationship(lord, "King")["trust"] = 2   # loyal fealty to start
+        if with_prophet:                                       # the flock trusts Va -> a prophet arises
+            for a in [lord] + flock:
+                if a.name != "Va":
+                    trust.ensure_relationship(a, "Va")["trust"] = 3
+        for t in range(1, 4):
+            religion.update(world_state, t)
+        return lord.relationships["King"]["trust"], \
+            religion.faith_of_settlement(world_state, "S002")["prophet"]
+
+    plain, no_prophet = erosion(with_prophet=False)
+    amplified, prophet = erosion(with_prophet=True)
+    assert no_prophet is None and prophet == "Va"
+    assert amplified < plain, (amplified, plain)      # the prophet deepens the erosion
+    assert amplified <= kingdoms.BREAKAWAY_TRUST, amplified   # past the M3.5 breakaway floor
+    print("PASS test_defiant_king_erodes_vassal_loyalty_and_prophet_amplifies")
+
+
+def test_religion_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """religion_on=False (default) is byte-identical to the v1 baseline, writes no faith state, and
+    the system adds ZERO LLM calls when on (faiths are STATE)."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, discontent_on=True,
+                                beliefs_on=True, religion_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, monarchy_on=True, discontent_on=True,
+                                beliefs_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "religion_on=False diverged from the beliefs-only baseline"
+    assert "faiths" not in world_state, "an off run must write no faith state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # faiths are STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_religion_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -6906,6 +7087,11 @@ def main_runner() -> None:
         test_contradictory_belief_flips_only_from_a_trusted_source,
         test_children_inherit_settlement_beliefs_via_childhood_boost,
         test_beliefs_off_run_is_byte_identical_and_adds_no_llm,
+        test_faith_forms_on_coherence_not_when_fractured,
+        test_prophet_is_derived_from_devotion_and_trust_not_assigned,
+        test_aligned_ruler_generates_less_discontent_and_more_loyalty,
+        test_defiant_king_erodes_vassal_loyalty_and_prophet_amplifies,
+        test_religion_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

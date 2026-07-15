@@ -47,6 +47,7 @@ import leadership
 import lineage
 import monarchy
 import population
+import religion
 import settlement
 import storage
 import taxation
@@ -524,6 +525,13 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
         if world_state.get("beliefs_on"):
             held = sorted(beliefs.agent_beliefs(agent.name, world_state))
             print(f"Beliefs:         {', '.join(held) if held else '(none yet)'}")
+        # M4.8: read-only faith overlay — printed ONLY when religion is on. Pure read of world_state["faiths"].
+        if world_state.get("religion_on"):
+            faith = next((f for f in world_state.get("faiths", {}).values()
+                          if agent.name in f["followers"]), None)
+            if faith is not None:
+                role = "PROPHET of" if faith["prophet"] == agent.name else "follows"
+                print(f"Faith:           {role} {faith['name']}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -580,6 +588,38 @@ def print_belief_cultures() -> None:
         else:
             profile = "(no shared beliefs)"
         print(f"{sid}: {profile}")
+    print()
+
+
+def print_faiths() -> None:
+    """M4.8: world-level FAITHS report — printed ONLY when religion is on (a default run never calls
+    it, so the default summary is byte-identical to v1).
+
+    For each faith: its core beliefs, congregation size, prophet (if any), and — per settlement — the
+    ruler's ALIGNMENT with it (aligned/defiant), the legibility M4.9 and the renderer build on."""
+    print("=" * 56)
+    print("FAITHS (world_state['faiths'], M4.8)")
+    print("=" * 56)
+    faiths = world_state.get("faiths", {})
+    if not faiths:
+        print("(no faiths have formed)")
+        print()
+        return
+    for fid in sorted(faiths):
+        f = faiths[fid]
+        core = ", ".join(f"'{b}'" for b in sorted(f["core"]))
+        n = sum(1 for m in f["followers"]
+                if any(a.name == m and a.alive for a in world_state["agents"]))
+        print(f"{f['name']}")
+        print(f"    core: {core}")
+        print(f"    followers: {n}   prophet: {f['prophet'] or '(none)'}")
+        for sid in sorted(f["settlements"]):
+            align = religion.ruler_alignment(world_state, sid)
+            sovereign = religion._sovereign(world_state, sid)
+            if sovereign is not None:
+                print(f"    {sid}: ruler {sovereign} is {align.upper()}")
+            else:
+                print(f"    {sid}: no ruler")
     print()
 
 
@@ -950,6 +990,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "no power yet (religion is M4.8, cultural friction M4.9). Zero LLM (beliefs are STATE, not "
              "generated text). Off by default -> byte-identical.")
     p.add_argument(
+        "--religion", action="store_true",
+        help="V2 M4.8: enable RELIGION — shared belief becomes POWER (implies --beliefs). When a "
+             "settlement's members share a coherent CORE of 2+ beliefs (a majority holding each), those "
+             "beliefs crystallise into a named FAITH; towns with the same core share one faith, divergent "
+             "cores form different faiths. Each faith may raise a PROPHET — its most DEVOUT-and-TRUSTED "
+             "follower (derived from state, not assigned; none if no such figure). Faith then touches "
+             "LEGITIMACY by moving TRUST only: believers extend extra trust to a ruler ALIGNED with their "
+             "faith (who holds its core) and withdraw it from a DEFIANT one (a conqueror of a different-"
+             "faith town), a prophet amplifying the stance — so the SAME extraction breeds LESS discontent "
+             "under an aligned crown and MORE under a defiant one, and a defied king's vassals erode toward "
+             "BREAKAWAY (M3.5) / his towns toward REVOLT (M4.5) through the UNCHANGED machinery. No new "
+             "political mechanic; faith just moves the dial the existing systems read. Faiths/prophets/"
+             "alignment show in the summaries. Theocracy (a prophet ruling) and cultural friction (M4.9) "
+             "are NOT built here. Pair with --monarchy/--kingdoms/--discontent to see the teeth. Zero LLM, "
+             "zero RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1025,7 +1081,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    lineage_on: bool = False,
                    discontent_on: bool = False,
                    uprising_on: bool = False,
-                   beliefs_on: bool = False) -> None:
+                   beliefs_on: bool = False,
+                   religion_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1165,6 +1222,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # power — that is M4.8 religion / M4.9 identity). Zero LLM; formation deterministic, spread reuses
     # the M1.1 diffusion RNG.
     world_state["beliefs_on"] = beliefs_on
+
+    # M4.8 (Arc 3): the RELIGION flag — a coherent shared belief set becomes a FAITH with a PROPHET,
+    # and faith touches LEGITIMACY (aligned rulers blessed, defiant ones resented — by MOVING TRUST the
+    # existing M4.4/M3.5/M4.5 systems already read). False (default) -> religion.update never called, no
+    # "faiths" key written -> byte-identical to v1. Implies beliefs (no faith without belief). Zero LLM/RNG.
+    world_state["religion_on"] = religion_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1375,6 +1438,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if beliefs_on:
             beliefs.update(world_state, turn)
 
+        # M4.8 (Arc 3): RELIGION — crystallise coherent shared belief into FAITHS, raise PROPHETS from
+        # the devout, and move believers' trust in their rulers by faith-alignment. Runs AFTER
+        # beliefs.update so it reads this turn's belief sets; it writes ONLY trust (which next turn's
+        # M4.4 discontent / M3.5 breakaway / M4.5 uprising read), touching no other system. Zero LLM,
+        # zero RNG; gated on the opt-in flag, so a default run never calls it (byte-identical to v1).
+        if religion_on:
+            religion.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1432,6 +1503,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.7: the world-level belief-cultures read-out, printed ONLY when beliefs are on.
     if world_state.get("beliefs_on"):
         print_belief_cultures()
+    # M4.8: the world-level faiths read-out, printed ONLY when religion is on.
+    if world_state.get("religion_on"):
+        print_faiths()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1569,6 +1643,9 @@ def main(argv: list[str] | None = None) -> None:
     # M4.5: --uprising implies --discontent (there is no pressure to blow without the gauge).
     uprising_on = args.uprising
     discontent_on = args.discontent or uprising_on
+    # M4.8: --religion implies --beliefs (no faith without belief).
+    religion_on = args.religion
+    beliefs_on = args.beliefs or religion_on
     if stage is not None:
         monarchy_on = True
         kingdoms_on = kingdoms_on or stage in ("kingdom", "war")
@@ -1618,7 +1695,7 @@ def main(argv: list[str] | None = None) -> None:
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
-                           beliefs_on=args.beliefs)
+                           beliefs_on=beliefs_on, religion_on=religion_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1645,7 +1722,7 @@ def main(argv: list[str] | None = None) -> None:
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
                            discontent_on=discontent_on, uprising_on=uprising_on,
-                           beliefs_on=args.beliefs)
+                           beliefs_on=beliefs_on, religion_on=religion_on)
 
 
 if __name__ == "__main__":

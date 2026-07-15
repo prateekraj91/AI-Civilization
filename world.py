@@ -422,6 +422,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     world_state.pop("beliefs", None)
     world_state.pop("belief_exp", None)
     world_state["beliefs_on"] = False
+    # M4.8: faiths are per-simulation state — clear them and reset the flag OFF so nothing leaks across
+    # runs and a default run is byte-identical to v1.
+    world_state.pop("faiths", None)
+    world_state["religion_on"] = False
     return world_state["grid"]
 
 
