@@ -6506,6 +6506,168 @@ def test_too_few_survivors_leaves_seat_vacant() -> None:
     print("PASS test_too_few_survivors_leaves_seat_vacant")
 
 
+# --- Beliefs (V2 M4.7): the inner life --------------------------------------
+def _belief_world() -> None:
+    _fresh_world()
+    world_state["beliefs_on"] = True
+    world_state["settlements"]["S001"] = {"id": "S001", "center": (5, 5),
+                                          "members": set(), "founded": 0}
+
+
+def _bagent(name, pos, *, hunger=1, money=0.0, sid="S001", personality="friendly and outgoing",
+            knows=None):
+    a = Agent(name=name, personality=personality)
+    place_agent(a, *pos)
+    a.hunger, a.age, a.lifespan, a.money, a.settlement = hunger, 30, 100, money, sid
+    if knows:
+        a.knowledge.update(knows)
+    if sid is not None and sid in world_state["settlements"]:
+        world_state["settlements"][sid]["members"].add(name)
+    return a
+
+
+def test_beliefs_form_from_lived_experience_each_condition_binds() -> None:
+    """Each formation condition is individually demonstrable: abundance -> 'the land provides',
+    starvation -> 'the world is cruel', a producer skill while fed -> 'knowledge is power'; and an
+    agent who lives through none of them forms nothing (earned, never assigned)."""
+    import beliefs
+
+    def lived(build, turns):
+        _belief_world()
+        build()
+        for t in range(1, turns + 1):
+            beliefs._update_experience(world_state, t)
+        beliefs.form(world_state, turns + 1)
+
+    lived(lambda: _bagent("Fed", (5, 5), hunger=1), beliefs.ABUNDANCE_TURNS + 1)
+    assert beliefs.LAND_PROVIDES in beliefs.agent_beliefs("Fed", world_state)
+    assert beliefs.WORLD_IS_CRUEL not in beliefs.agent_beliefs("Fed", world_state)
+
+    lived(lambda: _bagent("Starve", (5, 5), hunger=8), beliefs.HARDSHIP_TURNS + 1)
+    assert beliefs.WORLD_IS_CRUEL in beliefs.agent_beliefs("Starve", world_state)
+
+    lived(lambda: _bagent("Farmer", (5, 5), hunger=1, knows={"farming"}), beliefs.SKILL_FED_TURNS + 1)
+    assert beliefs.KNOWLEDGE_IS_POWER in beliefs.agent_beliefs("Farmer", world_state)
+
+    # Control: hunger between the fed and hardship bars, no wealth, no ruler, no deaths -> nothing.
+    lived(lambda: _bagent("Meh", (5, 5), hunger=4), 15)
+    assert beliefs.agent_beliefs("Meh", world_state) == set(), beliefs.agent_beliefs("Meh", world_state)
+    print("PASS test_beliefs_form_from_lived_experience_each_condition_binds")
+
+
+def test_beliefs_spread_by_trust_and_never_in_isolation() -> None:
+    """A belief spreads FAR more readily from a trusted neighbour than a distrusted one, and an
+    isolated agent (no contact) never acquires a belief it did not live."""
+    import beliefs, trust
+
+    def cohort(trust_val):
+        adopted = 0
+        for i in range(30):
+            _belief_world()
+            _bagent(f"S{i}", (5, 5))
+            learner = _bagent(f"L{i}", (5, 6))
+            world_state["beliefs"] = {f"S{i}": {beliefs.LAND_PROVIDES}}
+            trust.ensure_relationship(learner, f"S{i}")["trust"] = trust_val
+            rng = random.Random(100 + i)
+            for t in range(1, 5):
+                beliefs.spread(world_state, t, rng)
+            adopted += beliefs.LAND_PROVIDES in beliefs.agent_beliefs(f"L{i}", world_state)
+        return adopted
+
+    trusted, distrusted = cohort(5), cohort(-5)
+    assert trusted > distrusted + 8, (trusted, distrusted)   # markedly faster from a trusted mouth
+
+    # Isolation: a distant agent shares no contact and never adopts.
+    _belief_world()
+    _bagent("Src", (1, 1))
+    _bagent("Iso", (9, 9))
+    world_state["beliefs"] = {"Src": {beliefs.LAND_PROVIDES}}
+    rng = random.Random(1)
+    for t in range(1, 30):
+        beliefs.spread(world_state, t, rng)
+    assert beliefs.LAND_PROVIDES not in beliefs.agent_beliefs("Iso", world_state)
+    print("PASS test_beliefs_spread_by_trust_and_never_in_isolation")
+
+
+def test_contradictory_belief_flips_only_from_a_trusted_source() -> None:
+    """A contradictory belief OVERWRITES the incumbent one only when the source is trusted enough
+    (>= FLIP_TRUST); from a barely-trusted source the learner keeps its worldview."""
+    import beliefs, trust
+
+    def outcome(trust_val):
+        _belief_world()
+        _bagent("Src", (5, 5))
+        lrn = _bagent("Lrn", (5, 6))
+        world_state["beliefs"] = {"Src": {beliefs.WORLD_IS_CRUEL}, "Lrn": {beliefs.LAND_PROVIDES}}
+        trust.ensure_relationship(lrn, "Src")["trust"] = trust_val
+        rng = random.Random(1)
+        for t in range(1, 30):
+            beliefs.spread(world_state, t, rng)
+        return beliefs.agent_beliefs("Lrn", world_state)
+
+    flipped = outcome(5)
+    assert flipped == {beliefs.WORLD_IS_CRUEL}, flipped         # adopted the new, renounced the old
+    kept = outcome(0)                                           # below FLIP_TRUST
+    assert kept == {beliefs.LAND_PROVIDES}, kept                # worldview held against a stranger
+    print("PASS test_contradictory_belief_flips_only_from_a_trusted_source")
+
+
+def test_children_inherit_settlement_beliefs_via_childhood_boost() -> None:
+    """A dependent child soaks up its parent's belief through the childhood learning window (culture
+    inherited by upbringing, not by blood)."""
+    import beliefs, trust
+
+    _belief_world()
+    world_state["lineage_on"] = True
+    _bagent("Parent", (5, 5))
+    child = _bagent("Child", (5, 6))
+    child.age, child.dependent, child.parents = 6, True, ("Parent", "Q")
+    trust.ensure_relationship(child, "Parent")["trust"] = 4
+    world_state["beliefs"] = {"Parent": {beliefs.WORLD_IS_CRUEL}}
+    rng = random.Random(3)
+    for t in range(1, 20):
+        beliefs.spread(world_state, t, rng)
+        if beliefs.WORLD_IS_CRUEL in beliefs.agent_beliefs("Child", world_state):
+            break
+    assert beliefs.WORLD_IS_CRUEL in beliefs.agent_beliefs("Child", world_state)
+    print("PASS test_children_inherit_settlement_beliefs_via_childhood_boost")
+
+
+def test_beliefs_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """beliefs_on=False (default) is byte-identical to the no-param run, writes no belief state, and
+    the system adds ZERO LLM calls when on."""
+    def run(on, **kw):
+        llm.PROVIDER = "random"
+        random.seed(42)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True, beliefs_on=on, **kw)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():   # a run that never mentions beliefs at all (the v1 path)
+        llm.PROVIDER = "random"
+        random.seed(42)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, settlements=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)   # off LAST so world_state reflects an off run for the key check
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "beliefs_on=False diverged from the v1 baseline"
+    assert "beliefs" not in world_state, "an off run must write no belief state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # beliefs are STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats (deterministic spread)"
+    print("PASS test_beliefs_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -6739,6 +6901,11 @@ def main_runner() -> None:
         test_revolutionary_holds_by_consent_and_can_be_displaced,
         test_revolution_devours_its_children,
         test_too_few_survivors_leaves_seat_vacant,
+        test_beliefs_form_from_lived_experience_each_condition_binds,
+        test_beliefs_spread_by_trust_and_never_in_isolation,
+        test_contradictory_belief_flips_only_from_a_trusted_source,
+        test_children_inherit_settlement_beliefs_via_childhood_boost,
+        test_beliefs_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

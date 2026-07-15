@@ -417,6 +417,11 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # stale cooldown can never leak across runs and a default run is byte-identical to v1.
     world_state.setdefault("uprising_cooldowns", {}).clear()
     world_state["uprising_on"] = False
+    # M4.7: beliefs + their lived-experience counters are per-simulation state — clear them and reset
+    # the flag OFF so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("beliefs", None)
+    world_state.pop("belief_exp", None)
+    world_state["beliefs_on"] = False
     return world_state["grid"]
 
 

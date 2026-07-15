@@ -33,6 +33,7 @@ import sys
 import time
 
 import alliance
+import beliefs
 import conversation
 import discontent
 import economy
@@ -518,6 +519,11 @@ def print_agent_summary(survived: dict[str, int], num_turns: int = NUM_TURNS) ->
             tag = "  [RESENTFUL]" if level >= discontent.RESENTMENT_THRESHOLD else ""
             print(f"Discontent:      {level:.1f} / {discontent.DISCONTENT_CAP:.0f}"
                   f" (resentment at {discontent.RESENTMENT_THRESHOLD:.0f}){tag}")
+        # M4.7: read-only beliefs overlay — printed ONLY when the system is on, so a default run's
+        # summary is byte-identical. Pure read of world_state["beliefs"].
+        if world_state.get("beliefs_on"):
+            held = sorted(beliefs.agent_beliefs(agent.name, world_state))
+            print(f"Beliefs:         {', '.join(held) if held else '(none yet)'}")
         print("Important memories:")
         for mem in important_memories(agent.memory):
             print(f"  - {mem}")
@@ -548,6 +554,32 @@ def print_settlement_pressure() -> None:
                       if any(a.name == m and a.alive for a in world_state["agents"]))
         flag = "  << PRESSURE" if pressure >= discontent.PRESSURE_UPRISING_HINT else ""
         print(f"{sid}: {pressure}/{members} resentful (aggregate discontent {total:.1f}){flag}")
+    print()
+
+
+def print_belief_cultures() -> None:
+    """M4.7: world-level BELIEF CULTURES report — printed ONLY when beliefs are on (a default run
+    never calls it, so the default summary is byte-identical to v1).
+
+    For each settlement (sorted), show its DOMINANT beliefs (most-held, with holder counts) — the
+    proto-culture that emerged from what its members lived through and spread among themselves. A pure
+    read; this is the legible readout M4.8 (religion) and M4.9 (cultural identity) will build on.
+    """
+    print("=" * 56)
+    print("BELIEF CULTURES (world_state['beliefs'], M4.7)")
+    print("=" * 56)
+    settlements = world_state.get("settlements", {})
+    if not settlements:
+        print("(no settlements)")
+        print()
+        return
+    for sid in sorted(settlements):
+        dom = beliefs.dominant_beliefs(sid, world_state)
+        if dom:
+            profile = "; ".join(f"'{b}' x{n}" for b, n in dom)
+        else:
+            profile = "(no shared beliefs)"
+        print(f"{sid}: {profile}")
     print()
 
 
@@ -903,6 +935,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "--monarchy/--kingdoms (uprisings need force rulers). Zero LLM, zero new RNG. Off by default "
              "-> byte-identical.")
     p.add_argument(
+        "--beliefs", action="store_true",
+        help="V2 M4.7: enable BELIEFS — an inner life (opens Arc 3: Belief & Culture). Agents FORM short, "
+             "fixed worldview strings from lived EXPERIENCE (e.g. 'the land provides' after sustained "
+             "abundance, 'the world is cruel' after starvation, 'the strong take what they want' after "
+             "turns under a force ruler, 'the dead watch us' after witnessing many deaths) — earned by a "
+             "threshold on real state, never assigned or generated. Beliefs then SPREAD one hop along the "
+             "contact network with the SAME trust-weighted, personality-shaped, child-boosted probability "
+             "knowledge uses (M1.1) — a trusted neighbour's belief catches, a stranger's rarely; a "
+             "CONTRADICTORY belief flips the old one only from a trusted source; children soak up their "
+             "parents' beliefs through the childhood window. So settlements grow distinct DOMINANT belief "
+             "sets shaped by what they have SUFFERED — proto-cultures, shown per-agent in the AGENT "
+             "SUMMARY and per-settlement in a BELIEF CULTURES readout. Inert culture only — beliefs confer "
+             "no power yet (religion is M4.8, cultural friction M4.9). Zero LLM (beliefs are STATE, not "
+             "generated text). Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -977,7 +1024,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    stage: "str | None" = None,
                    lineage_on: bool = False,
                    discontent_on: bool = False,
-                   uprising_on: bool = False) -> None:
+                   uprising_on: bool = False,
+                   beliefs_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1110,6 +1158,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # key ever written -> byte-identical to v1 (the golden master included). Implies discontent (no
     # pressure to blow without the gauge). Zero LLM, zero new RNG.
     world_state["uprising_on"] = uprising_on
+
+    # M4.7 (opens Arc 3): the BELIEFS flag — an inner life of worldviews that FORM from lived
+    # experience and SPREAD by trusted contact. False (default) -> beliefs.update never called, no
+    # "beliefs" key ever written -> byte-identical to v1. Beliefs are inert culture here (no mechanical
+    # power — that is M4.8 religion / M4.9 identity). Zero LLM; formation deterministic, spread reuses
+    # the M1.1 diffusion RNG.
+    world_state["beliefs_on"] = beliefs_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1311,6 +1366,15 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if uprising_on:
             uprising.update(world_state, turn)
 
+        # M4.7 (Arc 3): BELIEFS — tally each agent's lived experience, FORM beliefs it now warrants,
+        # and SPREAD beliefs one hop along this turn's contact network (trust-weighted like M1.1
+        # knowledge). Runs LAST so it reads the turn's final state (this turn's deaths, rulers, hunger).
+        # Zero LLM; formation deterministic, spread draws the seeded RNG like knowledge diffusion; gated
+        # on the opt-in flag, so a default run never calls it (byte-identical to v1). Inert culture —
+        # beliefs confer no mechanical power yet (that is M4.8/M4.9).
+        if beliefs_on:
+            beliefs.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1365,6 +1429,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # end-of-run output is byte-identical to v1.
     if world_state.get("discontent_on"):
         print_settlement_pressure()
+    # M4.7: the world-level belief-cultures read-out, printed ONLY when beliefs are on.
+    if world_state.get("beliefs_on"):
+        print_belief_cultures()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1550,7 +1617,8 @@ def main(argv: list[str] | None = None) -> None:
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
-                           discontent_on=discontent_on, uprising_on=uprising_on)
+                           discontent_on=discontent_on, uprising_on=uprising_on,
+                           beliefs_on=args.beliefs)
         finally:
             sys.stdout = original
             log_file.close()
@@ -1576,7 +1644,8 @@ def main(argv: list[str] | None = None) -> None:
                            kingdoms_on=kingdoms_on, tribute_rate=args.tribute_rate,
                            empire_on=empire_on, empire_share=args.imperial_share,
                            stage=stage, lineage_on=args.lineage,
-                           discontent_on=discontent_on, uprising_on=uprising_on)
+                           discontent_on=discontent_on, uprising_on=uprising_on,
+                           beliefs_on=args.beliefs)
 
 
 if __name__ == "__main__":
