@@ -43,6 +43,7 @@ import empire
 import eras
 import god_mode
 import heuristic
+import intertrade
 import kingdoms
 import knowledge
 import labor
@@ -593,6 +594,27 @@ def print_belief_cultures() -> None:
         else:
             profile = "(no shared beliefs)"
         print(f"{sid}: {profile}")
+    print()
+
+
+def print_intertrade() -> None:
+    """M4.14: world-level TRADE report — printed ONLY when inter-kingdom trade is on (a default run
+    never calls it, so the default summary is byte-identical to v1). Per-pair cumulative trade volume,
+    active routes, and war count — the interdependence data M4.15 and the renderer read."""
+    print("=" * 56)
+    print("TRADE & INTERDEPENDENCE (M4.14 — routes, volume, wars)")
+    print("=" * 56)
+    inter = world_state.get("intertrade", {})
+    vol = inter.get("volume", {})
+    routes = inter.get("routes", set())
+    if not vol:
+        print("(no trade routes have formed)")
+        print()
+        return
+    for pair in sorted(vol, key=lambda p: -vol[p]):
+        k1, k2 = pair
+        active = "  [ACTIVE]" if pair in routes else "  (severed)"
+        print(f"{k1} <-> {k2}: volume {vol[pair]:.1f}, wars {diplomacy.war_count(world_state, k1, k2)}{active}")
     print()
 
 
@@ -1203,6 +1225,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "it prevented. Inter-kingdom TRADE (M4.14) and COALITIONS (M4.15) are NOT built here. Pair "
              "with --empire to see the war-prevention teeth. Zero LLM, zero RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--intertrade", action="store_true",
+        help="V2 M4.14: enable TRADE ROUTES & INTERDEPENDENCE — kingdoms gain a third verb (implies "
+             "--diplomacy). Peaceful NEIGHBOURING kingdoms with COMPLEMENTARY food surplus/deficit TRADE "
+             "across the border at the M2.3 emergent price: food flows to the needy realm's granary, "
+             "wealth to the surplus realm's treasury — BOTH enrich (hostile/at-war pairs do not trade). "
+             "Sustained trade WARMS the pair's stance (closing M4.13's feedback seam), so commerce can "
+             "push neutral kingdoms into a pact; and a WAR SEVERS the route — both lose the flow, an "
+             "economic cost of war beyond casualties. Per-pair trade VOLUME + war count are exposed so a "
+             "run can MEASURE whether interdependence deters war (an emergent read-out, reported honestly "
+             "whichever way — never scripted). Anti-hegemon COALITIONS (M4.15) are NOT built here. Pair "
+             "with --empire. Zero LLM, zero RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1284,7 +1318,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    writing_on: bool = False,
                    metallurgy_on: bool = False,
                    eras_on: bool = False,
-                   diplomacy_on: bool = False) -> None:
+                   diplomacy_on: bool = False,
+                   intertrade_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1467,6 +1502,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # kingdoms (its wars are M3.6/empire — pair with --empire to see the teeth). Zero LLM, zero RNG.
     world_state["diplomacy_on"] = diplomacy_on
 
+    # M4.14 (Arc 5): the INTERTRADE flag — inter-kingdom trade routes. Peaceful neighbours with
+    # complementary food-surplus/deficit trade (both enrich), trade WARMS stance (M4.13's feedback seam),
+    # and WAR SEVERS trade. False (default) -> intertrade.update never called, no route to warm, no
+    # severance -> byte-identical to v1. Implies diplomacy (-> kingdoms). Zero LLM, zero RNG.
+    world_state["intertrade_on"] = intertrade_on
+
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
     counters: dict[str, int] = {"agent_turns": 0}
@@ -1631,6 +1672,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         # non-aggression pacts + defensive alliances. Runs BEFORE empire.update so this turn's war loop
         # reads the current treaties (a pact stays a war; an alliance deters one / joins a defence). Zero
         # LLM, zero RNG; gated on the flag so a default run never calls it (byte-identical to v1).
+        # M4.14 (Arc 5): INTER-KINGDOM TRADE — move food/wealth across peaceful borders. Runs BEFORE
+        # diplomacy.update so this turn's trade ROUTES warm this turn's stance (commerce -> goodwill),
+        # and before empire.update so a war that fires this turn severs the route next turn. Zero LLM,
+        # zero RNG; gated on the flag so a default run never calls it (byte-identical to v1).
+        if intertrade_on:
+            intertrade.update(world_state, turn)
+
         if diplomacy_on:
             diplomacy.update(world_state, turn)
 
@@ -1800,6 +1848,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.13: the world-level diplomacy read-out, printed ONLY when diplomacy is on.
     if world_state.get("diplomacy_on"):
         print_diplomacy()
+    # M4.14: the world-level trade read-out, printed ONLY when inter-kingdom trade is on.
+    if world_state.get("intertrade_on"):
+        print_intertrade()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1910,9 +1961,10 @@ def main(argv: list[str] | None = None) -> None:
     leadership_on = args.leadership or args.taxation or args.uprising
     # M3.6: empire BUILDS ON kingdoms (an emperor is a king who conquered another king), so --empire
     # implies --kingdoms.
-    # M4.13: --diplomacy operates on kingdoms, so it implies --kingdoms (its war-prevention teeth act on
-    # the M3.6 war loop — pair with --empire to see them).
-    diplomacy_on = args.diplomacy
+    # M4.13/M4.14: --diplomacy (and --intertrade, which implies it) operate on kingdoms, so they imply
+    # --kingdoms (the war-prevention teeth act on the M3.6 loop — pair with --empire to see them).
+    intertrade_on = args.intertrade
+    diplomacy_on = args.diplomacy or intertrade_on
     kingdoms_on = args.kingdoms or args.empire or diplomacy_on
     # M3.5: kingdoms BUILD ON monarchy (a king is a monarch who expanded), so --kingdoms implies
     # --monarchy; both need a settlement to seize/realm.
@@ -2003,7 +2055,7 @@ def main(argv: list[str] | None = None) -> None:
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
-                           diplomacy_on=diplomacy_on)
+                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -2032,7 +2084,7 @@ def main(argv: list[str] | None = None) -> None:
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
-                           diplomacy_on=diplomacy_on)
+                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on)
 
 
 if __name__ == "__main__":

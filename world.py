@@ -446,6 +446,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # so nothing leaks across runs and a default run is byte-identical to v1.
     world_state.pop("diplomacy", None)
     world_state["diplomacy_on"] = False
+    # M4.14: inter-kingdom trade routes + volume are per-simulation state — clear them and reset the flag
+    # OFF so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("intertrade", None)
+    world_state["intertrade_on"] = False
     return world_state["grid"]
 
 

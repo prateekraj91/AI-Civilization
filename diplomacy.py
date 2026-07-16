@@ -59,7 +59,9 @@ IDENTITY_WARMTH = 1       # per-turn warming for a pair sharing culture/faith...
 IDENTITY_CAP = 6          # ...capped here (a shared identity trends friendly, not infinitely warm)
 STANCE_DECAY = 1          # per-turn drift toward neutral for an unrelated pair (old feeling fades slowly)
 
-WAR_PENALTY = 6           # stance hit when the two kingdoms go to war (a lasting grievance)
+WAR_PENALTY = 10          # stance hit when the two kingdoms go to war — big enough to turn even a
+                          # maximally trade-warmed pair (capped at IDENTITY_CAP) HOSTILE, so a war
+                          # reliably severs the trade route (M4.14) rather than being cushioned by goodwill
 BETRAYAL_PENALTY = 4      # extra stance hit when a treaty is broken (betrayal outlasts the pact)
 
 PACT_FORM_AT = 2          # stance at/above which a NON-AGGRESSION pact forms...
@@ -103,6 +105,11 @@ def has_alliance(state: dict[str, Any], k1: str, k2: str) -> bool:
     return _pair(k1, k2) in _dip(state)["alliances"]
 
 
+def war_count(state: dict[str, Any], k1: str, k2: str) -> int:
+    """How many times this pair has gone to war — the tally M4.14's commercial-peace test reads."""
+    return _dip(state).get("wars", {}).get(_pair(k1, k2), 0)
+
+
 # --- History shocks (called from the systems that make history) --------------
 def record_war(state: dict[str, Any], k1: str, k2: str, turn: int) -> None:
     """A war between two kingdoms leaves a lasting grievance — the stance drops toward hostile. Called
@@ -110,6 +117,7 @@ def record_war(state: dict[str, Any], k1: str, k2: str, turn: int) -> None:
     dip = _dip(state)
     key = _pair(k1, k2)
     dip["stance"][key] = dip["stance"].get(key, 0) - WAR_PENALTY
+    dip.setdefault("wars", {})[key] = dip.setdefault("wars", {}).get(key, 0) + 1  # tally for M4.14's measurement
 
 
 # --- The per-turn engine -----------------------------------------------------
@@ -144,14 +152,17 @@ def _shared_identity(state: dict[str, Any], k1: str, k2: str) -> bool:
 
 
 def _recompute_stance(state: dict[str, Any], kings: list[str], turn: int) -> None:
-    """Warm pairs that share identity toward friendly; decay unrelated pairs toward neutral. ZERO RNG."""
+    """Warm pairs that share identity OR actively trade toward friendly; decay unrelated pairs toward
+    neutral. ZERO RNG. (M4.14: an active trade route between the pair warms it like kinship does — the
+    interdependence-breeds-goodwill feedback, so commerce can push a neutral pair into a pact/alliance.)"""
     dip = _dip(state)
     stances = dip["stance"]
+    routes = state.get("intertrade", {}).get("routes", set())
     for i, k1 in enumerate(kings):
         for k2 in kings[i + 1:]:
             key = _pair(k1, k2)
             s = stances.get(key, 0)
-            if _shared_identity(state, k1, k2):
+            if _shared_identity(state, k1, k2) or key in routes:
                 s = min(IDENTITY_CAP, s + IDENTITY_WARMTH)
             elif s > 0:
                 s = max(0, s - STANCE_DECAY)

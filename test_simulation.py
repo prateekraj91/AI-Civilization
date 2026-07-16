@@ -7624,6 +7624,159 @@ def test_diplomacy_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_diplomacy_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Inter-kingdom trade (V2 M4.14): trade routes & interdependence ----------
+def _trade_world() -> None:
+    create_world(size=60)
+    world_state["agents"].clear()
+    world_state["food"].clear()
+    world_state["turn"] = 0
+    world_state["intertrade_on"] = True
+    world_state["diplomacy_on"] = True
+
+
+def _trade_settled(n, p, sid=None, money=0.0, stock=0.0, hunger=1):
+    a = Agent(name=n, personality="x")
+    place_agent(a, *p)
+    a.hunger, a.age, a.lifespan, a.money, a.stockpile, a.settlement = hunger, 30, 100, money, stock, sid
+    return a
+
+
+def _trade_realm(king, home_c, *, kmoney=0.0, kstock=0.0, member_hunger=1, mercs=0):
+    home = f"{king}_home"
+    world_state["settlements"][home] = {"id": home, "center": home_c, "members": {king, f"{king}_m"},
+                                        "founded": 0}
+    _trade_settled(king, home_c, sid=home, money=kmoney, stock=kstock)
+    _trade_settled(f"{king}_m", (home_c[0] + 1, home_c[1]), sid=home, hunger=member_hunger)
+    world_state["monarchs"][home] = {"monarch": king, "since": 0, "garrison": set()}
+    world_state["kingdoms"][king] = {"king": king, "home": home, "settlements": {home},
+                                     "vassals": {}, "founded": 0, "discontent": {}}
+    for i in range(mercs):
+        _trade_settled(f"{king}M{i}", (home_c[0] + i % 2, home_c[1] + 2), sid=None, money=0.5)
+
+
+def _king_agent(name):
+    return next(a for a in world_state["agents"] if a.name == name)
+
+
+def test_intertrade_enriches_both_and_is_blocked_when_hostile() -> None:
+    """A food-rich and a food-poor kingdom trade: the poor realm's granary FILLS and the rich realm's
+    treasury GROWS (both better off). A hostile pair does not trade at all."""
+    import intertrade, diplomacy
+
+    _trade_world()
+    _trade_realm("Rich", (10, 10), kmoney=5.0, kstock=18.0, member_hunger=1)   # food surplus, wants coin
+    _trade_realm("Poor", (18, 10), kmoney=40.0, kstock=0.0, member_hunger=8)   # hungry, has coin
+    rf0, rm0 = _king_agent("Rich").stockpile, _king_agent("Rich").money
+    pf0 = _king_agent("Poor").stockpile
+    for t in range(1, 5):
+        intertrade.update(world_state, t)
+        diplomacy.update(world_state, t)
+    assert _king_agent("Poor").stockpile > pf0, "the poor realm's granary should fill"
+    assert _king_agent("Rich").money > rm0 and _king_agent("Rich").stockpile < rf0, "the rich realm profits"
+    assert intertrade.total_volume(world_state, "Rich", "Poor") > 0
+
+    # A hostile pair does not trade.
+    _trade_world()
+    _trade_realm("A", (10, 10), kmoney=5.0, kstock=18.0)
+    _trade_realm("B", (18, 10), kmoney=40.0, kstock=0.0, member_hunger=8)
+    world_state["diplomacy"] = {"stance": {("A", "B"): -6}, "pacts": set(), "alliances": set()}
+    intertrade.update(world_state, 1)
+    assert intertrade.total_volume(world_state, "A", "B") == 0.0, "hostile kingdoms do not trade"
+    print("PASS test_intertrade_enriches_both_and_is_blocked_when_hostile")
+
+
+def test_trade_warms_stance_into_a_pact() -> None:
+    """Sustained commerce WARMS a neutral pair's stance into friendly / a pact — diplomacy emerging
+    from economics (M4.13's feedback seam, closed)."""
+    import intertrade, diplomacy
+
+    _trade_world()
+    _trade_realm("Rich", (10, 10), kmoney=5.0, kstock=18.0)
+    _trade_realm("Poor", (18, 10), kmoney=40.0, kstock=0.0, member_hunger=8)
+    assert diplomacy.stance(world_state, "Rich", "Poor") == "neutral"
+    for t in range(1, 8):
+        intertrade.update(world_state, t)
+        diplomacy.update(world_state, t)
+    assert diplomacy.stance(world_state, "Rich", "Poor") == "friendly", \
+        diplomacy.stance_score(world_state, "Rich", "Poor")
+    assert diplomacy.has_pact(world_state, "Rich", "Poor"), "trade warmed them into a pact"
+    print("PASS test_trade_warms_stance_into_a_pact")
+
+
+def test_war_severs_trade() -> None:
+    """When two trading kingdoms go to war, their trade route is SEVERED (logged) and both lose the
+    flow — an economic cost of war beyond casualties."""
+    import intertrade, diplomacy
+
+    _trade_world()
+    _trade_realm("X", (10, 10), kmoney=5.0, kstock=18.0)
+    _trade_realm("Y", (18, 10), kmoney=40.0, kstock=0.0, member_hunger=8)
+    for t in range(1, 5):
+        intertrade.update(world_state, t)
+        diplomacy.update(world_state, t)
+    assert ("X", "Y") in world_state["intertrade"]["routes"], "a route is active"
+    diplomacy.record_war(world_state, "X", "Y", 5)          # they go to war -> hostile
+    ev = intertrade.update(world_state, 6)
+    assert ("X", "Y") not in world_state["intertrade"]["routes"], "the route is severed"
+    assert any("SEVERED" in e for e in ev), ev
+    print("PASS test_war_severs_trade")
+
+
+def test_interdependence_measurement_is_exposed() -> None:
+    """The interdependence data is exposed: cumulative trade VOLUME per pair and WAR COUNT per pair, so
+    a run can compare war frequency among heavily-trading vs isolated pairs (an emergent read-out)."""
+    import intertrade, diplomacy
+
+    _trade_world()
+    _trade_realm("Rich", (10, 10), kmoney=5.0, kstock=18.0)
+    _trade_realm("Poor", (18, 10), kmoney=40.0, kstock=0.0, member_hunger=8)
+    _trade_realm("Lone", (40, 40), kmoney=5.0, kstock=5.0)   # far away, isolated — no route
+    for t in range(1, 5):
+        intertrade.update(world_state, t)
+        diplomacy.update(world_state, t)
+    diplomacy.record_war(world_state, "Rich", "Poor", 5)
+    # The measurement primitives are populated and comparable.
+    assert intertrade.total_volume(world_state, "Rich", "Poor") > 0
+    assert intertrade.total_volume(world_state, "Rich", "Lone") == 0.0
+    assert diplomacy.war_count(world_state, "Rich", "Poor") == 1
+    assert diplomacy.war_count(world_state, "Rich", "Lone") == 0
+    print("PASS test_interdependence_measurement_is_exposed")
+
+
+def test_intertrade_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """intertrade_on=False (default) is byte-identical to the diplomacy baseline and adds ZERO LLM."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", diplomacy_on=True, intertrade_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", diplomacy_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "intertrade_on=False diverged from the diplomacy baseline"
+    assert not world_state.get("intertrade"), "an off run writes no trade state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # trade is STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_intertrade_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -7892,6 +8045,11 @@ def main_runner() -> None:
         test_alliance_adds_ally_host_to_defence,
         test_lapsed_honour_ally_fails_to_answer,
         test_diplomacy_off_run_is_byte_identical_and_adds_no_llm,
+        test_intertrade_enriches_both_and_is_blocked_when_hostile,
+        test_trade_warms_stance_into_a_pact,
+        test_war_severs_trade,
+        test_interdependence_measurement_is_exposed,
+        test_intertrade_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()
