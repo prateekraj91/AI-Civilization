@@ -34,6 +34,7 @@ import time
 
 import alliance
 import beliefs
+import coalitions
 import conversation
 import culture
 import diplomacy
@@ -594,6 +595,25 @@ def print_belief_cultures() -> None:
         else:
             profile = "(no shared beliefs)"
         print(f"{sid}: {profile}")
+    print()
+
+
+def print_coalitions() -> None:
+    """M4.15: world-level BALANCE OF POWER report — printed ONLY when coalitions are on (a default run
+    never calls it, so the default summary is byte-identical to v1). The strongest power's dominance
+    share and any active anti-hegemon coalition — the self-balancing interstate system's state."""
+    print("=" * 56)
+    print("BALANCE OF POWER (M4.15 — hegemon, coalition)")
+    print("=" * 56)
+    share = coalitions.dominance_share(world_state)
+    heg, _ = coalitions.dominance(world_state)
+    print(f"strongest power controls {share*100:.0f}% of the world"
+          f"{f'  -> HEGEMON: {heg}' if heg else '  (no hegemon — balanced)'}")
+    coal = world_state.get("coalitions", {})
+    if coal.get("target"):
+        print(f"active COALITION against {coal['target']}: {sorted(coal['members'])}")
+    else:
+        print("no active coalition")
     print()
 
 
@@ -1237,6 +1257,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "whichever way — never scripted). Anti-hegemon COALITIONS (M4.15) are NOT built here. Pair "
              "with --empire. Zero LLM, zero RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--coalitions", action="store_true",
+        help="V2 M4.15: enable COALITIONS & THE BALANCE OF POWER — the many band against the one, CLOSING "
+             "Arc 5 (implies --diplomacy). When one power grows dominant (controls a large SHARE of all "
+             "settlements, far above the next), it becomes a HEGEMON — and every weaker sovereign bands "
+             "together against it out of FEAR, a coalition that OVERRIDES ordinary stance (mutually "
+             "hostile / culturally foreign kingdoms coalesce alike — the enemy of my enemy). The coalition "
+             "acts through the existing machinery: MUTUAL DEFENCE (if the hegemon attacks a member the "
+             "others muster, so it can't pick them off one by one) and a JOINT ATTACK (pool every "
+             "member's host to break a power none could face alone). Once the hegemon is broken below the "
+             "threshold the FEAR evaporates, the coalition DISSOLVES, old rivalries resurface, and the "
+             "field clears for the next — so history CHURNS. Empires now face BOTH internal fragmentation "
+             "(M3.6 overreach) AND external coalitions. The balance-of-power data is exposed to measure "
+             "whether the world self-balances (no single empire swallows everything). Pair with --empire. "
+             "Zero LLM, zero RNG. Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1319,7 +1354,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    metallurgy_on: bool = False,
                    eras_on: bool = False,
                    diplomacy_on: bool = False,
-                   intertrade_on: bool = False) -> None:
+                   intertrade_on: bool = False,
+                   coalitions_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1508,6 +1544,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # severance -> byte-identical to v1. Implies diplomacy (-> kingdoms). Zero LLM, zero RNG.
     world_state["intertrade_on"] = intertrade_on
 
+    # M4.15 (Arc 5 close): the COALITIONS flag — the anti-hegemon balance of power. When one power grows
+    # dominant, the weaker sovereigns band together against it out of FEAR (overriding old grievances) and
+    # pool their hosts to break it; the coalition dissolves once the threat passes. False (default) ->
+    # coalitions.update never called, the war loop never suspends a feud or adds a coalition defender ->
+    # byte-identical to v1. Implies diplomacy (-> kingdoms; pair with --empire). Zero LLM, zero RNG.
+    world_state["coalitions_on"] = coalitions_on
+
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
     counters: dict[str, int] = {"agent_turns": 0}
@@ -1682,6 +1725,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if diplomacy_on:
             diplomacy.update(world_state, turn)
 
+        # M4.15 (Arc 5 close): COALITIONS — detect a hegemon, form the fear-driven coalition against it,
+        # and launch a pooled joint attack to break it. Runs BEFORE empire.update so the coalition exists
+        # for this turn's mutual defence and its members' feuds are suspended. Zero LLM, zero RNG; gated
+        # on the flag so a default run never calls it (byte-identical to v1).
+        if coalitions_on:
+            coalitions.update(world_state, turn)
+
         if empire_on:
             empire.update(world_state, turn)
 
@@ -1851,6 +1901,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.14: the world-level trade read-out, printed ONLY when inter-kingdom trade is on.
     if world_state.get("intertrade_on"):
         print_intertrade()
+    # M4.15: the world-level balance-of-power read-out, printed ONLY when coalitions are on.
+    if world_state.get("coalitions_on"):
+        print_coalitions()
     print_inference_savings(counters)
     print_events_log()
 
@@ -1961,10 +2014,11 @@ def main(argv: list[str] | None = None) -> None:
     leadership_on = args.leadership or args.taxation or args.uprising
     # M3.6: empire BUILDS ON kingdoms (an emperor is a king who conquered another king), so --empire
     # implies --kingdoms.
-    # M4.13/M4.14: --diplomacy (and --intertrade, which implies it) operate on kingdoms, so they imply
-    # --kingdoms (the war-prevention teeth act on the M3.6 loop — pair with --empire to see them).
+    # M4.13/M4.14/M4.15: --diplomacy, and --intertrade + --coalitions which imply it, operate on kingdoms,
+    # so they imply --kingdoms (the teeth act on the M3.6 loop — pair with --empire to see them).
     intertrade_on = args.intertrade
-    diplomacy_on = args.diplomacy or intertrade_on
+    coalitions_on = args.coalitions
+    diplomacy_on = args.diplomacy or intertrade_on or coalitions_on
     kingdoms_on = args.kingdoms or args.empire or diplomacy_on
     # M3.5: kingdoms BUILD ON monarchy (a king is a monarch who expanded), so --kingdoms implies
     # --monarchy; both need a settlement to seize/realm.
@@ -2055,7 +2109,8 @@ def main(argv: list[str] | None = None) -> None:
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
-                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on)
+                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
+                           coalitions_on=coalitions_on)
         finally:
             sys.stdout = original
             log_file.close()
@@ -2084,7 +2139,8 @@ def main(argv: list[str] | None = None) -> None:
                            discontent_on=discontent_on, uprising_on=uprising_on,
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
-                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on)
+                           diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
+                           coalitions_on=coalitions_on)
 
 
 if __name__ == "__main__":

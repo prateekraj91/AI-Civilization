@@ -7777,6 +7777,155 @@ def test_intertrade_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_intertrade_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- Coalitions (V2 M4.15): the balance of power ----------------------------
+def _coal_world() -> None:
+    create_world(size=60)
+    world_state["agents"].clear()
+    world_state["food"].clear()
+    world_state["turn"] = 0
+    world_state["coalitions_on"] = True
+    world_state["diplomacy_on"] = True
+
+
+def _coal_settled(n, p, sid=None, money=0.0):
+    a = Agent(name=n, personality="x")
+    place_agent(a, *p)
+    a.hunger, a.age, a.lifespan, a.money, a.settlement = 1, 30, 100, money, sid
+    return a
+
+
+def _coal_realm(king, home_c, kmoney=0.0, nmercs=0):
+    home = f"{king}_home"
+    world_state["settlements"][home] = {"id": home, "center": home_c, "members": {king}, "founded": 0}
+    _coal_settled(king, home_c, sid=home, money=kmoney)
+    world_state["monarchs"][home] = {"monarch": king, "since": 0, "garrison": set()}
+    world_state["kingdoms"][king] = {"king": king, "home": home, "settlements": {home},
+                                     "vassals": {}, "founded": 0, "discontent": {}}
+    for i in range(nmercs):
+        _coal_settled(f"{king}M{i}", (home_c[0] + i % 2, home_c[1] + 2), sid=None, money=0.5)
+
+
+def _make_subject(emperor, sk):
+    import kingdoms, trust
+    emp = world_state["empires"].setdefault(emperor, {"emperor": emperor, "subject_kings": {},
+                                                       "founded": 0, "discontent": {}})
+    emp["subject_kings"][sk] = {"since": 0}
+    emp["discontent"][sk] = 0
+    trust.ensure_relationship(next(a for a in world_state["agents"] if a.name == sk),
+                              emperor)["trust"] = kingdoms.LOYAL_TRUST
+
+
+def _hegemon_scene():
+    """A Hegemon controlling 3 of 5 settlements (home + 2 subject-kings) beside two weak, mutually
+    HOSTILE kingdoms A and B — the Hegemon beats each alone (host 3) but not the pooled coalition (4)."""
+    _coal_world()
+    _coal_realm("Hegemon", (10, 10), kmoney=20.0, nmercs=3)
+    _coal_realm("SK1", (20, 10)); _coal_realm("SK2", (10, 20))
+    _coal_realm("A", (30, 30), kmoney=20.0, nmercs=2)
+    _coal_realm("B", (38, 30), kmoney=20.0, nmercs=2)
+    _make_subject("Hegemon", "SK1"); _make_subject("Hegemon", "SK2")
+    world_state["diplomacy"] = {"stance": {("A", "B"): -6}, "pacts": set(), "alliances": set()}
+
+
+def test_dominance_detection() -> None:
+    """A power controlling a large share of settlements, far above the next, is a HEGEMON; a balanced
+    world has none."""
+    import coalitions
+
+    _hegemon_scene()
+    heg, share = coalitions.dominance(world_state)
+    assert heg == "Hegemon" and share >= 0.4, (heg, share)
+    assert coalitions.is_hegemon(world_state, "Hegemon")
+
+    # A balanced world (no one dominant) has no hegemon.
+    _coal_world()
+    for k, c in [("K1", (10, 10)), ("K2", (30, 10)), ("K3", (10, 30))]:
+        _coal_realm(k, c)
+    assert coalitions.dominance(world_state)[0] is None, "no power dominates -> no hegemon"
+    print("PASS test_dominance_detection")
+
+
+def test_fear_drives_coalition_overriding_stance() -> None:
+    """Fear of a hegemon OVERRIDES grievance: two mutually-hostile kingdoms both join the coalition
+    against the common threat (the enemy of my enemy). No hegemon -> no coalition."""
+    import coalitions, diplomacy
+
+    _hegemon_scene()
+    assert diplomacy.stance(world_state, "A", "B") == "hostile", "A and B are foes"
+    mem = coalitions.coalition_members(world_state, "Hegemon")
+    assert mem == {"A", "B"}, mem                      # both foes coalesce against the hegemon
+    print("PASS test_fear_drives_coalition_overriding_stance")
+
+
+def test_pooled_coalition_host_breaks_the_hegemon() -> None:
+    """A hegemon that beats each kingdom INDIVIDUALLY is broken by the POOLED coalition host — and the
+    coalition then DISSOLVES once the threat has passed."""
+    import coalitions, empire
+
+    _hegemon_scene()
+
+    def host(k):
+        return empire.imperial_host_size(world_state, next(a for a in world_state["agents"] if a.name == k))
+    assert host("Hegemon") > host("A") and host("Hegemon") > host("B"), "the hegemon beats each alone"
+    assert host("A") + host("B") > host("Hegemon"), "but the pooled coalition out-hosts it"
+
+    coalitions.update(world_state, 1)
+    assert coalitions.dominance(world_state)[0] is None, "the hegemon is broken below the threshold"
+    assert empire.is_sovereign(world_state, "SK1"), "its subject-kings were freed"
+    assert world_state["coalitions"]["target"] is None, "and the coalition dissolved (the threat passed)"
+    print("PASS test_pooled_coalition_host_breaks_the_hegemon")
+
+
+def test_coalition_dissolves_when_threat_passes() -> None:
+    """When no hegemon exists, an existing coalition DISSOLVES — fear evaporates and old rivalries
+    resurface (temporary marriages of convenience)."""
+    import coalitions
+
+    _coal_world()
+    for k, c in [("K1", (10, 10)), ("K2", (30, 10)), ("K3", (10, 30))]:
+        _coal_realm(k, c)
+    # Seed a lingering coalition from a hegemon that has since fallen.
+    world_state["coalitions"] = {"target": "OldHegemon", "members": {"K1", "K2", "K3"}}
+    ev = coalitions.update(world_state, 1)
+    assert world_state["coalitions"]["target"] is None
+    assert any("DISSOLVED" in e for e in ev), ev
+    print("PASS test_coalition_dissolves_when_threat_passes")
+
+
+def test_coalitions_off_run_is_byte_identical_and_adds_no_llm() -> None:
+    """coalitions_on=False (default) is byte-identical to the diplomacy baseline and adds ZERO LLM."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", diplomacy_on=True, coalitions_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", diplomacy_on=True)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_a, on_calls = run(True)
+        on_b, _ = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "coalitions_on=False diverged from the diplomacy baseline"
+    assert not world_state.get("coalitions"), "an off run writes no coalition state"
+    assert on_calls == off_calls, (on_calls, off_calls)   # coalitions are STATE — zero added LLM
+    assert on_a == on_b, "an on run must be byte-identical across seeded repeats"
+    print("PASS test_coalitions_off_run_is_byte_identical_and_adds_no_llm")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -8050,6 +8199,11 @@ def main_runner() -> None:
         test_war_severs_trade,
         test_interdependence_measurement_is_exposed,
         test_intertrade_off_run_is_byte_identical_and_adds_no_llm,
+        test_dominance_detection,
+        test_fear_drives_coalition_overriding_stance,
+        test_pooled_coalition_host_breaks_the_hegemon,
+        test_coalition_dissolves_when_threat_passes,
+        test_coalitions_off_run_is_byte_identical_and_adds_no_llm,
     ]
     for t in tests:
         t()

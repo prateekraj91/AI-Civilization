@@ -334,6 +334,19 @@ def wage_war(state: dict[str, Any], attacker_name: str, defender_name: str, turn
             contingent = imperial_host(state, ally, taken | {ally_name})
             taken |= {f.name for f in contingent}
             def_host.extend(contingent)
+    # M4.15 COALITION: if the hegemon attacks a coalition member, the OTHER members muster to its defence
+    # (fear-driven mutual defence, so the hegemon cannot pick members off one by one). Gated (byte-identical off).
+    if state.get("coalitions_on"):
+        import coalitions
+        for backer_name in coalitions.coalition_backers(state, defender_name, attacker_name):
+            if backer_name in taken:
+                continue
+            backer = _find(state, backer_name)
+            if backer is None:
+                continue
+            contingent = imperial_host(state, backer, taken | {backer_name})
+            taken |= {f.name for f in contingent}
+            def_host.extend(contingent)
     n_att, n_def = len(att_host), len(def_host)
 
     won, att_dead, def_dead, _ = monarchy.resolve_battle(
@@ -417,11 +430,18 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
         # war outright, and an alliance is DETERRENCE — the attacker weighs the defender's host PLUS every
         # honouring ally's, so it refrains from a war it would lose against the combined defence.
         diplo = state.get("diplomacy_on")
+        coal = state.get("coalitions_on")
         if diplo:
             import diplomacy
+        if coal:
+            import coalitions
         targets = []
         for t in _kingdom_neighbours(state, attacker_name):
             if diplo and diplomacy.war_forbidden(state, attacker_name, t):
+                continue
+            # M4.15: two coalition members do not fight each other while the common hegemon threatens
+            # them (fear suspends the feud). Gated -> byte-identical off.
+            if coal and coalitions.allied_against_hegemon(state, attacker_name, t):
                 continue
             def_size = (diplomacy.defensive_host_size(state, t) if diplo
                         else imperial_host_size(state, _find(state, t)))

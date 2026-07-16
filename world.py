@@ -450,6 +450,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # OFF so nothing leaks across runs and a default run is byte-identical to v1.
     world_state.pop("intertrade", None)
     world_state["intertrade_on"] = False
+    # M4.15: the active anti-hegemon coalition is per-simulation state — clear it and reset the flag OFF
+    # so nothing leaks across runs and a default run is byte-identical to v1.
+    world_state.pop("coalitions", None)
+    world_state["coalitions_on"] = False
     return world_state["grid"]
 
 
