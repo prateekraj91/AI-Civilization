@@ -278,7 +278,7 @@ def demo_f_zero_cost_determinism_and_v1() -> None:
     print(f"  reproducible on re-run = {traj1 == traj2}")
     for e in traj1:
         print(f"    -> {e}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert rng_untouched, "monarchy consumed RNG (would desync v1)"
     assert traj1 == traj2, "the battle trajectory must be deterministic/reproducible under seed"
 

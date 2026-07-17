@@ -184,7 +184,7 @@ def demo_c_zero_llm_cost() -> None:
             knowledge.diffuse(world_state, turn)
     stats = llm.get_call_stats()
     print(f"  30 diffuse() passes over 200 agents (20 seeded): LLM calls = {stats}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     print("  -> diffusion makes ZERO model calls of any kind, by construction.")
 
     # (2) END TO END: total LLM cost stays flat with vs without knowledge. The only

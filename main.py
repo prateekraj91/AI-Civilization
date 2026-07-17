@@ -828,6 +828,14 @@ def print_inference_savings(counters: dict[str, int]) -> None:
     print(f"LLM strategy calls made:   {strat_calls}")
     print(f"Per-turn design would use: {agent_turns} LLM calls")
     print(f"Saved by caching:          {saved} calls (~{pct:.0f}% fewer)")
+    # M5.1: the MINDS layer's cost — how many times a figure's mind was actually consulted at a pivot,
+    # and how many LLM inclination calls that cost (0 offline / cached; single digits with a live model).
+    if world_state.get("minds_on"):
+        import mind
+        consults = mind.consult_count(world_state)
+        flips = sum(1 for c in world_state.get("mind_consults", []) if c["flipped"])
+        print(f"Pivot mind consults:       {consults} (flipped {flips} close call(s); "
+              f"{stats.get('inclination', 0)} LLM inclination call(s))")
     print()
 
 
@@ -1301,6 +1309,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "place a model touches OUTPUT). Purely presentational and CACHED — it NEVER mutates the sim, "
              "its determinism, or the structured chronicle (verified). Requires --chronicle.")
     p.add_argument(
+        "--minds", action="store_true",
+        help="V2 M5.1 (OPENS Phase 5): MINDS AT THE PIVOTS — give great figures a mind at the moments "
+             "history turns. At three CLOSE-MARGIN pivots (an opportunistic WAR, a vassal's BREAKAWAY, a "
+             "settlement's RISING) where the deterministic verdict is a near-tie, the figure's CHARACTER "
+             "(personality + beliefs) is consulted and TILTS the call within a documented band — a bold "
+             "king marches on even odds, a cautious one holds; the motive enters the chronicle. Decisive "
+             "situations stay pure math (the band binds absolutely). Under AICIV_PROVIDER=random the tilt "
+             "is a DETERMINISTIC personality-weighted stand-in (no LLM, no RNG); a live provider upgrades "
+             "it to real reasoning (walled off, single-digit calls/run). Off by default -> byte-identical.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1385,7 +1403,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    diplomacy_on: bool = False,
                    intertrade_on: bool = False,
                    coalitions_on: bool = False,
-                   chronicle_on: bool = False) -> None:
+                   chronicle_on: bool = False,
+                   minds_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1586,6 +1605,14 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # houses), read-only on the sim. False (default) -> chronicle.update never called, no "chronicle" key
     # -> byte-identical to v1. Fidelity tracks M4.10 literacy (prehistory=legend -> history at writing).
     world_state["chronicle_on"] = chronicle_on
+
+    # M5.1 (OPENS Phase 5): MINDS AT THE PIVOTS — at three close-margin junctures (an opportunistic
+    # war, a vassal's breakaway, a settlement's rising) the great figure's MIND is consulted and tilts
+    # the otherwise deterministic verdict. False (default) -> mind.tilt is never called; the pivots use
+    # their exact deterministic verdicts, no mind_* key is written -> byte-identical to v1. Under
+    # AICIV_PROVIDER=random the tilt is a deterministic, personality-weighted stand-in (no LLM, no RNG),
+    # so every test/verify runs as today; a live provider upgrades it to genuine reasoning (walled off).
+    world_state["minds_on"] = minds_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -2156,7 +2183,8 @@ def main(argv: list[str] | None = None) -> None:
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
-                           coalitions_on=coalitions_on, chronicle_on=args.chronicle)
+                           coalitions_on=coalitions_on, chronicle_on=args.chronicle,
+                           minds_on=args.minds)
         finally:
             sys.stdout = original
             log_file.close()
@@ -2186,7 +2214,8 @@ def main(argv: list[str] | None = None) -> None:
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
-                           coalitions_on=coalitions_on, chronicle_on=args.chronicle)
+                           coalitions_on=coalitions_on, chronicle_on=args.chronicle,
+                           minds_on=args.minds)
 
     # M4.16: export the run's saga. The structured markdown is deterministic; --narrate wraps it in LLM
     # prose (the only place a model touches output — it reads the same structured record, changing nothing).

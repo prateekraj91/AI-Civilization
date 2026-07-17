@@ -199,7 +199,7 @@ def demo_d_zero_cost_and_v1() -> None:
             knowledge.diffuse(world_state, turn)
     stats = llm.get_call_stats()
     print(f"  30 discover()+diffuse() passes over 150 agents: LLM calls = {stats}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
 
     # (2) v1 unregressed: tech_tree=None run == no-knowledge run; and a no-op discover
     # draws no RNG (or it would desync the v1 stream).

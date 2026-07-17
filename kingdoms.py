@@ -326,9 +326,20 @@ def _check_breakaways(state: dict[str, Any], turn: int) -> list[str]:
         for sid in sorted(rec["vassals"]):
             vassal = _find(state, rec["vassals"][sid])
             disc = rec["discontent"]
-            if vassal is not None and king is not None and _trust_in(vassal, king_name) > BREAKAWAY_TRUST:
-                disc[vassal.name] = 0  # loyalty holds (or recovered) — reset the hysteresis counter
-                continue
+            if vassal is not None and king is not None:
+                # M5.1 PIVOT: loyalty far above the floor decisively holds (the math stands); loyalty
+                # sitting within BREAKAWAY_BAND of the floor is a CLOSE call the vassal's character
+                # decides — a proud, independent vassal drifts toward breaking even at borderline trust,
+                # a cautious/loyal one endures despite it. Off / out-of-band -> exactly the M3.5 rule.
+                margin = BREAKAWAY_TRUST - _trust_in(vassal, king_name)   # >0 => leans toward BREAK
+                break_now = _trust_in(vassal, king_name) <= BREAKAWAY_TRUST
+                if state.get("minds_on"):
+                    import mind
+                    break_now, _ = mind.tilt(state, vassal.name, "breakaway", margin, break_now,
+                                             {"trust": _trust_in(vassal, king_name), "lord": king_name}, turn)
+                if not break_now:
+                    disc[vassal.name] = 0  # loyalty holds (or recovered) — reset the hysteresis counter
+                    continue
             # A vassal whose lord has died/vanished cannot hold the seat for the crown -> also breaks.
             name = rec["vassals"][sid]
             disc[name] = disc.get(name, 0) + 1

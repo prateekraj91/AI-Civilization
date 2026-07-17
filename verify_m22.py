@@ -283,7 +283,7 @@ def demo_e_zero_cost_and_v1() -> None:
             storage.accumulate(world_state, t)
     stats = llm.get_call_stats()
     print(f"  39 accumulate passes: LLM calls = {stats}; RNG untouched = {random.getstate() == st0}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "storage.accumulate consumed RNG (would desync v1)"
 
     # storage OFF (default) -> byte-identical to a run with the param absent.

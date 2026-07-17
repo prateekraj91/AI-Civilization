@@ -189,7 +189,7 @@ def demo_d_zero_cost_and_v1() -> None:
             knowledge.farm(world_state, turn, rng=rng)
     stats = llm.get_call_stats()
     print(f"  30 farm() passes over 40 farmers: LLM calls = {stats}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
 
     # No tech tree / no knowledge -> v1 byte-identical, and a no-farmer farm draws no RNG.
     def run(tree):

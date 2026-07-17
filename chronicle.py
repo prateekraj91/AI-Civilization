@@ -191,8 +191,9 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
         fid = _fidelity(state, _home_of(state, victor))
         if fid == "history":
             fig = _figure(ch, victor, turn); fig["deeds"]["wars"] += 1; _set_archetype(fig)
+        detail = f"KING {victor} defeated {loser} and forged an empire"
         _record_event(ch, turn, "war", f"{victor}'s Conquest of {loser}'s Kingdom",
-                      f"KING {victor} defeated {loser} and forged an empire", fid, (victor, loser))
+                      detail + _motive(state, turn, figure=victor), fid, (victor, loser))
         return
 
     m = _P_SUCCEED.match(body)
@@ -220,9 +221,9 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
             hz = ch["house_of"].get(deposed)
             if hz in ch["houses"]:
                 ch["houses"][hz]["fell"] = "ended by revolt"
+        detail = f"the people of {sid} rose, deposed {deposed}, and {liberator} took power"
         _record_event(ch, turn, "uprising", f"the {sid} Uprising",
-                      f"the people of {sid} rose, deposed {deposed}, and {liberator} took power",
-                      fid, (liberator, deposed))
+                      detail + _motive(state, turn, sid=sid), fid, (liberator, deposed))
         return
 
     m = _P_UPRISING_LED.match(body)
@@ -309,6 +310,24 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
         _record_event(ch, turn, "faith", f"the Rise of {faith}",
                       f"{faith} took root in {sid}", _fidelity(state, sid), ())
         return
+
+
+def _motive(state: dict[str, Any], turn: int, figure: "str | None" = None,
+            sid: "str | None" = None) -> str:
+    """The WHY behind a pivot decision (M5.1), as a trailing clause — or "" when minds are off/absent.
+
+    If a figure consulted its mind at the pivot that produced this event, its recorded reason is
+    surfaced so the saga records not just WHAT happened but WHY ("...saying 'the odds were even and
+    fortune favours the bold'"). Read-only: pulls the reason mind.py already logged. Empty otherwise,
+    so a minds-off run's saga text is unchanged."""
+    if not state.get("minds_on"):
+        return ""
+    try:
+        import mind
+        reason = mind.motive_for(state, turn, figure) if figure else mind.motive_at(state, turn, sid)
+    except Exception:
+        reason = None
+    return f", saying “{reason}”" if reason else ""
 
 
 def _home_of(state: dict[str, Any], king: str) -> "str | None":

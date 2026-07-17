@@ -211,11 +211,18 @@ def _risers(state: dict[str, Any], sid: str, ruler: str,
     return out
 
 
-def _should_rise(state: dict[str, Any], sid: str, risers: list[Any],
-                 defenders: set[str], turn: int) -> bool:
-    """Both trigger gates (fraction + aggregate floor), plus the fear cooldown. Pure read."""
+def _rise_gates(state: dict[str, Any], sid: str, risers: list[Any],
+                defenders: set[str], turn: int) -> "tuple[bool, float]":
+    """The HARD trigger gates as (gates_ok, aggregate). Pure read.
+
+    gates_ok = off the fear cooldown AND a resentful MAJORITY of the non-ruler pool is rising AND that
+    faction is non-empty. `aggregate` is their summed grievance — the second, SOFT gate a rising clears
+    at UPRISING_MIN_PRESSURE. Splitting the hard gates (structural: cooldown + majority) from the soft
+    pressure gate lets M5.1 open ONLY the pressure closeness to the ringleader's character (a majority
+    is a structural fact; whether borderline weight is "enough" is the close call a firebrand decides).
+    """
     if turn < state.get("uprising_cooldowns", {}).get(sid, 0):
-        return False  # still cowed by a recent crushing
+        return False, 0.0  # still cowed by a recent crushing
     rec = state["settlements"][sid]
     living = {a.name for a in state["agents"] if a.alive}
     # Non-ruler members are the pool a majority is measured against (children/ruler/defenders excluded
@@ -224,11 +231,18 @@ def _should_rise(state: dict[str, Any], sid: str, risers: list[Any],
     pool = [n for n in rec["members"] if n in living and n != ruler and n not in defenders
             and not world.is_dependent_child(_find(state, n), state)]
     if not pool or not risers:
-        return False
+        return False, 0.0
     if len(risers) < UPRISING_FRACTION * len(pool):
-        return False  # gate 1: a resentful MAJORITY is required
+        return False, 0.0  # gate 1: a resentful MAJORITY is required
     aggregate = sum(discontent.agent_discontent(r.name, state) for r in risers)
-    return aggregate >= UPRISING_MIN_PRESSURE  # gate 2: real accumulated weight
+    return True, aggregate
+
+
+def _should_rise(state: dict[str, Any], sid: str, risers: list[Any],
+                 defenders: set[str], turn: int) -> bool:
+    """Both trigger gates (fraction + aggregate floor), plus the fear cooldown. Pure read (deterministic)."""
+    gates_ok, aggregate = _rise_gates(state, sid, risers, defenders, turn)
+    return gates_ok and aggregate >= UPRISING_MIN_PRESSURE  # gate 2: real accumulated weight
 
 
 def _expropriate(state: dict[str, Any], ruler_agent: Any, victors: list[Any],
@@ -359,7 +373,23 @@ def _rise(state: dict[str, Any], sid: str, turn: int) -> "dict[str, Any] | None"
     base_def, _def_kind = monarchy.defenders_of(state, sid)
     def_names = {d.name for d in base_def}
     risers = _risers(state, sid, ruler, def_names)
-    if not _should_rise(state, sid, risers, def_names, turn):
+    # The HARD gates (cooldown + resentful majority) are structural — a rising is impossible without
+    # them. The SOFT pressure gate is the close call.
+    gates_ok, aggregate = _rise_gates(state, sid, risers, def_names, turn)
+    if not gates_ok:
+        return None
+    rise = aggregate >= UPRISING_MIN_PRESSURE
+    if state.get("minds_on"):
+        # M5.1 PIVOT: when the accumulated grievance sits within UPRISING_BAND of the trigger, the
+        # RINGLEADER (the angriest riser — the natural firebrand) decides whether the hour has come: a
+        # daring one raises the banner on borderline weight, a cautious one waits. Off / out-of-band ->
+        # exactly `aggregate >= UPRISING_MIN_PRESSURE` (byte-identical to v1).
+        import mind
+        ringleader = max(risers, key=lambda r: (discontent.agent_discontent(r.name, state), r.name))
+        rise, _ = mind.tilt(state, ringleader.name, "uprising", aggregate - UPRISING_MIN_PRESSURE, rise,
+                            {"pressure": round(aggregate, 1), "threshold": UPRISING_MIN_PRESSURE,
+                             "sid": sid}, turn)
+    if not rise:
         return None
 
     # THE RULER's DEFENCE: his standing garrison/loyal followers PLUS any mercenaries his war chest

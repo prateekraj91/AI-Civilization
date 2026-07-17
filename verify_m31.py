@@ -284,7 +284,7 @@ def demo_e_zero_cost_and_v1() -> None:
             labor.update(world_state, t)
     stats = llm.get_call_stats()
     print(f"  29 labor passes: LLM calls = {stats}; RNG untouched = {random.getstate() == st0}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "wage labor consumed RNG (would desync v1)"
 
     # labor OFF (default) -> byte-identical to a run with the param absent.

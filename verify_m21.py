@@ -245,7 +245,7 @@ def demo_e_zero_cost_and_v1() -> None:
             settlement.update(world_state, turn)
     stats = llm.get_call_stats()
     print(f"  30 settlement.update passes: LLM calls = {stats}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
 
     # settlement.update draws NO RNG (deterministic threshold, no dice).
     world.create_world(size=12)

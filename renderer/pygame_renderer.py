@@ -74,6 +74,7 @@ depends on it. If it is missing the launcher prints a clear `pip install pygame`
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import math
 import os
@@ -160,6 +161,21 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "torch_flame": (255, 168, 64),     # torch flame + its warm halo
     "torch_core": (255, 232, 158),     # the white-hot torch heart
     "moon_smoke": (222, 230, 244),     # chimney smoke catching the moonlight
+    # visual enhancements (slice 12)
+    "rain": (140, 155, 170),           # rain streak
+    "snow": (240, 245, 255),           # snowflake
+    "fog": (200, 210, 220),            # dawn fog
+    "cloud": (255, 255, 255),          # drifting clouds
+    "cloud_shadow": (10, 12, 14),      # cloud shadows
+    "trail": (110, 100, 80),           # footprint paths
+    "foam": (230, 240, 255),           # wave foam
+    "spring_grass": (70, 90, 50),      # seasonal grass tints
+    "summer_grass": (44, 58, 40),
+    "autumn_grass": (85, 75, 40),
+    "winter_grass": (150, 155, 160),
+    "heart": (220, 60, 90),            # emotions
+    "sword": (170, 180, 190),
+    "coin": (240, 190, 40),
 }
 _TRAIT_DESAT = 0.22                    # how far commoner figures step toward the earth tones
 
@@ -944,6 +960,44 @@ def ambient_birds(frame: int, map_px: int) -> list[tuple[float, float, float]]:
     return out
 
 
+def weather_type(phase: float) -> str:
+    """The current weather type based on the day cycle (pure)."""
+    p = phase % 1.0
+    if p < _PH_DAWN_END:
+        return "fog"
+    elif p > _PH_DUSK_END:
+        return "snow"
+    elif p > _PH_DAY_END:
+        return "rain"
+    return "clear"
+
+
+def season_name(turn: float) -> str:
+    """The current season based on turn count (pure). Assumes 96 turns per year."""
+    year_progression = (float(turn) / 96.0) % 1.0
+    if year_progression < 0.25:
+        return "spring"
+    elif year_progression < 0.50:
+        return "summer"
+    elif year_progression < 0.75:
+        return "autumn"
+    return "winter"
+
+
+def ambient_clouds(frame: int, map_px: int) -> list[tuple[float, float, float, float]]:
+    """Drifting clouds (x, y, w, h) based on the frame clock (pure)."""
+    out = []
+    # 3 cloud layers moving at different speeds
+    for k in range(3):
+        w = max(40, int(map_px * (0.15 + 0.1 * terrain_noise(k, 1, 81))))
+        h = max(20, int(w * 0.6))
+        speed = 0.1 + 0.05 * k
+        x = (frame * speed + map_px * terrain_noise(k, 2, 82)) % (map_px + w) - w
+        y = map_px * terrain_noise(k, 3, 83)
+        out.append((x, y, w, h))
+    return out
+
+
 # --- Slice 10: pure day/night helpers (phase from the TURN; zero state, zero sim RNG) -----
 def time_of_day(turn: float) -> float:
     """The day-cycle phase in [0, 1) for a (possibly fractional) turn number (pure).
@@ -1195,6 +1249,8 @@ class PygameRenderer:
         self._prev_snapshot: dict[str, Any] | None = None  # last turn: positions/realms/homes
         self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
         self._big_font: Any = None                         # the aftermath banner face
+        self._trails: dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=6))
+        self._current_season = "summer"                    # tracks season for terrain rebakes
         # Slice 9: full-bleed geometry + light/ambient caches (all renderer-local).
         self._margin_px = 0                                # the wilderness ring, in pixels
         self._map_px = 0                                   # full map zone = margin + grid + margin
@@ -1509,6 +1565,13 @@ class PygameRenderer:
         self._nf = 1.0 - self._dl
         self._frame_lights = []           # towns register window/torch lights as they draw
 
+        # Update season and rebake terrain if needed
+        new_season = season_name(turn_f)
+        if new_season != self._current_season:
+            self._current_season = new_season
+            self._terrain_bg = self._build_terrain(self._cell0)
+            self._terrain_zoom.clear()
+
         # Slice 5/9/11: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
         # coast + pond + vignette) under everything — the camera blits only the VISIBLE
         # sub-rect of the nearest quantized zoom bucket's bake, never rebuilding per frame.
@@ -1516,13 +1579,17 @@ class PygameRenderer:
         if self._terrain_bg is not None:
             self._blit_terrain()
         else:
-            screen.fill(_GRASS_BASE, (0, 0, map_px, map_px))
+            grass_color = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
+            screen.fill(grass_color, (0, 0, map_px, map_px))
         if self._lod != "far":       # slice 11: micro-shimmer is off in the strategy view
             self._draw_water_shimmer()  # slice 9: ripple glints on the baked pond + coast
+            self._draw_coast_waves()
 
         # Slice 5: settled land looks CULTIVATED — a translucent tilled-dirt tint (with furrows)
         # under the slice-2 region. Dynamic (settlements come and go), but cheap. No-op if none.
         self._draw_settlement_ground(state)
+        if self._dl > 0.35:
+            self._draw_cloud_shadows()
 
         # Slice 2: SETTLEMENTS as soft translucent regions UNDER everything else, so a
         # settlement reads as a background "place" with food and agents sitting on top.
@@ -1548,6 +1615,10 @@ class PygameRenderer:
         # personality-colour dot (no figure/shadow/insignia/bubble — a strategy-map read);
         # at CLOSE zoom villagers additionally wear their NAME under the figure.
         talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
+        
+        self._update_trails(state, motion)
+        self._draw_trails()
+        
         for agent in state.get("agents", []):
             if not getattr(agent, "alive", True):
                 continue
@@ -1569,6 +1640,12 @@ class PygameRenderer:
             figure_top = self._draw_agent_figure(cx, cy, r, color)
             self._draw_role_marker(cx, figure_top, r, agent_role(agent.name, state))
             if agent.name in talkers:
+                if getattr(agent, "personality", "") == "friendliness":
+                    self._draw_emotion_icon(cx, figure_top, r, "heart")
+                elif getattr(agent, "personality", "") == "independence":
+                    self._draw_emotion_icon(cx, figure_top, r, "sword")
+                else:
+                    self._draw_emotion_icon(cx, figure_top, r, "coin")
                 self._draw_speech_bubble(cx + r + 1, figure_top, r)
             if self._lod == "close" and self._font is not None:
                 self._draw_name_tag(agent.name, cx, cy + r + 2)
@@ -1579,6 +1656,7 @@ class PygameRenderer:
         # tint moves, and blitted over the whole map zone (the HUD/panel stay ungraded).
         if self._dl > 0.35 and self._lod != "far":   # slice 11: no ambience on the strategy map
             self._draw_birds()
+            self._draw_clouds()
         if self._grade is not None:
             tint = phase_tint(self._phase)
             if tint != self._grade_tint:
@@ -1599,11 +1677,16 @@ class PygameRenderer:
         # clash flashes and the outcome banner never dim with the scene).
         if battle is not None:
             self._draw_battle_overlay(*battle)
+            
+        self._draw_weather()
 
         self._draw_hud(state, map_px, paused, in_battle=battle is not None)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
         # last so it owns the right zone cleanly; a pure read of state, like everything else.
         self._draw_panel(state, map_px)
+        
+        self._draw_minimap(state)
+        
         pygame.display.flip()
 
     def _agent_px(self, agent: Any, motion: tuple[dict[str, tuple], float] | None) -> tuple[int, int]:
@@ -1715,7 +1798,8 @@ class PygameRenderer:
             return None
         grid_px = cell * size
         surf = pygame.Surface((map_px, map_px))
-        surf.fill(_GRASS_BASE)
+        grass_color = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
+        surf.fill(grass_color)
 
         # 1) GROUND texture over the WHOLE zone: per-tile value-noise + broad patches; tiles in
         #    the margin darken and roughen smoothly with distance past the playable edge.
@@ -1729,7 +1813,7 @@ class PygameRenderer:
                 if d > 0:                          # the wilderness fringe: darker, rougher
                     w = min(1.0, d / max(1.0, 1.5 * cell))
                     shade += int((-10 + fine * 14) * w)
-                surf.fill(_shade(_GRASS_BASE, shade), (tx, ty, tile, tile))
+                surf.fill(_shade(grass_color, shade), (tx, ty, tile, tile))
 
         # 2) STIPPLE grain across the whole zone (cheap; most samples place nothing). The
         #    stride scales with the bucket's cell so a close-up bake stays affordable and
@@ -2680,6 +2764,27 @@ class PygameRenderer:
             screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
             y += line_h
 
+        # REALMS Scoreboard
+        y += 5
+        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + _PANEL_W - pad, y))
+        y += 7
+        screen.blit(font.render("REALMS", True, _PANEL_TITLE), (x0 + pad, y))
+        y += line_h + 2
+        
+        realms = state.get("realms", {})
+        if not realms:
+            screen.blit(font.render("(none)", True, _FEED_DEFAULT), (x0 + pad, y))
+            y += line_h
+        else:
+            sorted_realms = sorted(realms.keys(), key=lambda r: len(realms[r].get("settlements", [])), reverse=True)[:6]
+            for r in sorted_realms:
+                color = realm_color(r)
+                screen.blit(font.render(r[:12], True, color), (x0 + pad, y))
+                count = str(len(realms[r].get("settlements", [])))
+                val = font.render(count, True, _STAT_VALUE)
+                screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
+                y += line_h
+
         # Divider + EVENTS header.
         y += 5
         pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + _PANEL_W - pad, y))
@@ -2898,3 +3003,198 @@ class PygameRenderer:
 
         if el >= t4:                                      # AFTERMATH: the verdict, prominently
             self._draw_banner(scene["banner"], fade=(el - t4) / 0.25)
+
+    # -- Slice 12: Visual Enhancements --------------------------------------
+    def _draw_coast_waves(self) -> None:
+        """Draw animated waves and foam along the eastern coast."""
+        if self._pond is None:
+            return
+        grid_px = self._cell * max(1, self._size)
+        coast_x = self._margin_px + int(grid_px * 0.96)
+        y_start, y_end = self._margin_px, self._margin_px + grid_px
+        
+        # Draw a sine wave line for the wave crest
+        points = []
+        for y in range(y_start, y_end, max(2, self._cell // 2)):
+            offset = math.sin(self._frame * 0.05 + y * 0.05) * (self._cell * 0.4)
+            points.append((coast_x + int(offset), y))
+        
+        if len(points) > 1:
+            pygame.draw.lines(self._screen, PALETTE["water_hi"], False, points, max(1, self._cell // 8))
+        
+        # Occasional foam bubbles
+        for k in range(10):
+            if terrain_noise(self._frame // 30, k, 91) > 0.6:
+                fy = y_start + (terrain_noise(0, k, 92) * grid_px)
+                fx = coast_x + math.sin(self._frame * 0.05 + fy * 0.05) * (self._cell * 0.4)
+                fx += (terrain_noise(self._frame // 15, k, 93) - 0.5) * self._cell
+                r = max(1, int(terrain_noise(0, k, 94) * (self._cell * 0.2)))
+                pygame.draw.circle(self._screen, PALETTE["foam"], (int(fx), int(fy)), r)
+
+    def _draw_cloud_shadows(self) -> None:
+        """Draw dark translucent ellipses on the ground representing cloud shadows."""
+        clouds = ambient_clouds(self._frame, self._map_px)
+        for cx, cy, cw, ch in clouds:
+            # Offset shadow slightly down and right
+            rect = pygame.Rect(int(cx + cw * 0.2), int(cy + ch * 0.5), cw, ch)
+            if rect.right > 0 and rect.bottom > 0 and rect.left < self._map_px and rect.top < self._map_px:
+                stamp = pygame.Surface((cw, ch), pygame.SRCALPHA)
+                pygame.draw.ellipse(stamp, (*PALETTE["cloud_shadow"], 30), (0, 0, cw, ch))
+                self._screen.blit(stamp, rect.topleft)
+
+    def _draw_clouds(self) -> None:
+        """Draw translucent white ellipses moving across the map."""
+        clouds = ambient_clouds(self._frame, self._map_px)
+        for cx, cy, cw, ch in clouds:
+            rect = pygame.Rect(int(cx), int(cy), cw, ch)
+            if rect.right > 0 and rect.bottom > 0 and rect.left < self._map_px and rect.top < self._map_px:
+                stamp = pygame.Surface((cw, ch), pygame.SRCALPHA)
+                alpha = int(90 * self._dl) # fade out at night
+                pygame.draw.ellipse(stamp, (*PALETTE["cloud"], alpha), (0, 0, cw, ch))
+                self._screen.blit(stamp, rect.topleft)
+
+    def _draw_weather(self) -> None:
+        """Draw particles for rain, snow, or fog based on the current weather type."""
+        weather = weather_type(self._phase)
+        if weather == "clear":
+            return
+            
+        screen = self._screen
+        map_px = self._map_px
+        
+        if weather == "rain":
+            # Rain streaks
+            for k in range(50):
+                x = (terrain_noise(0, k, 101) * map_px + self._frame * 10) % map_px
+                y = (terrain_noise(0, k, 102) * map_px + self._frame * 20) % map_px
+                pygame.draw.line(screen, (*PALETTE["rain"], 150), (int(x), int(y)), (int(x - 3), int(y + 8)), 1)
+                
+        elif weather == "snow":
+            # Snowflakes
+            for k in range(40):
+                x = (terrain_noise(0, k, 103) * map_px + math.sin(self._frame * 0.05 + k) * 10) % map_px
+                y = (terrain_noise(0, k, 104) * map_px + self._frame * 3) % map_px
+                r = 1 if terrain_noise(0, k, 105) > 0.5 else 2
+                pygame.draw.circle(screen, (*PALETTE["snow"], 180), (int(x), int(y)), r)
+                
+        elif weather == "fog":
+            # Horizontal fog bands
+            for k in range(3):
+                y = map_px * 0.2 + (k * map_px * 0.3) + math.sin(self._frame * 0.02 + k) * 20
+                h = max(20, int(map_px * 0.15))
+                alpha = int(40 + 20 * math.sin(self._frame * 0.03 + k * 2))
+                band = pygame.Surface((map_px, h), pygame.SRCALPHA)
+                # Gradient-like effect using multiple lines
+                for i in range(h):
+                    a = int(alpha * math.sin(math.pi * (i / h)))
+                    pygame.draw.line(band, (*PALETTE["fog"], a), (0, i), (map_px, i))
+                screen.blit(band, (0, int(y)))
+
+    def _update_trails(self, state: dict[str, Any], motion: tuple[dict[str, tuple], float] | None) -> None:
+        """Record the current position of moving agents to form a trail."""
+        if motion is None or self._lod == "far":
+            return
+        
+        for agent in state.get("agents", []):
+            if not getattr(agent, "alive", True) or not getattr(agent, "position", None):
+                continue
+            cx, cy = self._agent_px(agent, motion)
+            # Only record if moved significantly
+            if not self._trails[agent.name] or math.hypot(self._trails[agent.name][-1][0] - cx, self._trails[agent.name][-1][1] - cy) > self._cell * 0.5:
+                self._trails[agent.name].append((cx, cy))
+
+    def _draw_trails(self) -> None:
+        """Draw fading footprint paths behind agents."""
+        if self._lod == "far":
+            return
+        for name, path in self._trails.items():
+            for i, (tx, ty) in enumerate(path):
+                alpha = int(120 * (i + 1) / len(path))
+                if alpha > 0 and visible_on_screen(tx, ty, self._cell, self._map_px, self._map_px):
+                    stamp = pygame.Surface((4, 4), pygame.SRCALPHA)
+                    pygame.draw.circle(stamp, (*PALETTE["trail"], alpha), (2, 2), max(1, self._cell // 8))
+                    self._screen.blit(stamp, (int(tx - 2), int(ty - 2)))
+
+    def _draw_emotion_icon(self, cx: int, top_y: int, r: int, state: str) -> None:
+        """A small emotion icon floating above the agent's head (heart, sword, or coin)."""
+        screen = self._screen
+        y = top_y - r - 4
+        # Add a gentle float bounce
+        y += int(math.sin(self._frame * 0.1 + cx * 0.5) * 2)
+        
+        if state == "heart":
+            color = PALETTE["heart"]
+            pygame.draw.circle(screen, color, (cx - 2, y), 2)
+            pygame.draw.circle(screen, color, (cx + 2, y), 2)
+            pygame.draw.polygon(screen, color, [(cx - 4, y + 1), (cx + 4, y + 1), (cx, y + 5)])
+        elif state == "sword":
+            color = PALETTE["sword"]
+            pygame.draw.line(screen, color, (cx - 3, y + 3), (cx + 3, y - 3), 2)
+            pygame.draw.line(screen, color, (cx - 4, y + 2), (cx - 2, y + 4), 1)
+        elif state == "coin":
+            color = PALETTE["coin"]
+            pygame.draw.circle(screen, color, (cx, y), 3)
+            pygame.draw.circle(screen, _shade(color, -30), (cx, y), 3, 1)
+            pygame.draw.line(screen, _shade(color, -30), (cx, y - 1), (cx, y + 1), 1)
+
+    def _draw_minimap(self, state: dict[str, Any]) -> None:
+        """A 120x120 minimap overlay in the bottom left corner."""
+        mm_size = 120
+        margin = 16
+        mm_x = margin
+        mm_y = self._map_px - mm_size - margin
+        
+        # Don't draw if the map is tiny anyway
+        if self._size * self._cell < mm_size * 2:
+            return
+            
+        mm = pygame.Surface((mm_size, mm_size), pygame.SRCALPHA)
+        mm.fill((*_HUD_BG, 200))
+        
+        # Calculate scale
+        grid_cells = self._size + 2 * _MARGIN_CELLS
+        scale = mm_size / float(grid_cells)
+        
+        # 1. Base terrain
+        pygame.draw.rect(mm, _desat(PALETTE["grass_base"], 0.2), (0, 0, mm_size, mm_size))
+        # Draw water strip on the right
+        water_x = int((_MARGIN_CELLS + self._size * 0.96) * scale)
+        if water_x < mm_size:
+            pygame.draw.rect(mm, PALETTE["water"], (water_x, 0, mm_size - water_x, mm_size))
+            
+        # 2. Territories
+        for sid, rec in state.get("settlements", {}).items():
+            if "center" not in rec: continue
+            cx = int((rec["center"][0] + _MARGIN_CELLS) * scale)
+            cy = int((rec["center"][1] + _MARGIN_CELLS) * scale)
+            owner = settlement_realm(sid, state)
+            if owner:
+                c = realm_color(owner)
+                r = max(3, int(settlement_radius_cells(rec["center"], []) * scale * 4)) # slightly exaggerated
+                pygame.draw.circle(mm, (*c, 100), (cx, cy), r)
+                
+        # 3. Agents
+        for agent in state.get("agents", []):
+            if not getattr(agent, "alive", True) or not getattr(agent, "position", None):
+                continue
+            ax, ay = agent.position
+            cx = int((ax + _MARGIN_CELLS) * scale)
+            cy = int((ay + _MARGIN_CELLS) * scale)
+            color = agent_color(getattr(agent, "personality", ""))
+            mm.set_at((cx, cy), color)
+            
+        # 4. Viewport rectangle
+        # Screen bounds in world coords
+        view = (self._map_px, self._map_px)
+        tl_wx, tl_wy = screen_to_world((0, 0), self._cam_draw, view)
+        br_wx, br_wy = screen_to_world((self._map_px, self._map_px), self._cam_draw, view)
+        
+        vx = int((tl_wx + _MARGIN_CELLS) * scale)
+        vy = int((tl_wy + _MARGIN_CELLS) * scale)
+        vw = int((br_wx - tl_wx) * scale)
+        vh = int((br_wy - tl_wy) * scale)
+        
+        pygame.draw.rect(mm, (255, 255, 255), (vx, vy, vw, vh), 1)
+        pygame.draw.rect(mm, _OUTLINE, (0, 0, mm_size, mm_size), 2)
+        
+        self._screen.blit(mm, (mm_x, mm_y))

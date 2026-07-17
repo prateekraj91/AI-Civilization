@@ -248,7 +248,7 @@ def demo_e_zero_cost_pure_read_and_v1() -> None:
     after = {a.name: a.relationships for a in world_state["agents"]}
     print(f"  29 leadership passes: LLM calls = {stats}; RNG untouched = {random.getstate() == st0}")
     print(f"  trust network unchanged by leadership = {after == before}")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "leadership consumed RNG (would desync v1)"
     assert after == before, "leadership MUST NOT write any trust value (pure read)"
 

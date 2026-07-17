@@ -69,6 +69,13 @@ FALLBACK_STRATEGY = {
     "reaction": "",
     "reason": "Invalid or unavailable LLM response; defaulting to wander.",
 }
+# Returned whenever an inclination consult (M5.1 minds) is unavailable or untrustworthy. Inclination
+# 0.0 means NO tilt — the pivot's deterministic verdict stands — so a bad model response can never
+# change history, only decline to colour it.
+FALLBACK_INCLINATION = {
+    "inclination": 0.0,
+    "reason": "the decision rested on the odds alone",
+}
 
 # Reactions an agent may have to a received message (Day 8). Kept here so the
 # vocabulary has one home, mirroring VALID_ACTIONS / VALID_STRATEGIES.
@@ -79,11 +86,11 @@ _gemini_client: Any = None
 
 # Inference accounting (Phase 4 evidence). Every public request increments a
 # counter so callers can prove how much strategy caching saved.
-_CALL_STATS: dict[str, int] = {"decision": 0, "strategy": 0}
+_CALL_STATS: dict[str, int] = {"decision": 0, "strategy": 0, "inclination": 0}
 
 
 def get_call_stats() -> dict[str, int]:
-    """Return a copy of the LLM request counters (decision / strategy)."""
+    """Return a copy of the LLM request counters (decision / strategy / inclination)."""
     return dict(_CALL_STATS)
 
 
@@ -91,6 +98,7 @@ def reset_call_stats() -> None:
     """Zero the LLM request counters (useful between simulations/tests)."""
     _CALL_STATS["decision"] = 0
     _CALL_STATS["strategy"] = 0
+    _CALL_STATS["inclination"] = 0
 
 
 # --- Public entry points ---------------------------------------------------
@@ -120,7 +128,35 @@ def get_strategy(prompt: str) -> dict[str, Any]:
     return _validate_strategy(data) if data is not None else dict(FALLBACK_STRATEGY)
 
 
+def get_inclination(prompt: str) -> dict[str, Any]:
+    """Provider-independent PIVOT consult (M5.1 minds): a figure's inclination to act + a reason.
+
+    Returns a validated {"inclination": <float in [-1, 1]>, "reason": <str>}. Always succeeds; a
+    missing/malformed response degrades to inclination 0.0 (no tilt — the pivot's deterministic
+    verdict stands). Under the "random" provider the answer is the OFFLINE STAND-IN: the caller's
+    personality disposition, carried in the prompt as a DISPOSITION marker and read straight back
+    (mirroring _random_decision reading "food is North") — deterministic, consuming no global RNG.
+    """
+    _CALL_STATS["inclination"] += 1
+    if PROVIDER == "random":
+        return _random_inclination(prompt)
+    data = _raw_query(prompt)
+    return _validate_inclination(data) if data is not None else dict(FALLBACK_INCLINATION)
+
+
 # --- Validation (one place per vocabulary) ---------------------------------
+def _validate_inclination(data: Any) -> dict[str, Any]:
+    """Coerce a parsed object into a trusted inclination dict, or fall back to a neutral 0.0."""
+    if not isinstance(data, dict):
+        return dict(FALLBACK_INCLINATION)
+    try:
+        value = float(data.get("inclination"))
+    except (TypeError, ValueError):
+        return dict(FALLBACK_INCLINATION)
+    if value != value:  # NaN guard
+        return dict(FALLBACK_INCLINATION)
+    value = max(-1.0, min(1.0, value))  # clamp into the contract range
+    return {"inclination": value, "reason": str(data.get("reason", ""))}
 def _validate_decision(data: Any) -> dict[str, Any]:
     """Coerce a parsed object into a trusted decision dict, or fall back."""
     if not isinstance(data, dict):
@@ -234,6 +270,31 @@ def _random_strategy(prompt: str) -> dict[str, Any]:
         {"strategy": kind, "target": target, "message": "",
          "reaction": reaction, "reason": "Random strategy."}
     )
+
+
+def _random_inclination(prompt: str) -> dict[str, Any]:
+    """The OFFLINE stand-in for a pivot consult: read the caller's personality disposition + reason.
+
+    Like _random_decision reading "food is North", this reads two markers the caller (mind.py) planted
+    in the prompt: DISPOSITION (the personality-weighted inclination in [-1, 1]) and OFFLINE_REASON (a
+    template motive derived from that leaning). It contacts no model and draws NO random number, so the
+    pivot stays deterministic and consumes none of the seeded stream — the institutional layer's
+    zero-RNG determinism is preserved and two minds-on runs are byte-identical.
+    """
+    import re
+
+    disp = 0.0
+    m = re.search(r"DISPOSITION:\s*(-?\d*\.?\d+)", prompt)
+    if m:
+        try:
+            disp = max(-1.0, min(1.0, float(m.group(1))))
+        except ValueError:
+            disp = 0.0
+    reason = "acted on temperament"
+    r = re.search(r"OFFLINE_REASON:\s*(.+)", prompt)
+    if r:
+        reason = r.group(1).strip()
+    return _validate_inclination({"inclination": disp, "reason": reason})
 
 
 # --- Ollama provider (local, default) --------------------------------------

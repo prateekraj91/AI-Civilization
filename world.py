@@ -458,6 +458,13 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # flag OFF so nothing leaks across runs. It never mutates the sim, so a default run is byte-identical.
     world_state.pop("chronicle", None)
     world_state["chronicle_on"] = False
+    # M5.1: the MINDS layer's per-run state (the pivot consult cache, the consult log, the motives fed to
+    # the chronicle) — clear it and reset the flag OFF so nothing leaks across runs. With minds off no
+    # pivot is ever consulted, so a default run is byte-identical to v1.
+    world_state.pop("mind_cache", None)
+    world_state.pop("mind_consults", None)
+    world_state.pop("mind_motives", None)
+    world_state["minds_on"] = False
     return world_state["grid"]
 
 

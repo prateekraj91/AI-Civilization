@@ -731,7 +731,7 @@ def test_diffusion_adds_zero_llm_calls() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     print("PASS test_diffusion_adds_zero_llm_calls")
 
 
@@ -874,7 +874,7 @@ def test_discovery_adds_zero_llm_calls() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     print("PASS test_discovery_adds_zero_llm_calls")
 
 
@@ -1019,7 +1019,7 @@ def test_farming_adds_zero_llm_calls_and_empty_is_v1() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
 
     _fresh_world()
     _agent("Lonely", "curious and adventurous", (1, 1), hunger=0)  # knows nothing
@@ -1167,7 +1167,7 @@ def test_settlement_update_zero_llm_and_no_rng() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "settlement.update consumed RNG"
     assert world_state["settlements"], "the sustained cluster should still have settled"
     print("PASS test_settlement_update_zero_llm_and_no_rng")
@@ -1309,7 +1309,7 @@ def test_storage_accumulate_zero_llm_and_no_rng() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "storage.accumulate consumed RNG"
     assert a.stockpile > 0, "the settled agent should still have accumulated"
     print("PASS test_storage_accumulate_zero_llm_and_no_rng")
@@ -1524,7 +1524,7 @@ def test_trade_and_mint_zero_llm_and_no_rng() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "the economy consumed RNG (would desync v1)"
     print("PASS test_trade_and_mint_zero_llm_and_no_rng")
 
@@ -1778,7 +1778,7 @@ def test_labor_adds_zero_llm_and_no_rng() -> None:
         stats = llm.get_call_stats()
     finally:
         llm.PROVIDER = saved
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "wage labor consumed RNG (would desync v1)"
     print("PASS test_labor_adds_zero_llm_and_no_rng")
 
@@ -1952,7 +1952,7 @@ def test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng() -
         llm.PROVIDER = saved
     after = {a.name: a.relationships for a in world_state["agents"]}
     assert after == before, "leadership MUST NOT write any trust value (pure read of the network)"
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "leadership consumed RNG (would desync v1)"
     print("PASS test_leadership_reads_trust_but_writes_no_trust_values_and_no_llm_no_rng")
 
@@ -3265,7 +3265,7 @@ def test_alliance_adds_no_llm_calls() -> None:
     alliance.handle_ally(bob, "ally_with_Alex", 2, world_state)
     alliance.handle_betray(bob, "betray_alliance_Alex", 3, world_state)
     stats = llm.get_call_stats()
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     print("PASS test_alliance_adds_no_llm_calls")
 
 
@@ -3386,7 +3386,7 @@ def test_respawn_adds_no_llm_calls() -> None:
     _agent("Alex", "friendly and outgoing", (5, 4))
     population.announce_death(kira, 1, world_state)
     population.process_respawns(1 + population.RESPAWN_DELAY, world_state)
-    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0, "inclination": 0}, llm.get_call_stats()
     print("PASS test_respawn_adds_no_llm_calls")
 
 
@@ -3509,7 +3509,7 @@ def test_pygame_renderer_imports_only_state_reading_modules() -> None:
     assert not (imported & forbidden), f"pygame renderer imports decision logic: {imported & forbidden}"
     # It may lean on pygame + stdlib only; it draws straight from the snapshot dict, so it
     # needs no project module at all (not even `world`).
-    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "textwrap", "pygame"}
+    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "textwrap", "collections", "pygame"}
     assert imported <= allowed, f"pygame renderer imports unexpected modules: {imported - allowed}"
     print("PASS test_pygame_renderer_imports_only_state_reading_modules")
 
@@ -3899,14 +3899,66 @@ def test_pygame_terrain_cached_built_once_and_read_only() -> None:
         # Re-ensuring the SAME size must NOT rebuild (cached); a new size rebuilds.
         r._ensure_screen(state["size"])
         assert r._terrain_bg is bg, "terrain must be cached, not rebuilt every call"
+        r._draw(state)                 # first draw may rebake once to sync season from default
+        bg2 = r._terrain_bg            # capture the season-synced terrain
+        assert bg2 is not None
+        r._draw(state)                 # same turn/season -> must NOT rebuild
         r._draw(state)
-        r._draw(state)
-        assert r._terrain_bg is bg, "the cached terrain is reused across frames (not regenerated)"
+        assert r._terrain_bg is bg2, "terrain is cached and reused across frames within a season"
     finally:
         pygame.quit()
     after = {k: state[k] for k in state if k != "agents"}
     assert after == before, "terrain/farmland draw mutated world_state"
     print("PASS test_pygame_terrain_cached_built_once_and_read_only")
+
+
+def test_pygame_terrain_rebakes_on_season_change() -> None:
+    """Slice 5 (seasonal): the cached landscape is REUSED across frames within a season but
+    REBAKED once when the turn crosses a season boundary — a season rebake still touches no
+    global RNG and never mutates world_state."""
+    import copy, random as _random, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, season_name
+    except ImportError:
+        print("PASS test_pygame_terrain_rebakes_on_season_change (skipped: no pygame)")
+        return
+    # turn 8 -> spring, turn 30 -> summer (96 turns/year): far enough to differ in season.
+    assert season_name(8) != season_name(30), "test turns must fall in different seasons"
+    base = {
+        "size": 18,
+        "food": [(3, 3), (10, 12)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": {"A", "B"}, "founded": 2}},
+        "agents": [_FakeAgent("A", "friendly", (6, 6), True, 7.0, 0.0),
+                   _FakeAgent("B", "curious", (7, 6), True, 2.0, 0.0)],
+    }
+    spring = {**base, "turn": 8}
+    summer = {**base, "turn": 30}
+    before = copy.deepcopy({k: base[k] for k in base if k != "agents"})
+    r = PygameRenderer(turn_delay=0.0)
+    pygame.init()
+    try:
+        r._ensure_screen(base["size"])
+        r._draw(spring)               # sync season to spring
+        bg_spring = r._terrain_bg
+        assert bg_spring is not None
+        r._draw(spring)               # same season -> REUSED
+        assert r._terrain_bg is bg_spring, "terrain is reused for draws within a season"
+        s0 = _random.getstate()
+        r._draw(summer)               # crosses into summer -> REBAKED once
+        assert _random.getstate() == s0, "the season rebake touched the global RNG"
+        bg_summer = r._terrain_bg
+        assert bg_summer is not None and bg_summer is not bg_spring, "the terrain changes on a season change"
+        r._draw(summer)               # same season again -> REUSED
+        assert r._terrain_bg is bg_summer, "terrain is reused for draws within a season"
+    finally:
+        pygame.quit()
+    for tag, snap in (("spring", spring), ("summer", summer)):
+        after = {k: snap[k] for k in snap if k not in ("agents", "turn")}
+        assert after == before, f"the {tag} draw mutated world_state"
+    print("PASS test_pygame_terrain_rebakes_on_season_change")
 
 
 def test_pygame_town_plan_grows_with_members_and_is_pure() -> None:
@@ -4889,7 +4941,7 @@ def test_god_mode_adds_no_llm_calls() -> None:
     god_mode.drop_treasure(world_state, 2, 2)
     god_mode.trigger_drought(world_state)
     god_mode.spawn_agent(world_state, "Newbie", "curious")
-    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0, "inclination": 0}, llm.get_call_stats()
     print("PASS test_god_mode_adds_no_llm_calls")
 
 
@@ -4987,7 +5039,7 @@ def test_god_day16_commands_add_no_llm_calls() -> None:
     llm.reset_call_stats()
     god_mode.trigger_plague(world_state)
     god_mode.introduce_stranger(world_state, "Vera", "quiet and guarded")
-    assert llm.get_call_stats() == {"decision": 0, "strategy": 0}, llm.get_call_stats()
+    assert llm.get_call_stats() == {"decision": 0, "strategy": 0, "inclination": 0}, llm.get_call_stats()
     print("PASS test_god_day16_commands_add_no_llm_calls")
 
 
@@ -8085,6 +8137,133 @@ def test_narrator_is_walled_off_from_the_structured_chronicle() -> None:
     print("PASS test_narrator_is_walled_off_from_the_structured_chronicle")
 
 
+# --- Minds at the pivots (V2 M5.1): character decides the undecided ----------
+def _minds_world() -> None:
+    """A clean minds-on world with no agents/food (pivot unit tests place their own figures)."""
+    _fresh_world()
+    world_state["minds_on"] = True
+
+
+def test_the_band_binds_only_close_calls_are_consulted() -> None:
+    """HEADLINE 1: the close-margin band binds absolutely. A DECISIVE war (host far above/below the
+    enemy's) returns the math's verdict UNTOUCHED and consults no mind — regardless of personality;
+    only a near-tie (|margin| <= WAR_BAND) opens the call to character."""
+    import mind
+
+    _minds_world()
+    bold = _agent("Bold", "competitive bold", (1, 1))
+    meek = _agent("Meek", "cautious timid", (2, 2))
+
+    # DECISIVE: margin +4 (9 vs 5) — overwhelming. Both figures launch; neither is consulted.
+    for fig in ("Bold", "Meek"):
+        verdict, consult = mind.tilt(world_state, fig, "war", 4, True,
+                                     {"att": 9, "def": 5, "target": "S002"}, 1)
+        assert verdict is True and consult is None, (fig, verdict, consult)
+    # DECISIVE the other way: margin -4 (5 vs 9). Both hold; neither is consulted.
+    for fig in ("Bold", "Meek"):
+        verdict, consult = mind.tilt(world_state, fig, "war", -4, False,
+                                     {"att": 5, "def": 9, "target": "S002"}, 1)
+        assert verdict is False and consult is None, (fig, verdict, consult)
+    assert not world_state.get("mind_consults"), "no decisive case should consult a mind"
+
+    # CLOSE (margin 0, an even 5-vs-5 standoff): now character is consulted and CAN differ.
+    bold_go, bc = mind.tilt(world_state, "Bold", "war", 0, False, {"att": 5, "def": 5, "target": "S002"}, 2)
+    meek_go, mc = mind.tilt(world_state, "Meek", "war", 0, False, {"att": 5, "def": 5, "target": "S002"}, 2)
+    assert bc is not None and mc is not None, "a close call consults the mind"
+    assert bold_go != meek_go, "in the band, character can change the outcome"
+    print("PASS test_the_band_binds_only_close_calls_are_consulted")
+
+
+def test_character_tilts_a_close_war_offline_standin() -> None:
+    """HEADLINE 2: two kings in the IDENTICAL close-margin war (a slim 6-vs-5 edge), differing ONLY in
+    personality — the competitive one MARCHES, the cautious one REFRAINS (overriding the slim lead).
+    The offline, deterministic personality stand-in decides the undecided (no LLM, no RNG)."""
+    import mind, llm
+
+    saved = llm.PROVIDER
+    llm.PROVIDER = "random"                     # the offline personality stand-in
+    try:
+        _minds_world()
+        _agent("Caesar", "competitive", (1, 1))
+        _agent("Fabius", "cautious", (2, 2))
+        sit = {"att": 6, "def": 5, "target": "S002"}       # a slim material edge, inside the band
+        caesar_go, cc = mind.tilt(world_state, "Caesar", "war", 1, True, sit, 1)
+        fabius_go, fc = mind.tilt(world_state, "Fabius", "war", 1, True, sit, 1)
+    finally:
+        llm.PROVIDER = saved
+
+    assert caesar_go is True, "the competitive king marches on even-ish odds"
+    assert fabius_go is False, "the cautious king refrains despite the slim lead"
+    assert cc["inclination"] > 0 and fc["inclination"] < 0, (cc["inclination"], fc["inclination"])
+    assert fc["flipped"] is True, "the cautious king OVERRODE the math's go"
+    print("PASS test_character_tilts_a_close_war_offline_standin")
+
+
+def test_motive_enters_the_written_history() -> None:
+    """HEADLINE 3: a pivot decision writes its REASON, and the chronicle surfaces the WHY in the saga —
+    history records not just that the king marched but why ('...fortune favours the bold')."""
+    import mind, chronicle
+
+    _chron_world()                              # a literate world so the war is recorded as HISTORY
+    world_state["minds_on"] = True
+    _chron_kingdom("Rex", "S001")
+    _agent("Rex", "competitive bold", (5, 5))
+    # Rex decides a close war (the mind records his motive), then the war fires and is logged.
+    go, rec = mind.tilt(world_state, "Rex", "war", 0, False, {"att": 5, "def": 5, "target": "S002"}, 3)
+    assert go is True, "the bold king marches on even odds"
+    _chron_ev(3, "KING Rex DEFEATED Otto in war -> Otto SUBJUGATED as a subject-king; an EMPIRE rises")
+    chronicle.update(world_state, 3)
+
+    war = next(e for e in chronicle.saga(world_state) if "Rex's Conquest" in e["name"])
+    assert "saying" in war["detail"], war["detail"]           # the motive entered the record
+    assert "fortune favours the bold" in war["detail"], war["detail"]
+    md = chronicle.export_markdown(world_state)
+    assert "saying" in md and "Rex" in md
+    print("PASS test_motive_enters_the_written_history")
+
+
+def test_minds_off_is_byte_identical_and_a_bad_response_falls_back() -> None:
+    """The two guarantees in one: (a) --minds OFF is byte-identical to the baseline (the pivots use their
+    exact deterministic verdicts, no mind_* state written); (b) a malformed model response degrades to
+    inclination 0.0 — NO tilt — so the math's verdict stands (never a crash)."""
+    import mind, llm
+
+    # (a) OFF byte-identical over a full staged run.
+    def run(minds):
+        llm.PROVIDER = "random"
+        random.seed(5)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(20, stage="war", minds_on=minds)
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base, off = run(False), run(False)
+        assert base == off
+        assert not world_state.get("mind_consults") and not world_state.get("mind_cache"), \
+            "a minds-off run writes no mind state"
+
+        # (b) malformed live response -> neutral fallback -> the deterministic verdict stands.
+        _minds_world()
+        _agent("Even", "competitive bold", (1, 1))
+        llm.PROVIDER = "gemini"
+        orig = llm._raw_query
+        llm._raw_query = lambda prompt: {"garbage": "no inclination field"}   # malformed
+        try:
+            incl = llm.get_inclination("DISPOSITION: 0.9")
+            assert incl["inclination"] == 0.0, incl                          # clamped to neutral
+            # in-band, but a neutral inclination leaves the base verdict UNCHANGED (math stands)
+            verdict, rec = mind.tilt(world_state, "Even", "war", 0, False,
+                                     {"att": 5, "def": 5, "target": "S002"}, 1)
+            assert verdict is False and rec["inclination"] == 0.0, (verdict, rec)
+        finally:
+            llm._raw_query = orig
+    finally:
+        llm.PROVIDER = saved
+    print("PASS test_minds_off_is_byte_identical_and_a_bad_response_falls_back")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -8238,6 +8417,7 @@ def main_runner() -> None:
         test_pygame_renderer_iconography_draw_is_read_only,
         test_pygame_terrain_noise_is_pure_and_deterministic,
         test_pygame_terrain_cached_built_once_and_read_only,
+        test_pygame_terrain_rebakes_on_season_change,
         test_pygame_town_plan_grows_with_members_and_is_pure,
         test_pygame_detailed_settlements_cached_and_read_only,
         test_pygame_battle_scene_detects_battles_and_names_casualties,
@@ -8368,6 +8548,10 @@ def main_runner() -> None:
         test_saga_is_deterministic_under_seed,
         test_chronicle_is_read_only_and_off_byte_identical,
         test_narrator_is_walled_off_from_the_structured_chronicle,
+        test_the_band_binds_only_close_calls_are_consulted,
+        test_character_tilts_a_close_war_offline_standin,
+        test_motive_enters_the_written_history,
+        test_minds_off_is_byte_identical_and_a_bad_response_falls_back,
     ]
     for t in tests:
         t()

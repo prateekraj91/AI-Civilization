@@ -253,9 +253,19 @@ def _check_fragmentation(state: dict[str, Any], turn: int) -> list[str]:
         for sk_name in sorted(emp["subject_kings"]):
             sk = _find(state, sk_name)
             disc = emp["discontent"]
-            if sk is not None and emperor is not None and _trust_in(sk, emperor_name) > kingdoms.BREAKAWAY_TRUST:
-                disc[sk_name] = 0  # loyalty holds (or recovered) — reset the hysteresis counter
-                continue
+            if sk is not None and emperor is not None:
+                # M5.1 PIVOT (same breakaway pivot, one level up): a subject-king whose loyalty sits
+                # within BREAKAWAY_BAND of the floor decides by CHARACTER whether to fragment away; far
+                # above it he decisively stays. Off / out-of-band -> exactly the M3.6 rule (byte-identical).
+                margin = kingdoms.BREAKAWAY_TRUST - _trust_in(sk, emperor_name)   # >0 => leans to BREAK
+                break_now = _trust_in(sk, emperor_name) <= kingdoms.BREAKAWAY_TRUST
+                if state.get("minds_on"):
+                    import mind
+                    break_now, _ = mind.tilt(state, sk_name, "breakaway", margin, break_now,
+                                             {"trust": _trust_in(sk, emperor_name), "lord": emperor_name}, turn)
+                if not break_now:
+                    disc[sk_name] = 0  # loyalty holds (or recovered) — reset the hysteresis counter
+                    continue
             # A subject-king whose emperor has died/vanished also reclaims independence.
             disc[sk_name] = disc.get(sk_name, 0) + 1
             if disc[sk_name] < kingdoms.BREAKAWAY_PATIENCE:
@@ -431,10 +441,13 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
         # honouring ally's, so it refrains from a war it would lose against the combined defence.
         diplo = state.get("diplomacy_on")
         coal = state.get("coalitions_on")
+        minds = state.get("minds_on")
         if diplo:
             import diplomacy
         if coal:
             import coalitions
+        if minds:
+            import mind
         targets = []
         for t in _kingdom_neighbours(state, attacker_name):
             if diplo and diplomacy.war_forbidden(state, attacker_name, t):
@@ -445,7 +458,15 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
                 continue
             def_size = (diplomacy.defensive_host_size(state, t) if diplo
                         else imperial_host_size(state, _find(state, t)))
-            if att_strength > def_size:
+            # M5.1 PIVOT: the launch is decisive when the assessed edge is large (the math stands); when
+            # the two hosts are within a hair (|margin| <= WAR_BAND) the KING's own character tilts the
+            # call — a bold, competitive crown marches on even odds; a cautious one holds despite a
+            # slim lead. Off / out-of-band -> exactly `att_strength > def_size` (byte-identical to v1).
+            go = att_strength > def_size
+            if minds:
+                go, _ = mind.tilt(state, attacker_name, "war", att_strength - def_size, go,
+                                  {"att": att_strength, "def": def_size, "target": t}, turn)
+            if go:
                 targets.append(t)
         if not targets:
             continue

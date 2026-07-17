@@ -294,7 +294,7 @@ def demo_e_zero_cost_and_v1() -> None:
     print(f"  19 taxation passes: LLM calls = {stats}; RNG untouched = {random.getstate() == st0}")
     print(f"  total wealth conserved across all passes = {abs(total1 - total0) < 1e-9} "
           f"({total0:.1f} -> {total1:.1f})")
-    assert stats == {"decision": 0, "strategy": 0}, stats
+    assert stats == {"decision": 0, "strategy": 0, "inclination": 0}, stats
     assert random.getstate() == st0, "taxation consumed RNG (would desync v1)"
     assert abs(total1 - total0) < 1e-9, "taxation must conserve total wealth"
 
