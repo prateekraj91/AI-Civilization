@@ -129,7 +129,7 @@ def _record_event(ch: dict[str, Any], turn: int, kind: str, name: str, detail: s
         name = {"war": "a forgotten war", "uprising": "a forgotten revolt",
                 "coronation": "an unremembered crowning", "conquest": "a lost conquest",
                 "extinction": "a vanished line", "hegemon_fall": "the fall of a great power",
-                "faith": "the rise of a creed"}.get(kind, "an event lost to time")
+                "breakaway": "a forgotten secession", "faith": "the rise of a creed"}.get(kind, "an event lost to time")
         detail = "its names are lost to the preliterate dark"
     if fidelity == "history" and ch["literacy_dawn"] is None:
         ch["literacy_dawn"] = turn      # the record turns to true history the moment a literate age can write it
@@ -168,6 +168,9 @@ _P_WRITING = re.compile(r"^(\S+) devised WRITING in (\S+)")
 _P_ERA = re.compile(r"^(\S+) entered the (.+)$")
 _P_FAITH = re.compile(r"^(.+?) took root in (\S+)")
 _P_HEGEMON_FALL = re.compile(r"DEFEATED hegemon (\S+) ")
+# A vassal (M3.5 realm) or subject-king (M3.6 empire) reclaiming independence — the BREAKAWAY pivot's
+# event. Both event strings share "<name> BROKE AWAY from <lord>'s realm|empire".
+_P_BREAKAWAY = re.compile(r"^(?:subject-king )?(\S+) BROKE AWAY from (\S+)'s (?:realm|empire)")
 _P_TURN = re.compile(r"^turn (\d+): (.*)$")
 
 
@@ -282,6 +285,16 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
         _record_event(ch, turn, "hegemon_fall", f"the Fall of the Hegemon {heg}",
                       f"a coalition of the many broke the empire of {heg}",
                       _fidelity(state, _home_of(state, heg)), (heg,))
+        return
+
+    m = _P_BREAKAWAY.match(body)
+    if m:
+        breaker, lord = m.group(1), m.group(2)
+        # Fidelity from the seceding domain (the sid named in a realm break), else the breaker's home.
+        fid = _fidelity(state, _first_sid(body) or _home_of(state, breaker))
+        _record_event(ch, turn, "breakaway", f"the Secession of {breaker}",
+                      f"{breaker} broke away from {lord} and reclaimed independence"
+                      + _motive(state, turn, figure=breaker), fid, (breaker, lord))
         return
 
     m = _P_BIRTH.match(body)

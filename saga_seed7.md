@@ -4,19 +4,12 @@
 
 ## The Great Figures
 - **Rex the Conqueror** — Conqueror, active turns 10–65. Deeds: 2 conquests, 138 levies. Fate: passed from the record.
-- **Rhea7 the Grasping** — Dynast, active turns 281–329. Deeds: 49 levies. Fate: passed from the record.
 - **Nell3 the Grasping** — Conqueror, active turns 215–262. Deeds: 1 conquests, 47 levies. Fate: passed from the record.
-- **Tara7 the Prophet** — Conqueror, active turns 329–371. Deeds: 1 conquests, 1 prophecies, 42 levies. Fate: passed from the record.
+- **Rhea7 the Grasping** — Dynast, active turns 281–300. Deeds: 20 levies. Fate: passed from the record.
 - **Milo5 the Grasping** — Dynast, active turns 262–278. Deeds: 1 crowns, 16 levies. Fate: passed from the record.
-- **Mira the Prophet** — Prophet, active turns 386–439. Deeds: 4 prophecies. Fate: passed from the record.
-- **Umi7 the Prophet** — Prophet, active turns 307–318. Deeds: 4 prophecies. Fate: passed from the record.
 - **Chief2 the Prophet** — Prophet, active turns 9–37. Deeds: 3 prophecies. Fate: passed from the record.
 - **Chief3 the Prophet** — Prophet, active turns 6–58. Deeds: 3 prophecies. Fate: passed from the record.
-- **Iris8 the Prophet** — Prophet, active turns 312–327. Deeds: 3 prophecies. Fate: passed from the record.
 - **Juno5 the Prophet** — Prophet, active turns 254–280. Deeds: 3 prophecies. Fate: passed from the record.
-- **Juno7 the Prophet** — Prophet, active turns 298–324. Deeds: 3 prophecies. Fate: passed from the record.
-- **Umi5 the Prophet** — Prophet, active turns 294–315. Deeds: 3 prophecies. Fate: passed from the record.
-- **Yale7 the Prophet** — Prophet, active turns 313–319. Deeds: 3 prophecies. Fate: passed from the record.
 - **Iris2 the Prophet** — Prophet, active turns 165–194. Deeds: 2 prophecies. Fate: passed from the record.
 - **Juno3 the Prophet** — Prophet, active turns 213–235. Deeds: 2 prophecies. Fate: passed from the record.
 - **Lena the Prophet** — Prophet, active turns 75–119. Deeds: 2 prophecies. Fate: passed from the record.
@@ -25,71 +18,64 @@
 - **Rhea6 the Prophet** — Prophet, active turns 279–296. Deeds: 2 prophecies. Fate: passed from the record.
 - **Iris the Prophet** — Prophet, active turns 35–35. Deeds: 1 prophecies. Fate: passed from the record.
 - **Juno2 the Prophet** — Prophet, active turns 206–206. Deeds: 1 prophecies. Fate: passed from the record.
+- **Juno7 the Prophet** — Prophet, active turns 298–298. Deeds: 1 prophecies. Fate: passed from the record.
 - **Lena5 the Prophet** — Prophet, active turns 259–259. Deeds: 1 prophecies. Fate: passed from the record.
-- **Lena7 the Prophet** — Prophet, active turns 359–359. Deeds: 1 prophecies. Fate: passed from the record.
-- **Milo8 the Prophet** — Prophet, active turns 382–382. Deeds: 1 prophecies. Fate: passed from the record.
-- **Pia8 the Prophet** — Prophet, active turns 347–347. Deeds: 1 prophecies. Fate: passed from the record.
-- **Quin7 the Prophet** — Prophet, active turns 326–326. Deeds: 1 prophecies. Fate: passed from the record.
 - **Rhea the Prophet** — Prophet, active turns 139–139. Deeds: 1 prophecies. Fate: passed from the record.
-- **Sol8 the Prophet** — Prophet, active turns 418–418. Deeds: 1 prophecies. Fate: passed from the record.
 - **Tara5 the Prophet** — Prophet, active turns 278–278. Deeds: 1 prophecies. Fate: passed from the record.
+- **Umi5 the Prophet** — Prophet, active turns 294–294. Deeds: 1 prophecies. Fate: passed from the record.
 
 ## The Houses
 - **the House of Nell3** — founded turn 215, 2 generation(s), 1 crown(s) passed, 2 titled kin (Milo5, Nell3). Fate: endures.
 - **the House of Rex** — founded turn 10, 1 generation(s), 0 crown(s) passed, 1 titled kin (Rex). Fate: endures.
-- **the House of Tara7** — founded turn 329, 1 generation(s), 0 crown(s) passed, 1 titled kin (Tara7). Fate: endures.
 
 ## The Saga
 - **Turn 0 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 3 — the Invention of Writing**: F2d of S002 devised writing — history begins.
 - **Turn 4 — an event lost to time**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 5 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 6 — the Advent of the Faith of the Enlightened and the Iron Truth and the Golden Path**: Chief3 arose as prophet of the Faith of the Enlightened and the Iron Truth and the Golden Path.
+- **Turn 6 — the Advent of the Faith of the Enlightened and the Iron Truth**: Chief3 arose as prophet of the Faith of the Enlightened and the Iron Truth.
 - **Turn 6 — the Rise of the Faith of the Enlightened and the Golden Path**: the Faith of the Enlightened and the Golden Path took root in S002.
-- **Turn 6 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 9 — the Advent of the Faith of the Enlightened and the Iron Truth and the Golden Path**: Chief2 arose as prophet of the Faith of the Enlightened and the Iron Truth and the Golden Path.
+- **Turn 9 — the Advent of the Faith of the Enlightened and the Iron Truth**: Chief2 arose as prophet of the Faith of the Enlightened and the Iron Truth.
 - **Turn 10 — Rex's Seizure of S002**: Rex took S002 by force.
-- **Turn 10 — the Advent of the Faith of the Enlightened and the Covenant and the Golden Path**: Chief3 arose as prophet of the Faith of the Enlightened and the Covenant and the Golden Path.
+- **Turn 10 — the Advent of the Faith of the Enlightened and the Covenant**: Chief3 arose as prophet of the Faith of the Enlightened and the Covenant.
 - **Turn 10 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 15 — a forgotten revolt**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 15 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 21 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 22 — Rex's Seizure of S003**: Rex took S003 by force.
 - **Turn 23 — S002 enters Bronze Age**: S002 reached Bronze Age.
 - **Turn 24 — an event lost to time**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 26 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path.
+- **Turn 26 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 30 — S003 enters Iron Age**: S003 reached Iron Age.
-- **Turn 35 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path.
-- **Turn 37 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path.
+- **Turn 35 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 37 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 45 — S001 enters Iron Age**: S001 reached Iron Age.
 - **Turn 48 — S002 enters Iron Age**: S002 reached Iron Age.
 - **Turn 52 — the S001 Uprising (crushed)**: a revolt in S001 was put down.
-- **Turn 58 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path.
+- **Turn 58 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 65 — a vanished line**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 75 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path**: Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Covenant and the Golden Path.
+- **Turn 75 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 79 — S001 enters Iron Age**: S001 reached Iron Age.
-- **Turn 105 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 105 — the Rise of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path took root in S002.
-- **Turn 119 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 121 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 139 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Rhea arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 105 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 119 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 121 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 139 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Rhea arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 163 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 165 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Iris2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 165 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 179 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 180 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 183 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Nell2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 183 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 184 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 185 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 194 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Iris2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 206 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 213 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno3 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 194 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 206 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 213 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 215 — Nell3's Seizure of S002**: Nell3 took S002 by force.
 - **Turn 217 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 219 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 219 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Nell2 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 219 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 226 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 234 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 235 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno3 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 235 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 236 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 238 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 240 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
@@ -97,59 +83,20 @@
 - **Turn 246 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 253 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 254 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 254 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 254 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 257 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 258 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 259 — an unremembered crowning**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 259 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Lena5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 262 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 259 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Lena5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 262 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 262 — the Crowning of Milo5**: Milo5 succeeded Nell3 as [monarch of S002].
 - **Turn 266 — a vanished line**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 272 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
 - **Turn 278 — an unremembered crowning**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 278 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Tara5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 279 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Rhea6 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 280 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 294 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Umi5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 296 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Rhea6 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 298 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
+- **Turn 278 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Tara5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 279 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Rhea6 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 280 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 294 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Umi5 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 296 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Rhea6 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 298 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Juno7 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 300 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 307 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Umi7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 309 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Juno7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 311 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 311 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Umi7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 312 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Iris8 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 313 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Umi5 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 313 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Yale7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 313 — the Rise of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant took root in S003.
-- **Turn 315 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Umi5 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 316 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Iris8 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 317 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Umi7 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 317 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Yale7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 317 — the Rise of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant took root in S003.
-- **Turn 318 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Umi7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 319 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Yale7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 319 — the Rise of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path took root in S003.
-- **Turn 324 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Juno7 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 324 — the Rise of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant took root in S003.
-- **Turn 326 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Quin7 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 327 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Iris8 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 329 — Tara7's Seizure of S002**: Tara7 took S002 by force.
-- **Turn 347 — the Advent of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path**: Pia8 arose as prophet of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant and the Golden Path.
-- **Turn 359 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Lena7 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 362 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Tara7 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 372 — a vanished line**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 372 — an unremembered crowning**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 376 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 377 — the Rise of the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: the Faith of the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant took root in S003.
-- **Turn 378 — the Rise of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant took root in S003.
-- **Turn 382 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Milo8 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 386 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Mira arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 387 — an unremembered crowning**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 392 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Mira arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 418 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Sol8 arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 419 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Mira arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 435 — an unremembered crowning**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 439 — the Advent of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant**: Mira arose as prophet of the Faith of the Ascetic Way and the Enlightened and the Watchful Dead and the Bountiful Earth and the Covenant.
-- **Turn 458 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
-- **Turn 460 — a vanished line**: its names are lost to the preliterate dark.  _(legend)_

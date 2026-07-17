@@ -219,30 +219,43 @@ def _formed(counters: dict[str, int], agent: Any) -> list[str]:
     return out
 
 
-def form(state: dict[str, Any], turn: int) -> list[str]:
+def form(state: dict[str, Any], turn: int,
+         changed: "dict[str, set] | None" = None) -> list[str]:
     """Every living agent forms any belief its lived experience now warrants (deterministic, ZERO RNG).
 
     Adding a belief drops its CONTRADICTION (your own lived truth is the most trusted source, so it
     overrides the old story). Each new belief is logged sparingly ("X came to believe: ..."). Returns
     the event strings.
+
+    `changed` is the per-turn "one change per belief" ledger (name -> beliefs already touched this
+    turn), shared with `spread` via `update` so a belief an agent adopts/renounces this turn can never
+    flip back the same turn. When two contradictory beliefs are BOTH warranted at once, the FIRST in
+    catalogue order wins deterministically (its contradiction is locked out for the turn) — stopping the
+    same-turn A->B, B->A oscillation. Called standalone (tests) it gets a fresh ledger.
     """
     beliefs = _beliefs(state)
     exp = _exp(state)
+    if changed is None:
+        changed = {}
     events: list[str] = []
     for a in sorted((x for x in state["agents"] if x.alive), key=lambda x: x.name):
         counters = exp.get(a.name)
         if counters is None:
             continue
         held = beliefs.setdefault(a.name, set())
+        locked = changed.setdefault(a.name, set())
         for belief in _formed(counters, a):
-            if belief in held:
+            if belief in held or belief in locked:
                 continue
             held.add(belief)
+            locked.add(belief)
             contra = CONTRADICTS.get(belief)
             dropped = ""
-            if contra is not None and contra in held:
-                held.discard(contra)
-                dropped = f" (renouncing '{contra}')"
+            if contra is not None:
+                locked.add(contra)          # the loser is barred from forming (or spreading) back this turn
+                if contra in held:
+                    held.discard(contra)
+                    dropped = f" (renouncing '{contra}')"
             ev = f"turn {turn}: {a.name} came to believe '{belief}'{dropped}"
             events.append(ev)
             world.record_memory(a, f"Came to believe '{belief}'{dropped}")
@@ -255,7 +268,8 @@ def _has_any_belief(state: dict[str, Any]) -> bool:
     return any(state.get("beliefs", {}).get(a.name) for a in state["agents"] if a.alive)
 
 
-def spread(state: dict[str, Any], turn: int, rng: "random.Random | None" = None) -> list[str]:
+def spread(state: dict[str, Any], turn: int, rng: "random.Random | None" = None,
+           changed: "dict[str, set] | None" = None) -> list[str]:
     """Spread beliefs one hop this turn, TRUST-weighted exactly as knowledge diffuses (M1.1).
 
     For every adjacent (holder, non-holder) pair the non-holder may ADOPT a belief with
@@ -264,11 +278,18 @@ def spread(state: dict[str, Any], turn: int, rng: "random.Random | None" = None)
     FLIP_TRUST, and then it FLIPS (the old belief is renounced). Decided against a turn-start snapshot so
     a belief moves at most one hop/turn, order-independent. No-ops drawing NO RNG when nobody believes
     anything yet. Returns the event strings.
+
+    `changed` is the shared per-turn ledger (see `form`): a belief a learner already changed this turn
+    — whether by FORMATION earlier this tick or an earlier hop — is locked, so contact can never flip it
+    back the same turn. Called standalone (tests) it gets a fresh ledger, so a run that mixes no
+    formation with spread is byte-identical to before.
     """
     if not _has_any_belief(state):
         return []
     draw = (rng or random).random
     beliefs = _beliefs(state)
+    if changed is None:
+        changed = {}
     living = [a for a in state["agents"] if a.alive]
     by_name = {a.name: a for a in living}
     snapshot = {a.name: frozenset(beliefs.get(a.name, set())) for a in living}
@@ -285,9 +306,14 @@ def spread(state: dict[str, Any], turn: int, rng: "random.Random | None" = None)
         for lname in sorted(neighbours):
             learner = neighbours[lname]
             l_held = snapshot[lname]
+            locked = changed.get(lname, set())    # beliefs this learner already changed this turn
             chosen = pending.setdefault(lname, {})
             for belief in sorted(t_held):
                 if belief in l_held or belief in chosen:
+                    continue
+                # One change per belief per turn: skip a belief (or its contradiction) already
+                # settled this turn — its contra is locked too, so this bars flipping either half back.
+                if belief in locked:
                     continue
                 contra = CONTRADICTS.get(belief)
                 # Don't let a learner queue both halves of a contradiction in one turn.
@@ -303,14 +329,18 @@ def spread(state: dict[str, Any], turn: int, rng: "random.Random | None" = None)
     for lname in sorted(pending):
         learner = by_name[lname]
         held = beliefs.setdefault(lname, set())
+        locked = changed.setdefault(lname, set())
         for belief in sorted(pending[lname]):
             teacher_name = pending[lname][belief]
             held.add(belief)
+            locked.add(belief)
             renounce = ""
             contra = CONTRADICTS.get(belief)
-            if contra is not None and contra in held:  # a sanctioned flip -> renounce the old worldview
-                held.discard(contra)
-                renounce = f" (renouncing '{contra}')"
+            if contra is not None:
+                locked.add(contra)          # bar the renounced belief from returning this turn
+                if contra in held:          # a sanctioned flip -> renounce the old worldview
+                    held.discard(contra)
+                    renounce = f" (renouncing '{contra}')"
             world.record_memory(learner, f"Took up the belief '{belief}' from {teacher_name}{renounce}")
             events.append(f"turn {turn}: {lname} took up '{belief}' from {teacher_name}{renounce}")
     state.setdefault("events", []).extend(events)
@@ -323,10 +353,15 @@ def update(state: dict[str, Any], turn: int, rng: "random.Random | None" = None)
     ZERO LLM. Formation is deterministic; spread draws RNG like knowledge diffusion (and none when
     nobody believes anything yet). Caller gates on `beliefs_on`, so an off run never calls this — no
     "beliefs" key is written — and stays byte-identical. Returns all events logged this turn.
+
+    Formation and spread share ONE per-turn `changed` ledger, so an agent can change any given belief at
+    most once per turn: a belief FORMED this tick can't be spread-flipped back the same tick (and vice
+    versa). The ledger is a local (never persisted), so it adds no world_state field.
     """
     _update_experience(state, turn)
-    events = form(state, turn)
-    events += spread(state, turn, rng)
+    changed: dict[str, set] = {}
+    events = form(state, turn, changed)
+    events += spread(state, turn, rng, changed)
     return events
 
 

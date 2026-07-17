@@ -94,9 +94,28 @@ def _faith_id(core: "frozenset[str]") -> str:
     return "|".join(sorted(core))
 
 
-def faith_name(core: "frozenset[str]") -> str:
-    """A deterministic display name built from the core beliefs' fixed epithets (no LLM)."""
-    return "the Faith of " + " and ".join(BELIEF_EPITHET.get(b, b) for b in sorted(core))
+FAITH_NAME_BELIEFS = 2  # a faith is named for its 1-2 DOMINANT beliefs only — the name never grows with the core
+
+
+def faith_name(dominant: "Sequence[str]") -> str:
+    """A deterministic display name built from a faith's 1-2 DOMINANT beliefs' fixed epithets (no LLM).
+
+    `dominant` is the short, stable set of pillar beliefs (see `_dominant_beliefs`), NOT the whole core:
+    the name is a pure function of that short list, so it stays short and does NOT grow as more beliefs
+    join the core. Display order is fixed by belief id so the string is stable even if prevalence shifts."""
+    return "the Faith of " + " and ".join(BELIEF_EPITHET.get(b, b) for b in sorted(dominant))
+
+
+def _dominant_beliefs(state: dict[str, Any], sids: "set[str]", core: "frozenset[str]") -> list[str]:
+    """The core's 1-2 most-held beliefs across `sids` — the flock's founding pillars, used ONLY to name
+    the faith. Highest total follower count, ties broken by belief id; deterministic, ZERO RNG/LLM. The
+    founding beliefs (which spread first and widest) stay the most prevalent, so the name stays stable."""
+    totals = {b: 0 for b in core}
+    for sid in sorted(sids):
+        for b, c in beliefs.belief_counts(sid, state).items():
+            if b in totals:
+                totals[b] += c
+    return sorted(core, key=lambda b: (-totals[b], b))[:FAITH_NAME_BELIEFS]
 
 
 def _living(state: dict[str, Any]) -> dict[str, Any]:
@@ -155,6 +174,25 @@ def _followers(state: dict[str, Any], sids: "set[str]", core: "frozenset[str]") 
     return out
 
 
+def _predecessor(faiths_old: dict[str, Any], core: "frozenset[str]", sids: "set[str]") -> "tuple[str, dict[str, Any]] | None":
+    """The prior-turn faith this newly-formed (core, sids) CONTINUES — a drift of the same flock, not a
+    new religion. That is an old faith sharing a settlement whose core is a subset or superset of `core`
+    (belief accretion or loss), most settlement-overlap first, ties by faith id. None if this is a
+    genuinely new faith (a fractured town reforming on an unrelated core). Lets a faith carry its NAME and
+    PROPHET across the faith-id change a growing/shrinking core forces, so the chronicle reads one
+    continuous faith — a naming/logging concern only; the set of faiths, cores and prophets is unchanged.
+    Returns (old_faith_id, old_faith) so the caller can mark that faith as continued, not faded."""
+    best: "tuple[int, str, dict[str, Any]] | None" = None
+    for ofid in sorted(faiths_old):
+        of = faiths_old[ofid]
+        overlap = len(of["settlements"] & sids)
+        if overlap == 0 or not (core <= of["core"] or of["core"] <= core):
+            continue
+        if best is None or overlap > best[0]:
+            best = (overlap, ofid, of)
+    return (best[1], best[2]) if best is not None else None
+
+
 def form_faiths(state: dict[str, Any], turn: int) -> list[str]:
     """Recompute the world's faiths from current beliefs (M4.8). Deterministic, ZERO RNG, ZERO LLM.
 
@@ -171,18 +209,33 @@ def form_faiths(state: dict[str, Any], turn: int) -> list[str]:
 
     events: list[str] = []
     new: dict[str, Any] = {}
+    continued: set[str] = set()   # old faith ids a drifted successor carried on — they did not fade
     for core, sids in by_core.items():
         fid = _faith_id(core)
         prev = faiths.get(fid)
+        # A brand-new faith id may be this flock's SAME faith with a drifted core: inherit that
+        # predecessor's name and prophet so a growing/shrinking core reads as one continuous faith,
+        # not a fresh religion re-founded (and re-prophesied) every turn.
+        pred = _predecessor(faiths, core, sids) if prev is None else None
+        if pred is not None:
+            continued.add(pred[0])
+        base = prev if prev is not None else (pred[1] if pred is not None else None)
         founded = prev["founded"] if prev is not None else turn
-        prophet = prev["prophet"] if prev is not None else None
-        new[fid] = {"core": core, "name": faith_name(core), "settlements": sids,
-                    "followers": _followers(state, sids, core), "prophet": prophet, "founded": founded}
-        if prev is None:
-            ev = f"turn {turn}: {faith_name(core)} took root in {', '.join(sorted(sids))}"
+        # Prophet carries from prev (same id) or the drift predecessor; else None until one arises.
+        prophet = base["prophet"] if base is not None else None
+        # The last ANNOUNCED prophet — carried too, so a drift does not re-announce the same figure and
+        # a brief vacancy (X -> none -> X) stays silent. Distinct from `prophet` (current, may be None).
+        prophet_logged = base.get("prophet_logged") if base is not None else None
+        # Name is fixed at founding: kept by prev, inherited from the drift predecessor, else the
+        # DOMINANT beliefs — so it stays short and stable and never grows with the core.
+        name = base["name"] if base is not None else faith_name(_dominant_beliefs(state, sids, core))
+        new[fid] = {"core": core, "name": name, "settlements": sids, "followers": _followers(state, sids, core),
+                    "prophet": prophet, "prophet_logged": prophet_logged, "founded": founded}
+        if base is None:      # a genuinely new faith takes root; a drift is a continuation, not a new rise
+            ev = f"turn {turn}: {name} took root in {', '.join(sorted(sids))}"
             events.append(ev)
     for fid, faith in faiths.items():
-        if fid not in new:
+        if fid not in new and fid not in continued:
             events.append(f"turn {turn}: {faith['name']} faded (its shared core dissolved)")
     state["faiths"] = new
     state.setdefault("events", []).extend(events)
@@ -221,12 +274,23 @@ def _prophet_of(state: dict[str, Any], faith: dict[str, Any]) -> "str | None":
 
 
 def choose_prophets(state: dict[str, Any], turn: int) -> list[str]:
-    """Set (or clear) each faith's prophet from the current flock. Logs a new prophet's emergence."""
+    """Set (or clear) each faith's prophet from the current flock. Logs a prophet's emergence ONLY on a
+    genuine transition for THAT faith (none -> X, or X -> Y): a faith keeping the same prophet across
+    turns logs nothing new.
+
+    Emergence is compared against the faith's own last-ANNOUNCED prophet (`faith['prophet_logged']`),
+    which is per-faith (so two faiths sharing a display name never cross-trigger) and only moves when we
+    actually announce — so a brief vacancy (X -> none -> X, nobody qualifying for a turn) does NOT
+    re-announce X, while a true X -> Y still emits. A faith whose core drifts (a new faith id) inherits
+    that record in `form_faiths`, so the churn the drift causes logs nothing. `faith['prophet']` is set
+    every turn (the M4.8 legitimacy hook reads the CURRENT prophet, which may be None) — this is
+    logging-layer only; who IS the prophet is unchanged."""
     events: list[str] = []
     for fid in sorted(state.get("faiths", {})):
         faith = state["faiths"][fid]
         prophet = _prophet_of(state, faith)
-        if prophet is not None and prophet != faith.get("prophet"):
+        if prophet is not None and prophet != faith.get("prophet_logged"):
+            faith["prophet_logged"] = prophet
             ev = f"turn {turn}: {prophet} arose as prophet of {faith['name']}"
             events.append(ev)
             leader = next((a for a in state["agents"] if a.name == prophet), None)

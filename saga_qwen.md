@@ -1,0 +1,32 @@
+# The Chronicle of the Age (narrated)
+
+- In turn 0, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 3, F2d of S002 devised writing — history begins.
+- In turn 4, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 5, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 6, Chief3 arose as prophet of the Faith of the Enlightened and the Iron Truth.
+- In turn 6, the Faith of the Enlightened and the Golden Path took root in S002.
+- In turn 9, Chief2 arose as prophet of the Faith of the Enlightened and the Iron Truth.
+- In turn 10, Rex took S002 by force.
+- In turn 10, Chief3 arose as prophet of the Faith of the Enlightened and the Covenant.
+- In turn 10, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 15, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 21, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 22, Rex took S003 by force.
+- In turn 23, S002 reached Bronze Age.
+- In turn 24, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 26, Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 30, S003 reached Iron Age.
+- In turn 35, Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 37, Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 45, S001 reached Iron Age.
+- In turn 48, S002 reached Iron Age.
+- In turn 52, a revolt in S001 was put down.
+- In turn 58, Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 65, its names are lost to the preliterate dark. (a legend, its names lost)
+- In turn 75, Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 79, S001 reached Iron Age.
+- In turn 105, Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 119, Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 121, Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- In turn 139, Rhea arose as prophet of the Faith of the Enlightened and the Watchful Dead.

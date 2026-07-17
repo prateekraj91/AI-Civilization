@@ -6776,6 +6776,92 @@ def test_faith_forms_on_coherence_not_when_fractured() -> None:
     print("PASS test_faith_forms_on_coherence_not_when_fractured")
 
 
+def test_faith_name_short_and_stable_as_core_grows() -> None:
+    """A faith is named for its 1-2 DOMINANT beliefs only: the name stays short and does NOT grow as
+    more beliefs join the core (the chronicle-readability fix — no runaway 'X and Y and Z and ...')."""
+    import religion, beliefs
+    founding = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    _relig_world(); _rsettle("S001", (5, 5))
+    for n, p in [("A", (5, 5)), ("B", (5, 6)), ("C", (6, 5)), ("D", (6, 6)), ("E", (7, 5))]:
+        _believer(n, p, believes=set(founding))
+    religion.form_faiths(world_state, 1)
+    name1 = religion.faith_of_settlement(world_state, "S001")["name"]
+    assert name1.count(" and ") == 1, ("name should use exactly 2 beliefs, got", name1)
+
+    # A third belief spreads to a MAJORITY (4 of 5) — it JOINS the core but is less prevalent than the
+    # two founding pillars, so the name must stay the same (short, stable) and not absorb the newcomer.
+    for n in ("A", "B", "C", "D"):
+        world_state["beliefs"][n].add(beliefs.KNOWLEDGE_IS_POWER)
+    ev = religion.form_faiths(world_state, 2)
+    f = religion.faith_of_settlement(world_state, "S001")
+    assert f["core"] == frozenset(founding | {beliefs.KNOWLEDGE_IS_POWER}), "the core did grow"
+    name2 = f["name"]
+    assert name2 == name1, ("name must stay stable as the core grows", name1, name2)
+    assert name2.count(" and ") == 1, ("name must not grow with the core", name2)
+    assert religion.BELIEF_EPITHET[beliefs.KNOWLEDGE_IS_POWER] not in name2, "newcomer must not enter the name"
+    # A drift of the same flock is a CONTINUATION, not a new rise — it must not re-log "took root".
+    assert not any("took root" in e for e in ev), ("a drifted core must not re-take-root", ev)
+    print("PASS test_faith_name_short_and_stable_as_core_grows")
+
+
+def test_prophet_emergence_logs_only_on_genuine_change() -> None:
+    """A prophet's emergence is logged ONLY on a real transition (none -> X, X -> Y): a faith keeping the
+    same prophet logs nothing new, even when its core grows and recreates the faith id (the spam fix)."""
+    import religion, trust, beliefs
+    core = {beliefs.LAND_PROVIDES, beliefs.STRONGER_TOGETHER}
+
+    _relig_world(); _rsettle("S001", (5, 5))
+    flock = [_believer(n, p, believes=set(core)) for n, p in
+             [("Pa", (5, 5)), ("Pb", (5, 6)), ("Pc", (6, 5)), ("Pd", (6, 6)), ("Pe", (7, 5))]]
+    for a in flock:                                   # everyone trusts both Pb and Pc (Pb wins on name tiebreak)
+        for target in ("Pb", "Pc"):
+            if a.name != target:
+                trust.ensure_relationship(a, target)["trust"] = 3
+
+    religion.form_faiths(world_state, 1)
+    ev1 = religion.choose_prophets(world_state, 1)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] == "Pb"
+    assert sum("arose as prophet" in e for e in ev1) == 1 and "Pb" in ev1[0], ev1
+
+    ev2 = religion.choose_prophets(world_state, 2)     # same prophet, recomputed -> logs nothing
+    assert not any("arose as prophet" in e for e in ev2), ("no re-log for an unchanged prophet", ev2)
+
+    # The core GROWS (a third belief joins a MAJORITY, founding pillars still strictly most-prevalent)
+    # -> a NEW faith id but the SAME stable name and the same prophet: the churn must not re-log.
+    for a in flock:
+        if a.name != "Pe":                            # 4 of 5 -> core belief, but less prevalent than the pillars
+            world_state["beliefs"][a.name].add(beliefs.KNOWLEDGE_IS_POWER)
+    religion.form_faiths(world_state, 3)
+    assert religion.faith_of_settlement(world_state, "S001")["core"] == frozenset(
+        core | {beliefs.KNOWLEDGE_IS_POWER}), "the core did grow (new faith id)"
+    ev3 = religion.choose_prophets(world_state, 3)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] == "Pb"
+    assert not any("arose as prophet" in e for e in ev3), ("faith-id churn must not re-log the prophet", ev3)
+
+    # A GENUINE change (Pb dies, Pc arises) still logs.
+    next(a for a in flock if a.name == "Pb").alive = False
+    ev4 = religion.choose_prophets(world_state, 4)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] == "Pc"
+    assert sum("arose as prophet" in e for e in ev4) == 1 and "Pc" in ev4[0], ev4
+
+    # A brief VACANCY then the SAME prophet returns (Pc -> none -> Pc) must NOT re-announce Pc: strip the
+    # trust that backs Pc so none qualifies, then restore it.
+    saved = {a.name: dict(a.relationships.get("Pc", {})) for a in flock if a.name != "Pc"}
+    for a in flock:
+        if a.name != "Pc":
+            a.relationships.get("Pc", {})["trust"] = 0
+    ev5 = religion.choose_prophets(world_state, 5)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] is None, "vacancy: nobody qualifies"
+    for a in flock:
+        if a.name != "Pc":
+            a.relationships["Pc"] = saved[a.name]
+    ev6 = religion.choose_prophets(world_state, 6)
+    assert religion.faith_of_settlement(world_state, "S001")["prophet"] == "Pc"
+    assert not any("arose as prophet" in e for e in ev5 + ev6), ("a vacancy then the same prophet must stay silent", ev5, ev6)
+    print("PASS test_prophet_emergence_logs_only_on_genuine_change")
+
+
 def test_prophet_is_derived_from_devotion_and_trust_not_assigned() -> None:
     """The prophet is the most devout-and-trusted follower (derived), not the richest; a faith whose
     followers trust no one enough has NO prophet."""
@@ -8222,6 +8308,103 @@ def test_motive_enters_the_written_history() -> None:
     print("PASS test_motive_enters_the_written_history")
 
 
+def test_pivot_provider_selection_random_stands_in_live_reaches_the_model() -> None:
+    """DOC: which provider the pivot consult uses. AICIV_PROVIDER routes it (default 'ollama'):
+    under 'random' the inclination is the DETERMINISTIC offline stand-in (reads the DISPOSITION marker,
+    contacts no model); under a live provider (ollama/gemini) the SAME entry point goes through
+    `_raw_query` to the model. So a live qwen is engaged only when AICIV_PROVIDER is NOT 'random'."""
+    import llm
+
+    saved = llm.PROVIDER
+    try:
+        # The module default (when AICIV_PROVIDER is unset) is the local model server — qwen via Ollama —
+        # NOT the offline stand-in. So the stand-in is used only when AICIV_PROVIDER is set to 'random'.
+        assert os.getenv("AICIV_PROVIDER", "ollama") == "ollama" or os.getenv("AICIV_PROVIDER") is not None
+
+        # 'random' -> offline stand-in: the disposition planted in the prompt is read straight back, no I/O.
+        llm.PROVIDER = "random"
+        out = llm.get_inclination("DISPOSITION: 0.7\nOFFLINE_REASON: because the odds were even")
+        assert out["inclination"] == 0.7 and "odds were even" in out["reason"], out
+
+        # a live provider -> the SAME call is dispatched to the model via _raw_query (here stubbed).
+        llm.PROVIDER = "ollama"
+        seen = {}
+
+        def _stub(prompt):
+            seen["prompt"] = prompt
+            return {"inclination": 0.9, "reason": "qwen"}
+
+        orig = llm._raw_query
+        llm._raw_query = _stub
+        try:
+            live = llm.get_inclination("You are Rex... DISPOSITION: 0.7")
+            assert live["inclination"] == 0.9 and live["reason"] == "qwen", live
+            assert "prompt" in seen, "a live provider must reach the model through _raw_query"
+        finally:
+            llm._raw_query = orig
+    finally:
+        llm.PROVIDER = saved
+    print("PASS test_pivot_provider_selection_random_stands_in_live_reaches_the_model")
+
+
+def test_breakaway_motive_enters_the_chronicle() -> None:
+    """The BREAKAWAY pivot's motive reaches the saga: a vassal who breaks away for a recorded reason gets
+    a Secession entry whose detail carries the WHY (closing the wiring gap where breakaways — unlike wars
+    and uprisings — produced no chronicle entry at all, so their motive was recorded but never printed)."""
+    import mind, chronicle
+
+    _chron_world()                                     # S001 literate -> the secession is HISTORY
+    world_state["minds_on"] = True
+    _chron_kingdom("Duke", "S001")
+    _agent("Vale", "independent solitary", (5, 5))     # a proud vassal -> breaks on a close call
+    brk, rec = mind.tilt(world_state, "Vale", "breakaway", 0.0, False,
+                         {"trust": 1, "lord": "Duke"}, 7)
+    assert brk is True, "the proud vassal breaks on a near-tie"
+    _chron_ev(7, "Vale BROKE AWAY from Duke's realm — S001 is independent again (loyalty collapsed)")
+    chronicle.update(world_state, 7)
+
+    sec = next(e for e in chronicle.saga(world_state) if "Secession of Vale" in e["name"])
+    assert "saying" in sec["detail"], sec["detail"]     # the motive entered the record
+    md = chronicle.export_markdown(world_state)
+    assert "Secession of Vale" in md and "saying" in md
+    print("PASS test_breakaway_motive_enters_the_chronicle")
+
+
+def test_belief_changes_at_most_once_per_turn_no_flipflop() -> None:
+    """A belief an agent changes this turn cannot flip back the SAME turn. When two contradictory beliefs
+    are BOTH warranted at once, the first (catalogue order) wins deterministically — so the log never
+    shows the A->B, B->A oscillation (Wren renouncing X for Y and Y for X on one tick)."""
+    import beliefs
+
+    def counters(**over):
+        c = {"fed": 0, "hungry": 0, "rich": 0, "extracted": 0, "solidarity": 0, "deprived": 0, "deaths": 0}
+        c.update(over); return c
+
+    # Wren already holds 'stronger together'; this turn her experience ALSO warrants its opposite
+    # ('the strong take what they want'). Exactly one change fires — no ping-pong.
+    _belief_world()
+    _bagent("Wren", (5, 5))
+    world_state.setdefault("belief_exp", {})["Wren"] = counters(extracted=10, solidarity=10)
+    world_state.setdefault("beliefs", {})["Wren"] = {beliefs.STRONGER_TOGETHER}
+    events = [e for e in beliefs.form(world_state, 5) if "Wren came to believe" in e]
+    assert len(events) == 1, events                                   # not two contradictory events
+    assert beliefs.agent_beliefs("Wren", world_state) == {beliefs.STRONG_TAKE}, \
+        beliefs.agent_beliefs("Wren", world_state)                    # first-in-catalogue wins, deterministically
+    # and never both renunciations on the same turn
+    joined = " || ".join(events)
+    assert not ("renouncing 'we are stronger together'" in joined
+                and "renouncing 'the strong take what they want'" in joined), joined
+
+    # Both freshly warranted (neither pre-held) -> still exactly one, deterministically the same winner.
+    _belief_world()
+    _bagent("Kit", (5, 5))
+    world_state.setdefault("belief_exp", {})["Kit"] = counters(extracted=10, solidarity=10)
+    formed = [e for e in beliefs.form(world_state, 5) if "Kit came to believe" in e]
+    assert len(formed) == 1 and beliefs.STRONG_TAKE in formed[0], formed
+    assert beliefs.agent_beliefs("Kit", world_state) == {beliefs.STRONG_TAKE}
+    print("PASS test_belief_changes_at_most_once_per_turn_no_flipflop")
+
+
 def test_minds_off_is_byte_identical_and_a_bad_response_falls_back() -> None:
     """The two guarantees in one: (a) --minds OFF is byte-identical to the baseline (the pivots use their
     exact deterministic verdicts, no mind_* state written); (b) a malformed model response degrades to
@@ -8504,6 +8687,8 @@ def main_runner() -> None:
         test_children_inherit_settlement_beliefs_via_childhood_boost,
         test_beliefs_off_run_is_byte_identical_and_adds_no_llm,
         test_faith_forms_on_coherence_not_when_fractured,
+        test_faith_name_short_and_stable_as_core_grows,
+        test_prophet_emergence_logs_only_on_genuine_change,
         test_prophet_is_derived_from_devotion_and_trust_not_assigned,
         test_aligned_ruler_generates_less_discontent_and_more_loyalty,
         test_defiant_king_erodes_vassal_loyalty_and_prophet_amplifies,
@@ -8551,6 +8736,9 @@ def main_runner() -> None:
         test_the_band_binds_only_close_calls_are_consulted,
         test_character_tilts_a_close_war_offline_standin,
         test_motive_enters_the_written_history,
+        test_pivot_provider_selection_random_stands_in_live_reaches_the_model,
+        test_breakaway_motive_enters_the_chronicle,
+        test_belief_changes_at_most_once_per_turn_no_flipflop,
         test_minds_off_is_byte_identical_and_a_bad_response_falls_back,
     ]
     for t in tests:
