@@ -454,6 +454,10 @@ def create_world(size: int = GRID_SIZE) -> list[list[str]]:
     # so nothing leaks across runs and a default run is byte-identical to v1.
     world_state.pop("coalitions", None)
     world_state["coalitions_on"] = False
+    # M4.16: the Chronicle is the historian's own record (derived from events) — clear it and reset the
+    # flag OFF so nothing leaks across runs. It never mutates the sim, so a default run is byte-identical.
+    world_state.pop("chronicle", None)
+    world_state["chronicle_on"] = False
     return world_state["grid"]
 
 

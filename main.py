@@ -34,6 +34,7 @@ import time
 
 import alliance
 import beliefs
+import chronicle
 import coalitions
 import conversation
 import culture
@@ -596,6 +597,13 @@ def print_belief_cultures() -> None:
             profile = "(no shared beliefs)"
         print(f"{sid}: {profile}")
     print()
+
+
+def print_chronicle() -> None:
+    """M4.16: print the run's structured SAGA — the history the world wrote — at the end of the summary.
+    Printed ONLY when the chronicle is on (a default run never calls it, so the summary is byte-identical).
+    Deterministic, ZERO LLM; the same seed writes the same saga."""
+    print(chronicle.export_markdown(world_state))
 
 
 def print_coalitions() -> None:
@@ -1272,6 +1280,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "whether the world self-balances (no single empire swallows everything). Pair with --empire. "
              "Zero LLM, zero RNG. Off by default -> byte-identical.")
     p.add_argument(
+        "--chronicle", action="store_true",
+        help="V2 M4.16 (CLOSES Arc 6): enable THE CHRONICLE — the world writes its own history. Each turn "
+             "it READS the event log and composes a deterministic, structured SAGA of the run: GREAT "
+             "FIGURES with archetypes (conqueror/revolutionary/prophet/dynast — derived from their DEEDS) "
+             "and rule-based EPITHETS ('the Conqueror', 'the Liberator', 'the Grasping', 'the Just'), NAMED "
+             "events (wars, uprisings, coronations, empire falls), and dynastic HOUSE histories (founder, "
+             "generations, crowns, fall). Fidelity follows M4.10 LITERACY: pre-writing events enter as thin "
+             "anonymized LEGEND and SHARPEN into named HISTORY once writing emerges — history is written by "
+             "the literate. READ-ONLY on the sim (it only maintains its own record), so a run is "
+             "byte-identical; the full saga is exported to a markdown file at run's end (--chronicle-out). "
+             "Zero LLM. Off by default -> byte-identical.")
+    p.add_argument(
+        "--chronicle-out", default=None, metavar="FILE",
+        help="With --chronicle, write the run's exported saga (markdown) to this file (default: print a "
+             "SAGA section at the end of the summary).")
+    p.add_argument(
+        "--narrate", action="store_true",
+        help="V2 M4.16 GARNISH (OFF by default): render the structured chronicle as LLM PROSE (the ONE "
+             "place a model touches OUTPUT). Purely presentational and CACHED — it NEVER mutates the sim, "
+             "its determinism, or the structured chronicle (verified). Requires --chronicle.")
+    p.add_argument(
         "--stage", choices=("monarchy", "kingdom", "war"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
@@ -1355,7 +1384,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    eras_on: bool = False,
                    diplomacy_on: bool = False,
                    intertrade_on: bool = False,
-                   coalitions_on: bool = False) -> None:
+                   coalitions_on: bool = False,
+                   chronicle_on: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1550,6 +1580,12 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # coalitions.update never called, the war loop never suspends a feud or adds a coalition defender ->
     # byte-identical to v1. Implies diplomacy (-> kingdoms; pair with --empire). Zero LLM, zero RNG.
     world_state["coalitions_on"] = coalitions_on
+
+    # M4.16 (CLOSES Arc 6): the CHRONICLE flag — the world writes its own history. Each turn it folds the
+    # new events into a structured saga (great figures with deed-derived epithets, named events, dynastic
+    # houses), read-only on the sim. False (default) -> chronicle.update never called, no "chronicle" key
+    # -> byte-identical to v1. Fidelity tracks M4.10 literacy (prehistory=legend -> history at writing).
+    world_state["chronicle_on"] = chronicle_on
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -1823,6 +1859,13 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
         if eras_on:
             eras.update(world_state, turn)
 
+        # M4.16 (Arc 6): THE CHRONICLE — fold THIS turn's events into the structured saga. Runs LAST so it
+        # sees every event the turn produced. READ-ONLY on the sim (writes only world_state["chronicle"]),
+        # incremental (a cursor over the event log, never a full rescan). Zero LLM, zero RNG; gated on the
+        # flag so a default run never calls it (byte-identical to v1).
+        if chronicle_on:
+            chronicle.update(world_state, turn)
+
         if food_cfg is not None:
             _scaled_respawn_food(turn, food_cfg)
         else:
@@ -1904,6 +1947,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # M4.15: the world-level balance-of-power read-out, printed ONLY when coalitions are on.
     if world_state.get("coalitions_on"):
         print_coalitions()
+    # M4.16: the world's own written history, printed ONLY when the chronicle is on.
+    if world_state.get("chronicle_on"):
+        print_chronicle()
     print_inference_savings(counters)
     print_events_log()
 
@@ -2110,7 +2156,7 @@ def main(argv: list[str] | None = None) -> None:
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
-                           coalitions_on=coalitions_on)
+                           coalitions_on=coalitions_on, chronicle_on=args.chronicle)
         finally:
             sys.stdout = original
             log_file.close()
@@ -2140,7 +2186,19 @@ def main(argv: list[str] | None = None) -> None:
                            beliefs_on=beliefs_on, religion_on=religion_on, culture_on=culture_on,
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
-                           coalitions_on=coalitions_on)
+                           coalitions_on=coalitions_on, chronicle_on=args.chronicle)
+
+    # M4.16: export the run's saga. The structured markdown is deterministic; --narrate wraps it in LLM
+    # prose (the only place a model touches output — it reads the same structured record, changing nothing).
+    if args.chronicle and args.chronicle_out:
+        if args.narrate:
+            import narrator
+            text = narrator.narrate_saga(world_state)
+        else:
+            text = chronicle.export_markdown(world_state)
+        with open(args.chronicle_out, "w") as f:
+            f.write(text)
+        print(f"[chronicle] saga written to {args.chronicle_out}")
 
 
 if __name__ == "__main__":

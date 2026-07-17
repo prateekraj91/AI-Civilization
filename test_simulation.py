@@ -7926,6 +7926,165 @@ def test_coalitions_off_run_is_byte_identical_and_adds_no_llm() -> None:
     print("PASS test_coalitions_off_run_is_byte_identical_and_adds_no_llm")
 
 
+# --- The Chronicle (V2 M4.16): the world writes its own history --------------
+def _chron_world(literate_sids=("S001", "S002")) -> None:
+    _fresh_world()
+    world_state["chronicle_on"] = True
+    for i, sid in enumerate(literate_sids):
+        world_state["settlements"][sid] = {"id": sid, "center": (5 + 3 * i, 5),
+                                           "members": {f"{sid}_scribe"}, "founded": 0}
+        a = Agent(name=f"{sid}_scribe", personality="x")
+        place_agent(a, 5 + 3 * i, 5)
+        a.settlement = sid
+        a.knowledge.add("writing")           # a scribe makes the settlement LITERATE (M4.10)
+
+
+def _chron_kingdom(king, home="S001"):
+    world_state["kingdoms"][king] = {"king": king, "home": home, "settlements": {home},
+                                     "vassals": {}, "founded": 0, "discontent": {}}
+
+
+def _chron_ev(t, body):
+    world_state["events"].append(f"turn {t}: {body}")
+
+
+def test_figure_archetype_and_epithet_derived_from_deeds() -> None:
+    """Great figures are recognised from their DEEDS: a conqueror who seized many settlements gets 'the
+    Conqueror', a revolutionary who freed a town 'the Liberator', an over-taxer deposed by revolt 'the
+    Grasping' — each a deterministic function of what they did. Pre-writing deeds are anonymized legend."""
+    import chronicle
+
+    _chron_world()
+    for k in ("Rex", "Vlad", "Cyn"):
+        _chron_kingdom(k, "S001" if k != "Vlad" else "S002")
+    _chron_ev(1, "Rex seized S001 by force -> MONARCH of S001")
+    _chron_ev(2, "Rex OVERTHREW Gorm and seized S002 by force -> MONARCH of S002")
+    _chron_ev(3, "KING Rex DEFEATED Otto in war -> Otto SUBJUGATED as a subject-king; an EMPIRE rises")
+    _chron_ev(5, "Vlad seized S002 by force -> MONARCH of S002")
+    for t in (6, 7, 8):
+        _chron_ev(t, "MONARCH Vlad levied 5.0 from S002 by force (no consent)")
+    _chron_ev(9, "the UPRISING in S002 TRIUMPHED — monarch Vlad is DEPOSED; Cyn to rule by consent (1 fell)")
+    chronicle.update(world_state, 9)
+
+    figs = {f["name"]: chronicle.epithet(f) for f in chronicle.great_figures(world_state)}
+    assert figs["Rex"] == "the Conqueror", figs          # two conquests + a war
+    assert figs["Cyn"] == "the Liberator", figs          # led a winning uprising
+    assert figs["Vlad"] == "the Grasping", figs          # over-taxed, then deposed
+    arche = {f["name"]: f["archetype"] for f in chronicle.great_figures(world_state)}
+    assert arche["Cyn"] == "revolutionary" and arche["Rex"] == "conqueror"
+
+    # PREHISTORY: an event in an ILLITERATE settlement enters only as anonymized legend.
+    _chron_world(literate_sids=())            # no scribes -> no literacy
+    world_state["chronicle_on"] = True
+    _chron_kingdom("Ork", "S009")
+    _chron_ev(1, "Ork seized S009 by force -> MONARCH of S009")
+    chronicle.update(world_state, 1)
+    assert not chronicle.great_figures(world_state), "no named figures in the preliterate dark"
+    entry = chronicle.saga(world_state)[0]
+    assert entry["fidelity"] == "legend" and "Ork" not in entry["name"], entry
+    print("PASS test_figure_archetype_and_epithet_derived_from_deeds")
+
+
+def test_events_and_houses_assembled_from_records() -> None:
+    """Major events are named deterministically and a dynasty is assembled into a house-history
+    (founder, generations, crowns, fall) that matches the actual lineage/title records."""
+    import chronicle
+
+    _chron_world()
+    _chron_kingdom("Rex")
+    _chron_ev(1, "Rex seized S001 by force -> MONARCH of S001")
+    _chron_ev(2, "Aldo was born to Rex and Isla in S001")
+    _chron_ev(3, "Bran was born to Aldo and Mara in S001")
+    _chron_ev(20, "Aldo succeeded Rex as [monarch of S001] (eldest child)")
+    _chron_ev(40, "Bran succeeded Aldo as [monarch of S001] (eldest child)")
+    _chron_ev(50, "the line of Bran is extinguished; the crown of [monarch of S001] lies vacant")
+    chronicle.update(world_state, 50)
+
+    names = {e["name"] for e in chronicle.saga(world_state)}
+    assert "the Crowning of Aldo" in names and "the End of the House of Bran" in names, names
+    h = chronicle.houses(world_state)[0]
+    assert h["founder"] == "Rex"                              # the conqueror founded the line
+    assert h["members"] == {"Rex", "Aldo", "Bran"}           # three crowned kin
+    assert chronicle.generations(world_state["chronicle"], h) == 3   # Rex -> Aldo -> Bran
+    assert h["crowns"] == 2                                    # two successions passed the crown
+    assert h["fell"] == "the line was extinguished"
+    print("PASS test_events_and_houses_assembled_from_records")
+
+
+def test_saga_is_deterministic_under_seed() -> None:
+    """Same seed -> same chronicle: a full seeded run produces byte-identical structured saga output."""
+    import chronicle
+
+    def run_saga():
+        llm.PROVIDER = "random"
+        random.seed(11)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(30, stage="war", chronicle_on=True)
+        return chronicle.export_markdown(world_state)
+
+    saved = llm.PROVIDER
+    try:
+        a, b = run_saga(), run_saga()
+    finally:
+        llm.PROVIDER = saved
+    assert a == b, "the chronicle must be identical for the same seed"
+    print("PASS test_saga_is_deterministic_under_seed")
+
+
+def test_chronicle_is_read_only_and_off_byte_identical() -> None:
+    """The chronicle NEVER mutates the sim (only its own record), so a --chronicle run is byte-identical
+    to one without it, and adds zero LLM."""
+    def run(on):
+        llm.PROVIDER = "random"
+        random.seed(7)
+        llm.reset_call_stats()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war", chronicle_on=on)
+        return buf.getvalue(), dict(llm.get_call_stats())
+
+    def baseline():
+        llm.PROVIDER = "random"
+        random.seed(7)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main.run_simulation(25, stage="war")
+        return buf.getvalue()
+
+    saved = llm.PROVIDER
+    try:
+        base = baseline()
+        on_out, on_calls = run(True)
+        off, off_calls = run(False)
+    finally:
+        llm.PROVIDER = saved
+    assert base == off, "chronicle_on=False diverged from the baseline"
+    assert not world_state.get("chronicle"), "an off run writes no chronicle state"
+    assert on_calls == off_calls, "the structured chronicle adds ZERO LLM"
+    print("PASS test_chronicle_is_read_only_and_off_byte_identical")
+
+
+def test_narrator_is_walled_off_from_the_structured_chronicle() -> None:
+    """The optional LLM narrator NEVER mutates the structured chronicle: narrating leaves world_state
+    and the chronicle record identical (it only returns prose)."""
+    import chronicle, narrator, copy
+
+    _chron_world()
+    _chron_kingdom("Rex")
+    _chron_ev(1, "Rex seized S001 by force -> MONARCH of S001")
+    _chron_ev(2, "KING Rex DEFEATED Otto in war -> Otto SUBJUGATED; an EMPIRE rises")
+    chronicle.update(world_state, 2)
+    before = copy.deepcopy(world_state["chronicle"])
+    structured = chronicle.export_markdown(world_state)
+
+    prose = narrator.narrate_saga(world_state)      # the LLM layer (offline -> falls back to detail)
+    assert isinstance(prose, str) and prose
+    assert world_state["chronicle"] == before, "narrating must not mutate the structured chronicle"
+    assert chronicle.export_markdown(world_state) == structured, "the structured saga is unchanged"
+    print("PASS test_narrator_is_walled_off_from_the_structured_chronicle")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -8204,6 +8363,11 @@ def main_runner() -> None:
         test_pooled_coalition_host_breaks_the_hegemon,
         test_coalition_dissolves_when_threat_passes,
         test_coalitions_off_run_is_byte_identical_and_adds_no_llm,
+        test_figure_archetype_and_epithet_derived_from_deeds,
+        test_events_and_houses_assembled_from_records,
+        test_saga_is_deterministic_under_seed,
+        test_chronicle_is_read_only_and_off_byte_identical,
+        test_narrator_is_walled_off_from_the_structured_chronicle,
     ]
     for t in tests:
         t()
