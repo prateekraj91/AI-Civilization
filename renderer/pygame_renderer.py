@@ -153,7 +153,7 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "bird": (52, 56, 50),
     "daylight": (255, 214, 156),       # the warm full-scene grade (very low alpha)
     # slice 10: the day/night cycle
-    "night": (13, 22, 54),             # the deep cool blue-dark night grade
+    "night": (22, 32, 70),             # V4.3: cool blue-dark night grade, lifted off pure black
     "dawn_gold": (255, 196, 112),      # the dawn grade + the directional sunrise wash
     "dusk_ember": (255, 134, 88),      # the burning orange/pink dusk grade
     "starlight": (222, 230, 250),      # stars mirrored on the night water
@@ -362,7 +362,8 @@ _TURNS_PER_DAY = 24               # sim turns per full day/night cycle (tunable)
 _PH_DAWN_END = 0.15               # dawn  [0.00, 0.15) — night brightens into gold
 _PH_DAY_END = 0.55                # day   [0.15, 0.55) — the slice-9 neutral daylight
 _PH_DUSK_END = 0.70               # dusk  [0.55, 0.70) — gold burns down into night
-_NIGHT_GRADE_A = 118              # the deep-night grade alpha (day keeps _GRADE_ALPHA)
+_NIGHT_GRADE_A = 82               # V4.3: raised night brightness FLOOR (was 118) — buildings,
+                                  # agents and territory stay clearly visible after dark
 _DAWN_GRADE_A = 44                # the mid-dawn gold grade alpha
 _DUSK_GRADE_A = 58                # the mid-dusk ember grade alpha
 _DAWN_WASH_MAX_A = 46             # the directional sunrise wash at its mid-dawn peak
@@ -436,6 +437,247 @@ _FEED_TOWN = _SETTLEMENT_EDGE  # settlements forming/growing — teal (matches t
 _FEED_SOCIAL = (122, 200, 132) # alliances / trust / trade / tribute — green
 _FEED_DEFAULT = (170, 176, 164)# routine chatter — muted grey
 _FEED_SCAN = 80                # how many tail events to consider before wrapping to fit
+
+# V4.2: EVENT TIERS + STORY BANNER. The feed reads as a STORY, not a log: MAJOR events
+# (battles, conquests, coronations/successions, uprisings, secessions, empires rising or
+# fragmenting, era advances, faiths founded, prophets, ruler deaths, lines extinguished)
+# show in full and bold; the MINOR churn (per-agent trust deltas, routine trades/talks/
+# levies) is AGGREGATED to at most one line per turn. A prominent BANNER across the top of
+# the map announces each major event in plain words so the map is self-explanatory alone.
+_MAJOR_MARKERS = (
+    "conquered", "repelled", "defeated", "subjugated", " in war ", "war on ",
+    "broke away", "seceded", "overthrew", "-> monarch of", "an empire rises",
+    "uprising", "risers rise", "triumphed", "deposed", "freed from",
+    "entered the ", "arose as prophet", "took root", "is extinguished", "succeeded ",
+)
+_STORY_H = 42                  # story-banner band height, in pixels
+_STORY_BG = (12, 12, 16)       # the banner band (drawn translucent over the top of the map)
+_STORY_FG = (245, 236, 214)    # banner text — warm off-white
+_STORY_ACCENT = _FEED_WAR      # the left accent bar (matches the feed's war orange)
+_BANNER_SECS = 2.6             # how long one story banner holds on screen
+_BANNER_SECS_FAST = 1.3        # ...shortened when several are queued, so it catches up
+_BANNER_MAX_QUEUE = 8          # cap the pending banners (a busy turn can never flood)
+# Feed-row highlight tiers (drawn behind a MAJOR row so it reads above the aggregated churn).
+_FEED_MAJOR_BG_A = 30          # subtle per-row background tint alpha for a major line
+_CAT_PHRASE = {                # aggregate wording for a turn's MINOR churn, by category
+    "trade": "{n} routine trade{s}",
+    "belief": "{n} belief shift{s}",
+    "teaching": "{n} teaching{s}",
+    "talk": "{n} exchange{s} of words",
+    "levy": "{n} routine levy/levies",
+    "kin": "{n} birth{s}/inheritance{s}",
+    "faith": "{n} faith stirring{s}",
+    "other": "{n} minor event{s}",
+}
+
+
+# --- V4.2: pure event-tier / story helpers (unit-testable, RNG-free, no pygame) -----------
+def _strip_prefix(line: str) -> str:
+    """Drop the 'turn N: ' prefix the engine writes, leaving the plain event body (pure)."""
+    if line.startswith("turn "):
+        i = line.find(": ")
+        if i != -1:
+            return line[i + 2:]
+    return line
+
+
+def _event_turn(line: str) -> int | None:
+    """The turn number a log line belongs to, or None if it carries no 'turn N:' prefix."""
+    if line.startswith("turn "):
+        num = line[5:].split(":", 1)[0].strip()
+        if num.isdigit():
+            return int(num)
+    return None
+
+
+def _drop_parens(s: str) -> str:
+    """Remove every '(...)' span (handling nesting) — strips combat stats from a banner (pure)."""
+    out, depth = [], 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def notable_names(state: dict[str, Any]) -> frozenset[str]:
+    """Every ruling/prophetic figure currently in world_state — so a RULER'S death reads as
+    MAJOR while a villager's or soldier's death stays MINOR churn (pure institution read)."""
+    names: set[str] = set()
+    names.update(state.get("empires", {}))
+    names.update(state.get("kingdoms", {}))
+    for rec in state.get("monarchs", {}).values():
+        if isinstance(rec, dict) and rec.get("monarch"):
+            names.add(rec["monarch"])
+    for rec in state.get("leaders", {}).values():
+        if isinstance(rec, dict) and rec.get("leader"):
+            names.add(rec["leader"])
+    for rec in state.get("faiths", {}).values():
+        if isinstance(rec, dict) and rec.get("prophet"):
+            names.add(rec["prophet"])
+    return frozenset(names)
+
+
+def event_tier(line: str, notable: "frozenset[str]" = frozenset()) -> str:
+    """Classify ONE verbatim event line as 'major' or 'minor' (pure string read).
+
+    MAJOR = the turning points a viewer must never miss (see _MAJOR_MARKERS); a death is
+    major only for a `notable` figure (a ruler/prophet), else it is minor churn. Everything
+    else — trust deltas, routine trades/talks/levies, births — is minor.
+    """
+    low = line.lower()
+    if " died (" in low or low.rstrip().endswith(" died"):
+        return "major" if _died_name(line) in notable else "minor"
+    return "major" if any(m in low for m in _MAJOR_MARKERS) else "minor"
+
+
+def _died_name(line: str) -> str:
+    """The subject of a 'X died (cause)' line, or '' (pure)."""
+    body = _strip_prefix(line)
+    i = body.find(" died")
+    return body[:i].strip() if i > 0 else ""
+
+
+def banner_text(line: str) -> str:
+    """A MAJOR event line reduced to a plain-words STORY banner (pure).
+
+    Strips the 'turn N:' prefix, the '(combat stats)' parentheticals and the '-> outcome'
+    tail, then collapses whitespace — e.g. 'KING Borin's host was REPELLED at S0A2'.
+    """
+    s = _drop_parens(_strip_prefix(line))
+    if " -> " in s:
+        s = s.split(" -> ")[0]
+    return " ".join(s.split()).strip(" ;—-")
+
+
+def _minor_category(low: str) -> str:
+    """Bucket a MINOR event (lowercased body) into an aggregation category (pure)."""
+    if " trust in " in low:
+        return "trust"
+    if " sold " in low or " bought " in low or "traded" in low:
+        return "trade"
+    if "came to believe" in low or "took up '" in low or "renouncing" in low:
+        return "belief"
+    if " taught " in low:
+        return "teaching"
+    if ("talked to" in low or "replied to" in low or " heard " in low
+            or "received from" in low or "proposed an alliance" in low or "alliance" in low):
+        return "talk"
+    if "levied" in low:
+        return "levy"
+    if "inherited" in low or "was born" in low or "came of age" in low or "estate" in low:
+        return "kin"
+    if "faith" in low or "believe" in low:
+        return "faith"
+    return "other"
+
+
+def _trust_key(body: str) -> tuple[str | None, int]:
+    """From 'X trust in T: a -> b (reason)' -> (target T, direction +1/-1/0) (pure)."""
+    i = body.find(" trust in ")
+    if i < 0:
+        return (None, 0)
+    rest = body[i + len(" trust in "):]
+    tgt = rest.split(":", 1)[0].strip()
+    nums = rest.split("(")[0]
+    if "->" in nums:
+        a, _, b = nums.partition("->")
+        try:
+            av = float(a.split(":")[-1].strip())
+            bv = float(b.strip())
+            return (tgt, 1 if bv > av else (-1 if bv < av else 0))
+        except ValueError:
+            return (tgt, 0)
+    return (tgt, 0)
+
+
+def aggregate_minor(lines: list[str]) -> str | None:
+    """Collapse a turn's MINOR events into ONE story-feed summary line, or None (pure).
+
+    Trust deltas are grouped by (target, direction) so the biggest movement reads plainly
+    ('8 agents' trust in Rex fell'); otherwise the largest category is summarised. Anything
+    left over is tallied as '· +N more' so the count is honest without spamming the panel.
+    """
+    if not lines:
+        return None
+    bodies = [_strip_prefix(l) for l in lines]
+    trust: dict[tuple[str, int], int] = {}
+    cats: dict[str, int] = {}
+    for b in bodies:
+        low = b.lower()
+        cat = _minor_category(low)
+        cats[cat] = cats.get(cat, 0) + 1
+        if cat == "trust":
+            tgt, d = _trust_key(b)
+            if tgt:
+                trust[(tgt, d)] = trust.get((tgt, d), 0) + 1
+    total = len(bodies)
+    if trust:
+        (tgt, d), n = max(trust.items(), key=lambda kv: (kv[1], kv[0]))
+        verb = "rose" if d > 0 else ("fell" if d < 0 else "shifted")
+        head = f"{n} agent{'s' if n != 1 else ''}' trust in {tgt} {verb}"
+    else:
+        cat, n = max(cats.items(), key=lambda kv: (kv[1], kv[0]))
+        head = _CAT_PHRASE[cat].format(n=n, s="s" if n != 1 else "")
+    rest = total - n
+    if rest > 0:
+        head += f"  · +{rest} more"
+    return head
+
+
+def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
+                    max_rows: int) -> list[tuple[str, tuple[int, int, int], bool]]:
+    """Turn the event tail into STORY rows: MAJOR lines in full (flagged bold), plus at most
+    one AGGREGATED minor line per turn. Newest at the bottom. Pure — mirrors wrap_events but
+    tiered. Each row is (text, colour, is_major); majors keep their event colour, the
+    aggregated churn is muted grey."""
+    scan = events[-_FEED_SCAN:]
+    order: list[int] = []
+    buckets: dict[int, list[str]] = {}
+    cur = -1
+    for line in scan:
+        t = _event_turn(line)
+        if t is not None:
+            cur = t
+        if cur not in buckets:
+            buckets[cur] = []
+            order.append(cur)
+        buckets[cur].append(line)
+    rows: list[tuple[str, tuple[int, int, int], bool]] = []
+    for key in order:
+        majors, minors = [], []
+        for line in buckets[key]:
+            (majors if event_tier(line, notable) == "major" else minors).append(line)
+        for m in majors:
+            color = event_color(m)
+            for sub in (textwrap.wrap(_strip_prefix(m), width=max(1, cols)) or [""]):
+                rows.append((sub, color, True))
+        summary = aggregate_minor(minors)
+        if summary:
+            for sub in (textwrap.wrap(summary, width=max(1, cols)) or [""]):
+                rows.append((sub, _FEED_DEFAULT, False))
+    return rows[-max_rows:] if max_rows > 0 else []
+
+
+def realm_scoreboard(state: dict[str, Any]) -> list[tuple[str, int, bool]]:
+    """(name, settlement_count, is_empire) per realm, biggest first — a pure institution read.
+
+    Aggregates every settlement by its TOP ruler (settlement_realm — emperor > king > lone
+    monarch), so subjugated kingdoms fold into their empire and the counts MATCH the map's
+    territory colours. This is what the REALMS scoreboard reads (fixing the '(none)' bug).
+    """
+    counts: dict[str, int] = {}
+    for sid in state.get("settlements", {}):
+        owner = settlement_realm(sid, state)
+        if owner is not None:
+            counts[owner] = counts.get(owner, 0) + 1
+    empires = state.get("empires", {})
+    out = [(name, n, name in empires) for name, n in counts.items()]
+    out.sort(key=lambda t: (-t[1], t[0]))
+    return out
 
 
 def dominant_trait(personality: str | None) -> str:
@@ -1249,6 +1491,14 @@ class PygameRenderer:
         self._prev_snapshot: dict[str, Any] | None = None  # last turn: positions/realms/homes
         self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
         self._big_font: Any = None                         # the aftermath banner face
+        self._feed_bold: Any = None                        # V4.2: bold face for MAJOR feed rows
+        # V4.2: the STORY BANNER queue — plain-words announcements of MAJOR events, held a few
+        # seconds each and QUEUED if several fire in one turn. Renderer-local + wall-clock timed,
+        # so it never touches world_state or the sim RNG (and is inert in the zero-delay tests).
+        self._banner_queue: collections.deque = collections.deque()
+        self._banner_text: str | None = None
+        self._banner_started: float = 0.0
+        self._banner_turn_seen: int = -1
         self._trails: dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=6))
         self._current_season = "summer"                    # tracks season for terrain rebakes
         # Slice 9: full-bleed geometry + light/ambient caches (all renderer-local).
@@ -1296,6 +1546,8 @@ class PygameRenderer:
             self._font = pygame.font.SysFont("menlo,monospace", 14)
         with contextlib.suppress(Exception):
             self._big_font = pygame.font.SysFont("menlo,monospace", 22, bold=True)
+        with contextlib.suppress(Exception):
+            self._feed_bold = pygame.font.SysFont("menlo,monospace", 14, bold=True)
         try:
             yield self
         finally:
@@ -1355,6 +1607,7 @@ class PygameRenderer:
         """
         self._last_state = state
         self._ensure_screen(int(state.get("size", 0)) or 1)
+        self._enqueue_banners(state)      # V4.2: queue this turn's MAJOR-event announcements
         self._pump_events()
         if self._prev_snapshot is not None and self.turn_delay > 0:
             lines = turn_events(state.get("events") or [], int(state.get("turn", 0)))
@@ -1537,6 +1790,68 @@ class PygameRenderer:
                                  self._cam_draw, (self._map_px, self._map_px))
         return int(round(sx)), int(round(sy))
 
+    # -- V4.2: the story banner (queue + wall-clock playback + drawing) -----
+    def _enqueue_banners(self, state: dict[str, Any]) -> None:
+        """Queue plain-words announcements for THIS turn's MAJOR events (once per turn).
+
+        Called from update() as each resolved turn arrives; a pure READ of the event tail.
+        Idempotent per turn (guarded by the last-seen turn) and capped, so a busy turn can
+        never flood the banner. Zero-delay/test paths never reach update(), so this is inert
+        there — the banner is a watch-time-only overlay.
+        """
+        turn = int(state.get("turn", 0))
+        if turn == self._banner_turn_seen:
+            return
+        self._banner_turn_seen = turn
+        notable = notable_names(state)
+        for line in turn_events(state.get("events") or [], turn):
+            if event_tier(line, notable) == "major":
+                self._banner_queue.append(banner_text(line))
+        while len(self._banner_queue) > _BANNER_MAX_QUEUE:
+            self._banner_queue.popleft()
+
+    def _update_banner(self) -> None:
+        """Advance the story banner on the wall clock: expire the active one, pop the next."""
+        now = time.monotonic()
+        if self._banner_text is None:
+            if self._banner_queue:
+                self._banner_text = self._banner_queue.popleft()
+                self._banner_started = now
+        else:
+            hold = _BANNER_SECS_FAST if len(self._banner_queue) >= 2 else _BANNER_SECS
+            if now - self._banner_started >= hold:
+                self._banner_text = None      # next frame pops the next queued banner
+
+    def _draw_story_banner(self) -> None:
+        """Draw the active story banner across the TOP of the map — the feature that makes the
+        map self-explanatory without the side panel. Fades in/out; a warm accent bar on the
+        left, big bold plain-words text centred in the band. UI overlay: never transformed."""
+        if self._banner_text is None:
+            return
+        font = self._big_font or self._font
+        if font is None:
+            return
+        screen, map_px = self._screen, self._map_px
+        # A short fade in at the start and out at the end so banners don't pop.
+        el = time.monotonic() - self._banner_started
+        hold = _BANNER_SECS_FAST if len(self._banner_queue) >= 2 else _BANNER_SECS
+        fade = min(1.0, el / 0.25, max(0.0, (hold - el) / 0.35))
+        fade = max(0.0, min(1.0, fade))
+        # Shrink to the regular face if the big text would overflow the map width.
+        text = self._banner_text
+        label = font.render(text, True, _STORY_FG)
+        if label.get_width() > map_px - 60 and self._font is not None:
+            font = self._font
+            label = font.render(text, True, _STORY_FG)
+        h = _STORY_H
+        band = pygame.Surface((map_px, h), pygame.SRCALPHA)
+        band.fill((*_STORY_BG, int(214 * fade)))
+        pygame.draw.rect(band, (*_STORY_ACCENT, int(235 * fade)), (0, 0, 5, h))
+        pygame.draw.line(band, (*_STORY_ACCENT, int(120 * fade)), (0, h - 1), (map_px, h - 1), 1)
+        label.set_alpha(int(255 * fade))
+        band.blit(label, ((map_px - label.get_width()) // 2, (h - label.get_height()) // 2))
+        screen.blit(band, (0, 0))
+
     def _draw(self, state: dict[str, Any], *, paused: bool = False,
               motion: tuple[dict[str, tuple], float] | None = None,
               battle: tuple[dict[str, Any], float] | None = None) -> None:
@@ -1553,6 +1868,7 @@ class PygameRenderer:
         # and freeze this frame's shared transform, effective cell and LOD tier. Everything
         # below draws through them; nothing below does its own camera maths.
         self._update_camera()
+        self._update_banner()             # V4.2: advance the story-banner queue (wall-clock)
         cell = self._cell
         # Slice 10: the DAY/NIGHT clock — the phase derives PURELY from the sim turn (made
         # fractional mid-walk so the light glides through the inter-turn animation rather
@@ -1679,6 +1995,10 @@ class PygameRenderer:
             self._draw_battle_overlay(*battle)
             
         self._draw_weather()
+
+        # V4.2: the STORY BANNER rides on top of the map (above weather/cinematics) so a viewer
+        # watching ONLY the map follows each major beat in plain words.
+        self._draw_story_banner()
 
         self._draw_hud(state, map_px, paused, in_battle=battle is not None)
         # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
@@ -2263,6 +2583,10 @@ class PygameRenderer:
         # the terrain WITHOUT darkening the buildings/agents (drawn afterwards, straight on screen).
         overlay = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
         towns: list[tuple] = []
+        # V4.3: collect each region's (fill, edge) params and draw ALL fills first, then ALL
+        # boundary strokes on top — so overlapping realms read as DISTINCT OUTLINED regions
+        # (crisp coloured edges, very translucent fill) instead of blurring into one blob.
+        regions: list[tuple] = []
         for sid in sorted(settlements):
             rec = settlements[sid]
             center = rec.get("center")
@@ -2284,17 +2608,27 @@ class PygameRenderer:
                 # Slice 10: realm banners MUTE at night (dimmer, fainter) so the window/torch
                 # light carries the scene; by day this is exactly the slice-8 tint.
                 tint = night_mute(tint, self._nf)
-                fill, fill_a = tint, int(round(_REALM_FILL_ALPHA * (1.0 - 0.45 * self._nf)))
-                edge, edge_a = _shade(tint, 45), int(round(_REALM_EDGE_ALPHA * (1.0 - 0.35 * self._nf)))
+                # V4.3: much LOWER fill opacity (ownership comes from the outline, not a wash)
+                # and a STRONGER realm-coloured boundary stroke.
+                fill, fill_a = tint, int(round(_REALM_FILL_ALPHA * 0.5 * (1.0 - 0.45 * self._nf)))
+                edge = _shade(tint, 45)
+                edge_a = min(235, int(round(_REALM_EDGE_ALPHA * 1.15 * (1.0 - 0.30 * self._nf))))
+                edge_w = 3
                 if self._lod == "far":            # slice 11: territory is THE strategic read
-                    fill_a = min(150, int(fill_a * 1.8))
-                    edge_a = min(220, int(edge_a * 1.3))
+                    fill_a = min(120, int(fill_a * 2.2))
+                    edge_a = min(235, int(edge_a * 1.3))
             else:
-                fill, fill_a, edge, edge_a = (_SETTLEMENT_FILL, _SETTLEMENT_FILL_ALPHA,
-                                              _SETTLEMENT_EDGE, _SETTLEMENT_EDGE_ALPHA)
-            pygame.draw.circle(overlay, (*fill, fill_a), (cx, cy), radius_px)
-            pygame.draw.circle(overlay, (*edge, edge_a), (cx, cy), radius_px, width=2)
+                fill = _SETTLEMENT_FILL
+                fill_a = int(round(_SETTLEMENT_FILL_ALPHA * 0.7))
+                edge = _SETTLEMENT_EDGE
+                edge_a = min(205, int(round(_SETTLEMENT_EDGE_ALPHA * 1.2)))
+                edge_w = 2
+            regions.append((cx, cy, radius_px, fill, fill_a, edge, edge_a, edge_w))
             towns.append((sid, center, cx, cy, len(members), radius_px, owner))
+        for cx, cy, radius_px, fill, fill_a, _e, _ea, _ew in regions:      # V4.3: fills first
+            pygame.draw.circle(overlay, (*fill, fill_a), (cx, cy), radius_px)
+        for cx, cy, radius_px, _f, _fa, edge, edge_a, edge_w in regions:   # ...then all edges
+            pygame.draw.circle(overlay, (*edge, edge_a), (cx, cy), radius_px, width=edge_w)
         screen.blit(overlay, (0, 0))
 
         # Slice 6: each settlement is now a detailed, GROWING built place — a cached plan of
@@ -2656,37 +2990,63 @@ class PygameRenderer:
 
     def _draw_hud(self, state: dict[str, Any], map_px: int, paused: bool,
                   in_battle: bool = False) -> None:
-        """A one-line status strip under the map zone (turn / living / food / pause / battle)."""
+        """A one-line status strip under the map zone (turn / living / food / pause / battle).
+
+        V4.1 BUG FIX: the strip is now laid out with MEASURED spacing. A RIGHT cluster (the
+        phase dial + name, and the battle chip) is placed first and its left edge becomes a
+        hard boundary; the LEFT status segments are placed left-to-right and any segment that
+        would cross that boundary (least-important last: the key hints) is dropped instead of
+        overprinting. So nothing ever overlaps at any window size or zoom.
+        """
         screen = self._screen
         pygame.draw.rect(screen, _HUD_BG, (0, map_px, map_px, _HUD_H))
-        if self._font is None:
+        font = self._font
+        if font is None:
             return
+        cy = map_px + _HUD_H // 2
+
+        def place_left(surf: Any, x: int) -> int:
+            screen.blit(surf, (x, cy - surf.get_height() // 2))
+            return x + surf.get_width()
+
+        # RIGHT cluster first — the sun/moon dial at the far right, the phase name to its left,
+        # and (while a cinematic plays) the BATTLE chip further left. Each measured; the
+        # leftmost of them becomes the boundary the status text must never cross.
+        dial_cx = map_px - 14
+        self._draw_phase_dial(dial_cx, cy)
+        tag = font.render(phase_name(self._phase), True, _STAT_LABEL)
+        tag_x = dial_cx - 13 - tag.get_width()
+        screen.blit(tag, (tag_x, cy - tag.get_height() // 2))
+        right_edge = tag_x
+        if in_battle:                       # slice 8: a small indicator while a battle plays
+            chip = font.render("BATTLE [any key skips]", True, _BATTLE_CHIP)
+            chip_x = right_edge - 14 - chip.get_width()
+            screen.blit(chip, (chip_x, cy - chip.get_height() // 2))
+            right_edge = chip_x
+
+        # LEFT status segments — mandatory counts first, the droppable key-hint last.
         turn = state.get("turn", 0)
         living = sum(1 for a in state.get("agents", []) if getattr(a, "alive", True))
         food = len(state.get("food", []))
-        text = f"turn {turn}   living {living}   food {food}"
         towns = len(state.get("settlements", {}))
-        if towns:  # only shown once settlements exist, so the slice-1 HUD is unchanged
-            text += f"   towns {towns}"
-        # Slice 11: the zoom readout + the camera keys (the HUD is UI — never transformed).
-        text += f"   zoom {self._cell / max(1, self._cell0):.1f}x"
-        text += "   [spc]pause [wasd]pan [whl]zoom [home]fit"
+        segs: list[tuple[str, tuple[int, int, int]]] = []
         if paused:
-            text = "PAUSED — [space] resume   " + text
-        label = self._font.render(text, True, _HUD_FG)
-        screen.blit(label, (8, map_px + (_HUD_H - label.get_height()) // 2))
-        # Slice 10: the time-of-day readout — a tiny sun/moon dial at the far right of the
-        # HUD (the phase hand rides its ring) with the phase name beside it. UI chrome: the
-        # HUD/panel are never night-graded, so this stays readable at every phase.
-        dial_x = map_px - 16
-        tag = self._font.render(phase_name(self._phase), True, _STAT_LABEL)
-        screen.blit(tag, (dial_x - 14 - tag.get_width(),
-                          map_px + (_HUD_H - tag.get_height()) // 2))
-        self._draw_phase_dial(dial_x, map_px + _HUD_H // 2)
-        if in_battle:  # slice 8: a small indicator while a battle cinematic plays
-            chip = self._font.render("BATTLE — any key skips", True, _BATTLE_CHIP)
-            screen.blit(chip, (dial_x - 14 - tag.get_width() - 12 - chip.get_width(),
-                               map_px + (_HUD_H - chip.get_height()) // 2))
+            segs.append(("PAUSED [space] resume", _FEED_GOD))
+        segs.append((f"turn {turn}", _HUD_FG))
+        segs.append((f"living {living}", _HUD_FG))
+        segs.append((f"food {food}", _HUD_FG))
+        if towns:                           # only once settlements exist (slice-1 HUD unchanged)
+            segs.append((f"towns {towns}", _HUD_FG))
+        segs.append((f"zoom {self._cell / max(1, self._cell0):.1f}x", _HUD_FG))
+        segs.append(("[spc]pause [wasd]pan [whl]zoom [home]fit", _STAT_LABEL))  # droppable last
+        gap = max(6, font.size("  ")[0])
+        limit = right_edge - 10             # never draw past the right cluster
+        x = 8
+        for text, col in segs:
+            surf = font.render(text, True, col)
+            if x + surf.get_width() > limit and x > 8:
+                break                       # this segment (and the rest) won't fit — stop cleanly
+            x = place_left(surf, x) + gap
 
     def _draw_phase_dial(self, cx: int, cy: int) -> None:
         """Slice 10: the sun/moon dial — a ring whose hand rides the full day cycle, around
@@ -2730,11 +3090,12 @@ class PygameRenderer:
         return lines
 
     def _feed_rows(self, state: dict[str, Any], inner_w: int,
-                   max_rows: int) -> list[tuple[str, tuple[int, int, int]]]:
-        """Colour-coded, wrapped event rows sized to the panel (a read of state["events"])."""
+                   max_rows: int) -> list[tuple[str, tuple[int, int, int], bool]]:
+        """V4.2 STORY rows sized to the panel: MAJOR events in full (flagged bold) + at most
+        one aggregated MINOR line per turn. A read of state["events"] (+ institutions)."""
         char_w = max(1, self._font.size("M")[0])
         cols = max(8, inner_w // char_w)
-        return wrap_events(state.get("events") or [], cols, max_rows)
+        return story_feed_rows(state.get("events") or [], notable_names(state), cols, max_rows)
 
     def _draw_panel(self, state: dict[str, Any], map_px: int) -> None:
         """Draw the right sidebar: a STATE summary above a scrolling EVENT feed (READ only).
@@ -2771,17 +3132,23 @@ class PygameRenderer:
         screen.blit(font.render("REALMS", True, _PANEL_TITLE), (x0 + pad, y))
         y += line_h + 2
         
-        realms = state.get("realms", {})
+        # V4.1 BUG FIX: read kingdoms/empires from world_state (via realm_scoreboard) instead of
+        # the never-populated state["realms"]. Each realm shows a colour SWATCH matching its map
+        # territory, its name (empires bolded + tagged), and its settlement count.
+        realms = realm_scoreboard(state)
         if not realms:
             screen.blit(font.render("(none)", True, _FEED_DEFAULT), (x0 + pad, y))
             y += line_h
         else:
-            sorted_realms = sorted(realms.keys(), key=lambda r: len(realms[r].get("settlements", [])), reverse=True)[:6]
-            for r in sorted_realms:
-                color = realm_color(r)
-                screen.blit(font.render(r[:12], True, color), (x0 + pad, y))
-                count = str(len(realms[r].get("settlements", [])))
-                val = font.render(count, True, _STAT_VALUE)
+            sw = 9
+            for name, count, is_emp in realms[:6]:
+                color = realm_color(name)
+                pygame.draw.rect(screen, color, (x0 + pad, y + 3, sw, sw))
+                pygame.draw.rect(screen, _shade(color, 40), (x0 + pad, y + 3, sw, sw), 1)
+                nm_font = self._feed_bold if (is_emp and self._feed_bold) else font
+                disp = f"{name} (empire)" if is_emp else name
+                screen.blit(nm_font.render(disp[:18], True, color), (x0 + pad + sw + 6, y))
+                val = font.render(str(count), True, _STAT_VALUE)
                 screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
                 y += line_h
 
@@ -2799,8 +3166,17 @@ class PygameRenderer:
         if not rows:
             screen.blit(font.render("(no events yet)", True, _FEED_DEFAULT), (x0 + pad, feed_top))
             return
-        for text, color in rows:
-            screen.blit(font.render(text, True, color), (x0 + pad, feed_top))
+        # V4.2: MAJOR rows read ABOVE the aggregated churn — bold, in their event colour, on a
+        # subtle colour-tinted background bar; the minor summary stays plain muted grey.
+        for text, color, is_major in rows:
+            if is_major:
+                hl = pygame.Surface((_PANEL_W - 2 * pad + 4, line_h), pygame.SRCALPHA)
+                hl.fill((*color, _FEED_MAJOR_BG_A))
+                screen.blit(hl, (x0 + pad - 2, feed_top - 1))
+                row_font = self._feed_bold or font
+                screen.blit(row_font.render(text, True, color), (x0 + pad, feed_top))
+            else:
+                screen.blit(font.render(text, True, color), (x0 + pad, feed_top))
             feed_top += line_h
 
     # -- Slice 8: the battle cinematic (playback + overlay drawing) ---------
@@ -3058,37 +3434,39 @@ class PygameRenderer:
         weather = weather_type(self._phase)
         if weather == "clear":
             return
-            
+
         screen = self._screen
         map_px = self._map_px
-        
+        # V4.3: weather reads as ATMOSPHERE, not static — fewer particles, and drawn onto a
+        # translucent layer so their alpha actually applies (drawing straight to the opaque
+        # screen ignored it before, making rain/snow solid). Lower density + lower opacity.
+        layer = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
+
         if weather == "rain":
-            # Rain streaks
-            for k in range(50):
+            for k in range(22):                       # was 50
                 x = (terrain_noise(0, k, 101) * map_px + self._frame * 10) % map_px
                 y = (terrain_noise(0, k, 102) * map_px + self._frame * 20) % map_px
-                pygame.draw.line(screen, (*PALETTE["rain"], 150), (int(x), int(y)), (int(x - 3), int(y + 8)), 1)
-                
+                pygame.draw.line(layer, (*PALETTE["rain"], 70),
+                                 (int(x), int(y)), (int(x - 3), int(y + 8)), 1)
+
         elif weather == "snow":
-            # Snowflakes
-            for k in range(40):
+            for k in range(18):                       # was 40
                 x = (terrain_noise(0, k, 103) * map_px + math.sin(self._frame * 0.05 + k) * 10) % map_px
                 y = (terrain_noise(0, k, 104) * map_px + self._frame * 3) % map_px
-                r = 1 if terrain_noise(0, k, 105) > 0.5 else 2
-                pygame.draw.circle(screen, (*PALETTE["snow"], 180), (int(x), int(y)), r)
-                
+                r = 1 if terrain_noise(0, k, 105) > 0.6 else 2
+                pygame.draw.circle(layer, (*PALETTE["snow"], 95), (int(x), int(y)), r)
+
         elif weather == "fog":
-            # Horizontal fog bands
             for k in range(3):
                 y = map_px * 0.2 + (k * map_px * 0.3) + math.sin(self._frame * 0.02 + k) * 20
                 h = max(20, int(map_px * 0.15))
-                alpha = int(40 + 20 * math.sin(self._frame * 0.03 + k * 2))
-                band = pygame.Surface((map_px, h), pygame.SRCALPHA)
-                # Gradient-like effect using multiple lines
-                for i in range(h):
+                alpha = int(16 + 8 * math.sin(self._frame * 0.03 + k * 2))   # was 40 + 20
+                for i in range(0, h, 2):              # step 2 — half the lines, thinner haze
                     a = int(alpha * math.sin(math.pi * (i / h)))
-                    pygame.draw.line(band, (*PALETTE["fog"], a), (0, i), (map_px, i))
-                screen.blit(band, (0, int(y)))
+                    pygame.draw.line(layer, (*PALETTE["fog"], a),
+                                     (0, int(y) + i), (map_px, int(y) + i))
+
+        screen.blit(layer, (0, 0))
 
     def _update_trails(self, state: dict[str, Any], motion: tuple[dict[str, tuple], float] | None) -> None:
         """Record the current position of moving agents to form a trail."""

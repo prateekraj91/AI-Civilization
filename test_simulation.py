@@ -3705,6 +3705,86 @@ def test_pygame_event_feed_classifies_and_wraps_newest_at_bottom() -> None:
     print("PASS test_pygame_event_feed_classifies_and_wraps_newest_at_bottom")
 
 
+def test_pygame_event_tiers_banner_and_realm_scoreboard_pure() -> None:
+    """V4.2/V4.1: the event-tier, story-banner, minor-aggregation and realm-scoreboard helpers
+    are pure string/dict reads — turning-point events are MAJOR, churn is MINOR-and-aggregated,
+    and the scoreboard reads kingdoms/empires from world_state (the '(none)' bug fix). Skips
+    without pygame (the helpers live in the optional renderer module)."""
+    import random as _random
+    try:
+        from renderer.pygame_renderer import (event_tier, banner_text, aggregate_minor,
+                                              notable_names, realm_scoreboard, story_feed_rows,
+                                              _FEED_DEFAULT)
+    except ImportError:
+        print("PASS test_pygame_event_tiers_banner_and_realm_scoreboard_pure (skipped: no pygame)")
+        return
+    # MAJOR = turning points (battles, conquests, secessions, uprisings, eras, prophets, faiths).
+    for major in [
+        "turn 5: KING Rex CONQUERED S002 into the realm (6 host vs 4 defenders; 2+3 fell) -> vassal C",
+        "turn 7: KING Borin's host was REPELLED at S0A2 (1 host vs 1 defenders; 0+0 fell)",
+        "turn 8: KING A DEFEATED B in war (6 vs 4; 2+3 fell) -> B SUBJUGATED; an EMPIRE rises",
+        "turn 9: the UPRISING in S001 TRIUMPHED — monarch Rex is DEPOSED; Kade took power",
+        "turn 3: C BROKE AWAY from Rex's realm — S002 is independent again (loyalty collapsed)",
+        "turn 4: S001 entered the Bronze Age",
+        "turn 8: Iris arose as prophet of the Faith of the Watchful Dead",
+        "turn 2: the line of Rex is extinguished; the crown lies vacant",
+    ]:
+        assert event_tier(major) == "major", major
+    # MINOR = per-agent churn (trust deltas, routine trades/talks/teaching/levies/beliefs).
+    for minor in [
+        "turn 5: A trust in Rex: 0 -> -2 (faith condemns Rex)",
+        "turn 5: A sold 5.0 food to B for 2.5 money (price 0.50/unit)",
+        "turn 5: A taught 'farming' to B",
+        "turn 5: MONARCH Rex levied 2.0 from S001 by force",
+        "turn 5: A came to believe 'wealth is virtue'",
+        "turn 5: A talked to B: \"hi\"",
+    ]:
+        assert event_tier(minor) == "minor", minor
+    # A death is MAJOR only for a RULER (a `notable` figure), else minor churn.
+    st = {"kingdoms": {"Rex": {"settlements": {"S001"}}}, "monarchs": {}, "empires": {},
+          "leaders": {}, "faiths": {}}
+    note = notable_names(st)
+    assert event_tier("turn 9: Rex died (old age)", note) == "major"
+    assert event_tier("turn 9: F2a died (fell in battle)", note) == "minor"
+    # The banner strips the prefix, the '(stats)' and the '-> outcome' tail to plain words.
+    assert banner_text("turn 7: KING Borin's host was REPELLED at S0A2 (1 host vs 1; 0+0 fell)") \
+        == "KING Borin's host was REPELLED at S0A2"
+    assert banner_text("turn 5: KING Rex CONQUERED S002 into the realm (6 vs 4) -> vassal C") \
+        == "KING Rex CONQUERED S002 into the realm"
+    # Minor aggregation: trust deltas group by (target, direction); a tail is tallied honestly.
+    agg = aggregate_minor([
+        "turn 5: A trust in Rex: 0 -> -2 (faith condemns Rex)",
+        "turn 5: B trust in Rex: 1 -> -1 (faith condemns Rex)",
+        "turn 5: C trust in Rex: 2 -> 0 (faith condemns Rex)",
+        "turn 5: D sold 5.0 food to E for 2.5 money",
+    ])
+    assert agg == "3 agents' trust in Rex fell  · +1 more", agg
+    assert aggregate_minor([]) is None
+    # Realm scoreboard reads kingdoms/empires (folding a subjugated king into the empire).
+    world = {
+        "settlements": {"S001": {}, "S002": {}, "S003": {}},
+        "kingdoms": {"Rex": {"settlements": {"S001", "S002"}},
+                     "Ada": {"settlements": {"S003"}}},
+        "empires": {"Rex": {"emperor": "Rex", "subject_kings": {"Ada": {}}}},
+        "monarchs": {},
+    }
+    board = realm_scoreboard(world)
+    assert board == [("Rex", 3, True)], board  # Ada's town folds under emperor Rex
+    # The story feed tiers rows (major flagged) and collapses churn to one line per turn.
+    s0 = _random.getstate()
+    events = [
+        "turn 5: A trust in Rex: 0 -> -1 (faith condemns Rex)",
+        "turn 5: B trust in Rex: 0 -> -1 (faith condemns Rex)",
+        "turn 5: KING Rex CONQUERED S002 into the realm (6 vs 4) -> vassal C",
+    ]
+    rows = story_feed_rows(events, frozenset(), cols=60, max_rows=20)
+    assert any(is_major for _, _, is_major in rows), "a major row is flagged"
+    assert any((not is_major and c == _FEED_DEFAULT) for _, c, is_major in rows), \
+        "the two trust deltas collapse to one muted aggregated line"
+    assert _random.getstate() == s0, "the story helpers never touch the global RNG stream"
+    print("PASS test_pygame_event_tiers_banner_and_realm_scoreboard_pure")
+
+
 def test_pygame_renderer_panel_reads_state_does_not_mutate() -> None:
     """Slice 3: drawing the wider window + side panel (stats + event feed) is a pure READ.
 
@@ -4460,7 +4540,7 @@ def test_pygame_night_draw_is_read_only_and_lights_the_dark() -> None:
     try:
         import pygame  # noqa: F401
         from renderer.pygame_renderer import (PygameRenderer, time_of_day, daylight_factor,
-                                              _TURNS_PER_DAY)
+                                              _TURNS_PER_DAY, _NIGHT_GRADE_A)
     except ImportError:
         print("PASS test_pygame_night_draw_is_read_only_and_lights_the_dark (skipped: no pygame)")
         return
@@ -4495,7 +4575,10 @@ def test_pygame_night_draw_is_read_only_and_lights_the_dark() -> None:
         assert r._phase == time_of_day(night_turn) and r._nf == 1.0, \
             "the frame's phase derives purely from the sim turn"
         tint, a = r._grade_tint
-        assert tint[2] > tint[0] and a >= 100, "the night grade is a deep cool blue"
+        # V4.3: night holds its (raised) brightness FLOOR — still a cool blue-dark, but no
+        # longer so inky that buildings/agents/territory vanish. Tied to the constant so the
+        # floor tunes in one place.
+        assert tint[2] > tint[0] and a == _NIGHT_GRADE_A, "the night grade is a deep cool blue"
         assert r._grade.get_size() == (r._map_px, r._map_px), \
             "the grade covers the MAP only — HUD and panel stay ungraded UI"
         kinds = {light[0] for light in r._frame_lights}
@@ -8667,6 +8750,7 @@ def main_runner() -> None:
         test_pygame_settlement_region_grows_with_member_spread,
         test_pygame_renderer_draws_settlements_read_only,
         test_pygame_event_feed_classifies_and_wraps_newest_at_bottom,
+        test_pygame_event_tiers_banner_and_realm_scoreboard_pure,
         test_pygame_renderer_panel_reads_state_does_not_mutate,
         test_pygame_role_and_talk_helpers_read_state,
         test_pygame_renderer_iconography_draw_is_read_only,
