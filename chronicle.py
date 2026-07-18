@@ -47,7 +47,7 @@ _BLANK_DEEDS = {"conquests": 0, "wars": 0, "uprisings": 0, "prophecies": 0, "cro
 def _chron(state: dict[str, Any]) -> dict[str, Any]:
     return state.setdefault("chronicle", {
         "cursor": 0, "figures": {}, "events": [], "houses": {}, "house_of": {},
-        "births": {}, "literacy_dawn": None})
+        "births": {}, "literacy_dawn": None, "motive_diag": []})
 
 
 def _figure(ch: dict[str, Any], name: str, turn: int) -> dict[str, Any]:
@@ -196,7 +196,7 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
             fig = _figure(ch, victor, turn); fig["deeds"]["wars"] += 1; _set_archetype(fig)
         detail = f"KING {victor} defeated {loser} and forged an empire"
         _record_event(ch, turn, "war", f"{victor}'s Conquest of {loser}'s Kingdom",
-                      detail + _motive(state, turn, figure=victor), fid, (victor, loser))
+                      detail + _motive(state, turn, figure=victor, pivot="war"), fid, (victor, loser))
         return
 
     m = _P_SUCCEED.match(body)
@@ -226,7 +226,7 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
                 ch["houses"][hz]["fell"] = "ended by revolt"
         detail = f"the people of {sid} rose, deposed {deposed}, and {liberator} took power"
         _record_event(ch, turn, "uprising", f"the {sid} Uprising",
-                      detail + _motive(state, turn, sid=sid), fid, (liberator, deposed))
+                      detail + _motive(state, turn, sid=sid, pivot="uprising"), fid, (liberator, deposed))
         return
 
     m = _P_UPRISING_LED.match(body)
@@ -239,8 +239,11 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
     m = _P_UPRISING_CRUSH.match(body)
     if m:
         sid = m.group(1)
+        # A failed rising had a reason to rise as much as a successful one — wire the motive here too
+        # (the ringleader's rise decision is recorded the same turn, so the same sid lookup finds it).
         _record_event(ch, turn, "uprising", f"the {sid} Uprising (crushed)",
-                      f"a revolt in {sid} was put down", _fidelity(state, sid))
+                      f"the people of {sid} rose and were put down"
+                      + _motive(state, turn, sid=sid, pivot="uprising"), _fidelity(state, sid))
         return
 
     m = _P_PROPHET.match(body)
@@ -294,7 +297,7 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
         fid = _fidelity(state, _first_sid(body) or _home_of(state, breaker))
         _record_event(ch, turn, "breakaway", f"the Secession of {breaker}",
                       f"{breaker} broke away from {lord} and reclaimed independence"
-                      + _motive(state, turn, figure=breaker), fid, (breaker, lord))
+                      + _motive(state, turn, figure=breaker, pivot="breakaway"), fid, (breaker, lord))
         return
 
     m = _P_BIRTH.match(body)
@@ -326,21 +329,64 @@ def _process(state: dict[str, Any], ch: dict[str, Any], turn: int, body: str) ->
 
 
 def _motive(state: dict[str, Any], turn: int, figure: "str | None" = None,
-            sid: "str | None" = None) -> str:
+            sid: "str | None" = None, pivot: "str | None" = None) -> str:
     """The WHY behind a pivot decision (M5.1), as a trailing clause — or "" when minds are off/absent.
 
     If a figure consulted its mind at the pivot that produced this event, its recorded reason is
     surfaced so the saga records not just WHAT happened but WHY ("...saying 'the odds were even and
-    fortune favours the bold'"). Read-only: pulls the reason mind.py already logged. Empty otherwise,
-    so a minds-off run's saga text is unchanged."""
+    fortune favours the bold'"). Read-only on the SIM (pulls the reason mind.py already logged); empty
+    for a minds-off run, so its saga text is unchanged.
+
+    The lookup honours each pivot's TIMING. War and uprising events fire the very turn the mind is
+    consulted, so an exact same-turn match is right. A BREAKAWAY, though, has hysteresis: the mind is
+    consulted when loyalty first slips into the close band, but the secession only fires PATIENCE turns
+    later — so it needs a lookback (mind.breakaway_motive), or the reason is silently dropped. Whichever
+    lookup is used, `_diagnose_motive` records whether the (missing) motive was 'no mind consulted' or a
+    genuine 'lookup failed', so a blank saga entry is diagnosable rather than mysterious."""
     if not state.get("minds_on"):
         return ""
+    reason = None
     try:
         import mind
-        reason = mind.motive_for(state, turn, figure) if figure else mind.motive_at(state, turn, sid)
+        if pivot == "breakaway" and figure:
+            reason = mind.breakaway_motive(state, turn, figure)   # hysteresis-tolerant lookback
+        elif figure:
+            reason = mind.motive_for(state, turn, figure)
+        else:
+            reason = mind.motive_at(state, turn, sid)
     except Exception:
         reason = None
+    _diagnose_motive(state, turn, pivot, figure, sid, reason)
     return f", saying “{reason}”" if reason else ""
+
+
+def _diagnose_motive(state: dict[str, Any], turn: int, pivot: "str | None",
+                     figure: "str | None", sid: "str | None", reason: "str | None") -> None:
+    """Record WHY a pivot event did/didn't carry a motive, so a blank one is diagnosable (M5.1).
+
+    Three outcomes: 'attached' (a motive was found and written), 'no_consult' (no mind was ever consulted
+    for this pivot — it resolved decisively outside the close band, so the empty motive is CORRECT), and
+    'lookup_failed' (a mind WAS consulted here yet no motive attached — a wiring bug worth surfacing).
+    Writes ONLY the chronicle's own diag list (never a sim field), so determinism/byte-identity hold; a
+    minds-off run never reaches here. Read by verify/tests (and printable in the cost readout)."""
+    if pivot is None:
+        return
+    consulted = False
+    try:
+        import mind
+        # Match the motive-lookup window per pivot (breakaway lags by its hysteresis; war/uprising fire
+        # the same turn). acted_only: a consult counts only if it DECIDED TO ACT — the very case that
+        # records a motive — so a decisive break preceded by a DECLINED consult reads 'no_consult', not
+        # a false 'lookup_failed'. A true 'lookup_failed' (an acted consult whose motive never attaches)
+        # stays a tripwire for a future key/window regression.
+        window = mind._breakaway_window() if pivot == "breakaway" else 0
+        consulted = mind.pivot_consulted(state, turn, pivot, figure=figure, sid=sid,
+                                         window=window, acted_only=True)
+    except Exception:
+        consulted = False
+    status = "attached" if reason else ("lookup_failed" if consulted else "no_consult")
+    _chron(state).setdefault("motive_diag", []).append(
+        {"turn": turn, "pivot": pivot, "figure": figure, "sid": sid, "status": status})
 
 
 def _home_of(state: dict[str, Any], king: str) -> "str | None":

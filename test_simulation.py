@@ -8370,6 +8370,78 @@ def test_breakaway_motive_enters_the_chronicle() -> None:
     print("PASS test_breakaway_motive_enters_the_chronicle")
 
 
+def test_breakaway_motive_survives_the_hysteresis_delay() -> None:
+    """The breakaway pivot has HYSTERESIS: the mind is consulted the turn loyalty first slips into the
+    close band, but the secession EVENT fires PATIENCE turns later (and by then the margin may have gone
+    decisive, so no fresh consult happens on the event turn). The motive must still attach — the chronicle
+    looks BACK across the hysteresis window, not for an exact same-turn match (the real-run bug where live
+    Secession entries carried no motive despite the mind having been consulted)."""
+    import mind, chronicle, kingdoms
+
+    _chron_world()
+    world_state["minds_on"] = True
+    _chron_kingdom("Duke", "S001")
+    _agent("Vale", "independent solitary", (5, 5))
+    # The mind decides to break at turn 7 (loyalty at the borderline); the motive is recorded at 7.
+    brk, _ = mind.tilt(world_state, "Vale", "breakaway", 0.0, False, {"trust": 1, "lord": "Duke"}, 7)
+    assert brk is True
+    assert mind.motive_for(world_state, 7 + kingdoms.BREAKAWAY_PATIENCE, "Vale") is None, \
+        "an exact same-turn lookup MISSES the delayed event — that was the bug"
+    # ...but the secession only fires PATIENCE turns later.
+    event_turn = 7 + kingdoms.BREAKAWAY_PATIENCE
+    _chron_ev(event_turn, "Vale BROKE AWAY from Duke's realm — S001 is independent again (loyalty collapsed)")
+    chronicle.update(world_state, event_turn)
+
+    sec = next(e for e in chronicle.saga(world_state) if "Secession of Vale" in e["name"])
+    assert "saying" in sec["detail"], sec["detail"]                    # the delayed motive still attached
+    diag = world_state["chronicle"]["motive_diag"][-1]
+    assert diag["status"] == "attached" and diag["figure"] == "Vale", diag
+    print("PASS test_breakaway_motive_survives_the_hysteresis_delay")
+
+
+def test_decisive_secession_carries_no_motive_and_is_diagnosed_as_such() -> None:
+    """A secession that resolved OUTSIDE the close band consulted NO mind, so it CORRECTLY carries no
+    motive — and the diagnostic distinguishes that ('no_consult') from a genuine 'lookup_failed', so a
+    blank saga entry is explainable rather than mysterious. Determinism/byte-identity are untouched."""
+    import chronicle
+
+    _chron_world()
+    world_state["minds_on"] = True
+    _chron_kingdom("Duke", "S001")
+    _agent("Grim", "x", (5, 5))
+    # No mind.tilt call at all: loyalty collapsed decisively, the mind was never consulted.
+    _chron_ev(4, "Grim BROKE AWAY from Duke's realm — S001 is independent again (loyalty collapsed)")
+    chronicle.update(world_state, 4)
+
+    sec = next(e for e in chronicle.saga(world_state) if "Secession of Grim" in e["name"])
+    assert "saying" not in sec["detail"], sec["detail"]                # decisive break -> no motive (correct)
+    diag = world_state["chronicle"]["motive_diag"][-1]
+    assert diag["status"] == "no_consult", diag                       # and it is diagnosed as such, not a bug
+    print("PASS test_decisive_secession_carries_no_motive_and_is_diagnosed_as_such")
+
+
+def test_crushed_uprising_carries_its_motive() -> None:
+    """A FAILED rising had a reason to rise as much as a successful one — the crushed line now carries the
+    ringleader's motive too ('the people of S001 rose and were put down, saying ...'). The rise decision is
+    consulted the same turn, so the sid lookup finds it."""
+    import mind, chronicle
+
+    _chron_world()
+    world_state["minds_on"] = True
+    _agent("Spark", "bold competitive", (5, 5))
+    import uprising
+    rise, _ = mind.tilt(world_state, "Spark", "uprising", 0.0, False,
+                        {"pressure": uprising.UPRISING_MIN_PRESSURE,
+                         "threshold": uprising.UPRISING_MIN_PRESSURE, "sid": "S001"}, 6)
+    assert rise is True, "the firebrand raises the banner on a near-tie"
+    _chron_ev(6, "the UPRISING in S001 was CRUSHED — king Rex holds (2 guards + 3 risers fell); the survivors are cowed")
+    chronicle.update(world_state, 6)
+
+    crushed = next(e for e in chronicle.saga(world_state) if "(crushed)" in e["name"])
+    assert "put down" in crushed["detail"] and "saying" in crushed["detail"], crushed["detail"]
+    print("PASS test_crushed_uprising_carries_its_motive")
+
+
 def test_belief_changes_at_most_once_per_turn_no_flipflop() -> None:
     """A belief an agent changes this turn cannot flip back the SAME turn. When two contradictory beliefs
     are BOTH warranted at once, the first (catalogue order) wins deterministically — so the log never
@@ -8738,6 +8810,9 @@ def main_runner() -> None:
         test_motive_enters_the_written_history,
         test_pivot_provider_selection_random_stands_in_live_reaches_the_model,
         test_breakaway_motive_enters_the_chronicle,
+        test_breakaway_motive_survives_the_hysteresis_delay,
+        test_decisive_secession_carries_no_motive_and_is_diagnosed_as_such,
+        test_crushed_uprising_carries_its_motive,
         test_belief_changes_at_most_once_per_turn_no_flipflop,
         test_minds_off_is_byte_identical_and_a_bad_response_falls_back,
     ]

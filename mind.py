@@ -246,7 +246,8 @@ def tilt(state: dict[str, Any], figure_name: str, pivot: str, margin: float, bas
         verdict = (margin + incl * _TILT[pivot]) > 0
 
     record = {"turn": turn, "figure": figure_name, "pivot": pivot, "margin": margin,
-              "inclination": incl, "reason": str(consult.get("reason", "")),
+              "sid": situation.get("sid"), "inclination": incl,
+              "reason": str(consult.get("reason", "")),
               "acted": verdict, "flipped": verdict != base_act,
               "reason_text": _REASON[(pivot, verdict)]}
     state.setdefault("mind_consults", []).append(record)
@@ -274,6 +275,59 @@ def motive_at(state: dict[str, Any], turn: int, sid: str) -> "str | None":
         if m["turn"] == turn and m.get("sid") == sid:
             return m["reason"]
     return None
+
+
+def _breakaway_window() -> int:
+    """The hysteresis span (turns) between a break DECISION and the secession EVENT — kingdoms.BREAKAWAY_PATIENCE.
+
+    Lazy import (kingdoms imports mind, so a module-level import would cycle); falls back to a safe 2 if
+    kingdoms cannot be read, so the lookback never crashes the read-only chronicle pass."""
+    try:
+        import kingdoms
+        return kingdoms.BREAKAWAY_PATIENCE
+    except Exception:
+        return 2
+
+
+def breakaway_motive(state: dict[str, Any], event_turn: int, figure: str) -> "str | None":
+    """The motive behind `figure`'s breakaway EVENT at `event_turn`, tolerant of the breakaway HYSTERESIS.
+
+    Unlike war (the event fires the very turn the mind is consulted, so an exact turn match suffices), a
+    breakaway has a PATIENCE delay: the mind is consulted the turn loyalty first slips into the close
+    band, but the secession EVENT only fires BREAKAWAY_PATIENCE turns later — and by then the margin may
+    have gone decisive, so NO fresh consult happens on the event turn. A same-turn lookup (motive_for)
+    therefore misses it. So look BACK across the hysteresis window for the most recent breakaway decision
+    this figure took that drove the secession. Returns the reason, or None if the break was never a
+    mind-driven decision (loyalty decisive throughout — no consult, correctly no motive)."""
+    window = _breakaway_window()
+    best = None
+    for m in state.get("mind_motives", []):
+        if (m.get("pivot") == "breakaway" and m["figure"] == figure
+                and event_turn - window <= m["turn"] <= event_turn):
+            if best is None or m["turn"] > best["turn"]:
+                best = m
+    return best["reason"] if best else None
+
+
+def pivot_consulted(state: dict[str, Any], event_turn: int, pivot: str, figure: "str | None" = None,
+                    sid: "str | None" = None, window: int = 0, acted_only: bool = False) -> bool:
+    """Whether a `pivot` mind was CONSULTED (by figure or by settlement) within `window` turns up to `event_turn`.
+
+    With `acted_only`, count ONLY consults whose verdict was to ACT — i.e. exactly the consults that
+    RECORD a motive (a consult that DECLINES writes none). That is what the chronicle wants when telling
+    'no mind drove this' (out-of-band decisive, OR the mind declined and the act came from later decisive
+    math — correctly blank) apart from 'a mind DID act here but its motive never attached' (a real lookup
+    bug). Counting declined consults would false-flag the blank case as a bug."""
+    for c in state.get("mind_consults", []):
+        if c.get("pivot") != pivot or not (event_turn - window <= c["turn"] <= event_turn):
+            continue
+        if acted_only and not c.get("acted"):
+            continue
+        if figure is not None and c.get("figure") == figure:
+            return True
+        if sid is not None and c.get("sid") == sid:
+            return True
+    return False
 
 
 def consult_count(state: dict[str, Any]) -> int:

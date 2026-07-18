@@ -836,6 +836,18 @@ def print_inference_savings(counters: dict[str, int]) -> None:
         flips = sum(1 for c in world_state.get("mind_consults", []) if c["flipped"])
         print(f"Pivot mind consults:       {consults} (flipped {flips} close call(s); "
               f"{stats.get('inclination', 0)} LLM inclination call(s))")
+        # M5.1 diagnostic: for each chronicled pivot event, did its motive attach? A blank saga motive is
+        # either CORRECT ('no_consult' — the pivot resolved decisively outside the close band, no mind was
+        # asked) or a BUG ('lookup_failed' — a mind WAS consulted but its reason never reached the entry).
+        # Surfacing the split makes a missing "saying ..." explainable instead of mysterious.
+        diag = world_state.get("chronicle", {}).get("motive_diag", [])
+        if diag:
+            att = sum(1 for d in diag if d["status"] == "attached")
+            noc = sum(1 for d in diag if d["status"] == "no_consult")
+            fail = sum(1 for d in diag if d["status"] == "lookup_failed")
+            print(f"Pivot motives in saga:     {att} attached, {noc} no-consult (decisive; "
+                  f"correctly blank), {fail} lookup-failed"
+                  + ("  <-- BUG: consulted but motive lost" if fail else ""))
     print()
 
 

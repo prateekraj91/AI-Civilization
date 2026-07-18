@@ -1,32 +1,233 @@
-# The Chronicle of the Age (narrated)
+# The Chronicle of the Age
 
-- In turn 0, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 3, F2d of S002 devised writing — history begins.
-- In turn 4, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 5, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 6, Chief3 arose as prophet of the Faith of the Enlightened and the Iron Truth.
-- In turn 6, the Faith of the Enlightened and the Golden Path took root in S002.
-- In turn 9, Chief2 arose as prophet of the Faith of the Enlightened and the Iron Truth.
-- In turn 10, Rex took S002 by force.
-- In turn 10, Chief3 arose as prophet of the Faith of the Enlightened and the Covenant.
-- In turn 10, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 15, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 21, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 22, Rex took S003 by force.
-- In turn 23, S002 reached Bronze Age.
-- In turn 24, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 26, Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 30, S003 reached Iron Age.
-- In turn 35, Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 37, Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 45, S001 reached Iron Age.
-- In turn 48, S002 reached Iron Age.
-- In turn 52, a revolt in S001 was put down.
-- In turn 58, Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 65, its names are lost to the preliterate dark. (a legend, its names lost)
-- In turn 75, Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 79, S001 reached Iron Age.
-- In turn 105, Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 119, Lena arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 121, Orin arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- In turn 139, Rhea arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+*Writing was invented in turn 3; before it, the record is legend.*
+
+## The Great Figures
+- **Rex the Grasping** — Conqueror, active turns 10–52. Deeds: 1 conquests, 80 levies. Fate: deposed in an uprising.
+- **Nell the Prophet** — Prophet, active turns 60–150. Deeds: 78 prophecies. Fate: passed from the record.
+- **Chief3 the Prophet** — Prophet, active turns 6–75. Deeds: 13 prophecies. Fate: passed from the record.
+- **Chief2 the Prophet** — Prophet, active turns 9–39. Deeds: 11 prophecies. Fate: passed from the record.
+- **Iris the Prophet** — Prophet, active turns 35–36. Deeds: 2 prophecies. Fate: passed from the record.
+- **Kade the Liberator** — Revolutionary, active turns 52–52. Deeds: 2 uprisings. Fate: passed from the record.
+
+## The Houses
+- **the House of Rex** — founded turn 10, 1 generation(s), 0 crown(s) passed, 1 titled kin (Rex). Fate: ended by revolt.
+
+## The Saga
+- **Turn 0 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 3 — the Invention of Writing**: F2d of S002 devised writing — history begins.
+- **Turn 4 — an event lost to time**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 5 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 6 — the Advent of the Faith of the Enlightened and the Iron Truth**: Chief3 arose as prophet of the Faith of the Enlightened and the Iron Truth.
+- **Turn 6 — the Rise of the Faith of the Enlightened and the Golden Path**: the Faith of the Enlightened and the Golden Path took root in S002.
+- **Turn 9 — a forgotten secession**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 9 — the Advent of the Faith of the Enlightened and the Iron Truth**: Chief2 arose as prophet of the Faith of the Enlightened and the Iron Truth.
+- **Turn 10 — Rex's Seizure of S002**: Rex took S002 by force.
+- **Turn 10 — the Advent of the Faith of the Enlightened and the Covenant**: Chief3 arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 10 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 14 — a forgotten revolt**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 15 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S001.
+- **Turn 21 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 26 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 28 — a forgotten secession**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 28 — the Secession of Chief2**: Chief2 broke away from Rex and reclaimed independence.
+- **Turn 29 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 29 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 30 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 30 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 31 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 31 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 32 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 32 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 33 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 33 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 34 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 34 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 35 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 35 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 36 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 36 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 37 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 37 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 37 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 38 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 38 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 39 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 39 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 40 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 40 — the S001 Uprising (crushed)**: a revolt in S001 was put down.
+- **Turn 41 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 42 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 43 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 44 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 45 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 46 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 47 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 48 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
+- **Turn 52 — the End of the House of Rex**: the line of Rex died out.
+- **Turn 52 — the S002 Uprising**: the people of S002 rose, deposed Rex, and Kade took power, saying “the decision rested on the odds alone”.
+- **Turn 53 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 53 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 54 — a forgotten secession**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 58 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 58 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 59 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 59 — the rise of a creed**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 60 — S003 enters Iron Age**: S003 reached Iron Age.
+- **Turn 60 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 61 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 62 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 65 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 66 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 67 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 68 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 69 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 70 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 71 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 72 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 73 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 74 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 75 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 76 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 79 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 79 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 80 — a lost conquest**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 80 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 80 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 83 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 83 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 84 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 84 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 85 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 85 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 86 — a vanished line**: its names are lost to the preliterate dark.  _(legend)_
+- **Turn 86 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 86 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 87 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 87 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 88 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 88 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 89 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 89 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 90 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 90 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 91 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 91 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 92 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 92 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 93 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 93 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 94 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 94 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 95 — the Advent of the Faith of the Watchful Dead and the Golden Path**: Nell arose as prophet of the Faith of the Watchful Dead and the Golden Path.
+- **Turn 95 — the Rise of the Faith of the Watchful Dead and the Golden Path**: the Faith of the Watchful Dead and the Golden Path took root in S003.
+- **Turn 96 — the Advent of the Faith of the Watchful Dead and the Golden Path**: Nell arose as prophet of the Faith of the Watchful Dead and the Golden Path.
+- **Turn 96 — the Rise of the Faith of the Watchful Dead and the Golden Path**: the Faith of the Watchful Dead and the Golden Path took root in S003.
+- **Turn 97 — the Advent of the Faith of the Watchful Dead and the Golden Path**: Nell arose as prophet of the Faith of the Watchful Dead and the Golden Path.
+- **Turn 97 — the Rise of the Faith of the Watchful Dead and the Golden Path**: the Faith of the Watchful Dead and the Golden Path took root in S003.
+- **Turn 98 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 98 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 99 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 99 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 100 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 100 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 101 — the Advent of the Faith of the Watchful Dead and the Golden Path**: Nell arose as prophet of the Faith of the Watchful Dead and the Golden Path.
+- **Turn 101 — the Rise of the Faith of the Watchful Dead and the Golden Path**: the Faith of the Watchful Dead and the Golden Path took root in S003.
+- **Turn 102 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 102 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 103 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 103 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 104 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 104 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 105 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 105 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 106 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 106 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 107 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 107 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 108 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 108 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 109 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 109 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 110 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 110 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 111 — the Advent of the Faith of the Watchful Dead and the Golden Path**: Nell arose as prophet of the Faith of the Watchful Dead and the Golden Path.
+- **Turn 111 — the Rise of the Faith of the Watchful Dead and the Golden Path**: the Faith of the Watchful Dead and the Golden Path took root in S003.
+- **Turn 112 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 112 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 113 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 113 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 114 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 114 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 115 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 115 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 116 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 116 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 117 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 117 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 118 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 118 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 119 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 119 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 120 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 120 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 121 — the Advent of the Faith of the Bountiful Earth and the Golden Path**: Nell arose as prophet of the Faith of the Bountiful Earth and the Golden Path.
+- **Turn 121 — the Rise of the Faith of the Bountiful Earth and the Golden Path**: the Faith of the Bountiful Earth and the Golden Path took root in S003.
+- **Turn 122 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 122 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 123 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 123 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 124 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 124 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 125 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 125 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 126 — the Advent of the Faith of the Watchful Dead and the Bountiful Earth**: Nell arose as prophet of the Faith of the Watchful Dead and the Bountiful Earth.
+- **Turn 126 — the Rise of the Faith of the Watchful Dead and the Bountiful Earth**: the Faith of the Watchful Dead and the Bountiful Earth took root in S003.
+- **Turn 127 — the Advent of the Faith of the Watchful Dead and the Bountiful Earth**: Nell arose as prophet of the Faith of the Watchful Dead and the Bountiful Earth.
+- **Turn 127 — the Rise of the Faith of the Watchful Dead and the Bountiful Earth**: the Faith of the Watchful Dead and the Bountiful Earth took root in S003.
+- **Turn 128 — the Advent of the Faith of the Watchful Dead and the Bountiful Earth**: Nell arose as prophet of the Faith of the Watchful Dead and the Bountiful Earth.
+- **Turn 128 — the Rise of the Faith of the Watchful Dead and the Bountiful Earth**: the Faith of the Watchful Dead and the Bountiful Earth took root in S003.
+- **Turn 129 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 129 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 130 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 130 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 131 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 131 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 132 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 132 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 133 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 133 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 134 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 134 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 135 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 135 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 136 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 136 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 137 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 137 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 138 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 138 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 139 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 139 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 140 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 140 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 141 — the Advent of the Faith of the Enlightened and the Bountiful Earth**: Nell arose as prophet of the Faith of the Enlightened and the Bountiful Earth.
+- **Turn 141 — the Rise of the Faith of the Enlightened and the Bountiful Earth**: the Faith of the Enlightened and the Bountiful Earth took root in S003.
+- **Turn 142 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 142 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 143 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 143 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 144 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 144 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 145 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 145 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 146 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 146 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 147 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Nell arose as prophet of the Faith of the Enlightened and the Watchful Dead.
+- **Turn 147 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S003.
+- **Turn 148 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 148 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
+- **Turn 149 — the Advent of the Faith of the Enlightened and the Golden Path**: Nell arose as prophet of the Faith of the Enlightened and the Golden Path.
+- **Turn 149 — the Rise of the Faith of the Enlightened and the Golden Path**: the Faith of the Enlightened and the Golden Path took root in S003.
+- **Turn 150 — the Advent of the Faith of the Enlightened and the Covenant**: Nell arose as prophet of the Faith of the Enlightened and the Covenant.
+- **Turn 150 — the Rise of the Faith of the Enlightened and the Covenant**: the Faith of the Enlightened and the Covenant took root in S003.
