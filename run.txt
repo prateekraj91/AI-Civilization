@@ -3036,7 +3036,7 @@ no active coalition
 - **Turn 39 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 39 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
 - **Turn 40 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- **Turn 40 — the Secession of Chief3**: Chief3 broke away from Rex and reclaimed independence.
+- **Turn 40 — the Secession of Chief3**: Chief3 broke away from Rex and reclaimed independence, saying “reclaim independence”.
 - **Turn 41 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 41 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 41 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
@@ -3065,7 +3065,7 @@ no active coalition
 - **Turn 53 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 53 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
 - **Turn 54 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
-- **Turn 54 — the S001 Uprising (crushed)**: a revolt in S001 was put down.
+- **Turn 54 — the S001 Uprising (crushed)**: the people of S001 rose and were put down.
 - **Turn 55 — S001 enters Bronze Age**: S001 reached Bronze Age.
 - **Turn 55 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief2 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 55 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Chief3 arose as prophet of the Faith of the Enlightened and the Watchful Dead.
@@ -3082,7 +3082,7 @@ no active coalition
 - **Turn 60 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 61 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 61 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
-- **Turn 61 — the S003 Uprising (crushed)**: a revolt in S003 was put down.
+- **Turn 61 — the S003 Uprising (crushed)**: the people of S003 rose and were put down, saying “the time was not yet ripe to raise the banner”.
 - **Turn 62 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
 - **Turn 62 — the Rise of the Faith of the Enlightened and the Watchful Dead**: the Faith of the Enlightened and the Watchful Dead took root in S002.
 - **Turn 63 — the Advent of the Faith of the Enlightened and the Watchful Dead**: Iris arose as prophet of the Faith of the Enlightened and the Watchful Dead.
@@ -3122,6 +3122,7 @@ LLM strategy calls made:   0
 Per-turn design would use: 1370 LLM calls
 Saved by caching:          1370 calls (~100% fewer)
 Pivot mind consults:       31 (flipped 12 close call(s); 29 LLM inclination call(s))
+Pivot motives in saga:     3 attached, 3 no-consult (decisive; correctly blank), 0 lookup-failed
 
 ========================================================
 EVENTS LOG (world_state['events'])
@@ -4885,4 +4886,4 @@ turn 148: Pia came to believe 'we are stronger together' (renouncing 'the strong
 turn 149: Pia came to believe 'the strong take what they want' (renouncing 'we are stronger together')
 turn 150: Pia came to believe 'we are stronger together' (renouncing 'the strong take what they want')
 
-[chronicle] saga written to saga_qwen2.md
+[chronicle] saga written to saga_final.md
