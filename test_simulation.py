@@ -3751,14 +3751,22 @@ def test_pygame_event_tiers_banner_and_realm_scoreboard_pure() -> None:
         == "KING Borin's host was REPELLED at S0A2"
     assert banner_text("turn 5: KING Rex CONQUERED S002 into the realm (6 vs 4) -> vassal C") \
         == "KING Rex CONQUERED S002 into the realm"
-    # Minor aggregation: trust deltas group by (target, direction); a tail is tallied honestly.
+    # Minor aggregation: EVERY event merges into a group (trust by target+direction, else by
+    # category), listed largest-first — nothing is dropped into a lossy '+N more' here.
     agg = aggregate_minor([
         "turn 5: A trust in Rex: 0 -> -2 (faith condemns Rex)",
         "turn 5: B trust in Rex: 1 -> -1 (faith condemns Rex)",
         "turn 5: C trust in Rex: 2 -> 0 (faith condemns Rex)",
         "turn 5: D sold 5.0 food to E for 2.5 money",
     ])
-    assert agg == "3 agents' trust in Rex fell  · +1 more", agg
+    assert agg == "3 agents' trust in Rex fell  ·  1 routine trade", agg
+    # Possessive grammar is correct for BOTH counts (the old '1 agent'' typo is gone).
+    assert aggregate_minor(["turn 5: A trust in Rex: 0 -> 1 (talk)"]) \
+        == "1 agent's trust in Rex rose"
+    assert aggregate_minor(
+        [f"turn 5: A{i} trust in LordA: 0 -> 1 (ally)" for i in range(5)]
+    ) == "5 agents' trust in LordA rose"
+    # Past _AGG_MAX_CLAUSES the long tail is tallied honestly as leftover EVENTS.
     assert aggregate_minor([]) is None
     # Realm scoreboard reads kingdoms/empires (folding a subjugated king into the empire).
     world = {
@@ -4426,11 +4434,16 @@ def test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only() -> None:
     pygame.init()
     try:
         r._ensure_screen(state["size"])
-        # V4.6 geometry: the MAP-zone WINDOW is still the playable grid + wilderness ring sized
-        # by the window cell; the iso FIT cell is half that (the 2:1 diamond fills the width),
-        # and the terrain now bakes into a DIAMOND canvas sized by _iso_base_offsets.
+        # V4.6/V4.9 geometry: the MAP-zone WINDOW is still the playable grid + wilderness ring
+        # sized by the window cell; the iso FIT cell now FRAMES the playable world (0..size) across
+        # the viewport with a modest margin (the launch view / zoom-out floor), and the terrain
+        # bakes into a DIAMOND canvas sized by _iso_base_offsets.
+        from renderer.pygame_renderer import _fit_cell
         assert r._map_px == r._win_cell * (state["size"] + 2 * _MARGIN_CELLS)
-        assert r._cell == max(4, r._win_cell // 2), "the iso fit cell halves the window cell"
+        assert r._cell == r._cell0 == _fit_cell(state["size"], r._map_px), \
+            "the iso fit cell frames the playable world"
+        assert r._zoom_lo == float(r._cell0) and r._zoom_hi == float(r._zoom_buckets[-1]), \
+            "zoom bounds run fit-whole-world .. close village"
         _ox, _oy, bw, bh = r._iso_base_offsets(r._cell0)
         assert r._terrain_bg is not None and r._terrain_bg.get_size() == (bw, bh), \
             "the baked landscape covers the whole iso diamond canvas"
@@ -4824,19 +4837,20 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
         assert r._cell0 in r._zoom_buckets, "the fit cell is a zoom bucket (1:1 blits)"
         r._draw(state)
         assert r._cell == r._cell0, "an idle camera stays on the fit view"
-        # GLIDE OUT to the smallest bucket -> the FAR strategy tier (several frames settle it).
-        r._cam_tcell = float(r._zoom_buckets[0])
+        # V4.9: zooming OUT past the fit-whole-world floor is CLAMPED — the world can never be lost
+        # into the void. A target below _zoom_lo settles back exactly on the fit cell.
+        r._cam_tcell = float(r._zoom_buckets[0])          # below the floor (a bake bucket, not a bound)
         for _ in range(60):
             r._draw(state)
-        assert r._cell == r._zoom_buckets[0], "the zoom glide settles exactly on its bucket"
-        assert r._lod == "far", f"smallest bucket reads as the strategy map, got {r._lod}"
-        # GLIDE IN to the largest bucket with an absurd pan target: the clamp keeps the view
-        # inside the world and the tier lands CLOSE.
+        assert r._cam_tcell == r._zoom_lo == float(r._cell0), "zoom-out is clamped to the fit floor"
+        assert r._cell == r._cell0, "gliding out settles on the fit-whole-world view"
+        # GLIDE IN to the close village (top bound) with an absurd pan target: the clamp keeps the
+        # view inside the world and the tier lands CLOSE.
         r._cam_tx, r._cam_ty = -999.0, 999.0
-        r._cam_tcell = float(r._zoom_buckets[-1])
+        r._cam_tcell = r._zoom_hi
         for _ in range(80):
             r._draw(state)
-        assert r._cell == r._zoom_buckets[-1] and r._lod == "close"
+        assert r._cell == int(round(r._zoom_hi)) and r._lod == "close"
         assert -_MARGIN_CELLS <= r._cam_x <= size + _MARGIN_CELLS
         assert -_MARGIN_CELLS <= r._cam_y <= size + _MARGIN_CELLS
         # The cached-surface strategy: base bake untouched, bucket cache LRU-bounded.
@@ -4847,11 +4861,11 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
         for _ in range(40):
             r._draw(state)
         assert r._to_px(20, 20)[0] < x1, "panning right slides the world left"
-        # Camera EVENTS drive only renderer-local targets: wheel out steps down the ladder,
-        # HOME refits the whole world.
+        # Camera EVENTS drive only renderer-local targets: one wheel notch nudges the zoom target
+        # by a small multiplicative step (out here), HOME eases back to the fit-whole-world view.
         t_before = r._cam_tcell
         r._handle_camera_event(pygame.event.Event(pygame.MOUSEWHEEL, y=-1, x=0))
-        assert r._cam_tcell < t_before, "wheel-down targets the next bucket out"
+        assert r._zoom_lo <= r._cam_tcell < t_before, "wheel-down nudges the zoom target out one notch"
         r._handle_camera_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_HOME))
         assert r._cam_tcell == float(r._cell0) and (r._cam_tx, r._cam_ty) == (20.0, 20.0)
         for _ in range(60):

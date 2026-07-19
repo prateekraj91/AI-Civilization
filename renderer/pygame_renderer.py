@@ -261,6 +261,12 @@ _FARMLAND_FURROW = PALETTE["farmland_furrow"]
 _FARMLAND_ALPHA = 52
 _VIGNETTE_MAX = 48            # slice 9: softened — depth without the old black-edged stage
 _FRAME_OUTER = (22, 26, 20)   # dark outer frame around the map zone
+# V4.9: the OUT-OF-BOUNDS void — the world reads as CONTINUING into open water rather than sitting
+# as a diamond island on flat background. A radial ocean (deep sea at centre -> near-black at the
+# corners) fills behind the transparent-void terrain bake; a soft vignette on top kills the hard
+# canvas edge. Both are cached per window size and cost two blits a frame.
+_VOID_OCEAN = (30, 66, 92)    # deep open sea just beyond the coast — clearly WATER, blue-teal
+_VOID_EDGE = (18, 42, 60)     # the far deep water at the frame corners (still reads as sea, not black)
 _FRAME_INNER = (78, 90, 66)   # a thin lighter inner line, for a framed-map look
 # Feature density thresholds on terrain_noise (sparse, so the map stays readable).
 _TREE_THRESHOLD = 0.93        # ~7% of PLAYABLE cells get a tree
@@ -420,13 +426,17 @@ _LIGHT_MAX_A = 235                # cap a pool's centre additive brightness (avo
 # redraw through the transform at the live cell size, so close-ups stay CRISP — a bigger
 # cell re-renders more detail via the slice-4/6 cell thresholds, never a blurry upscale
 # (town plans already cache per cell size and rebuilding one is cheap pure maths).
-_ZOOM_OUT_MAX = 0.4               # lower zoom bound, as a fraction of the fit-whole-world cell
+_ZOOM_OUT_MAX = 0.4               # widest terrain-bake bucket, as a fraction of the fit cell (the
+                                  # interactive zoom-OUT floor is the fit cell itself, see _zoom_lo)
 _ZOOM_IN_MAX = 6.0                # upper zoom bound (relative to fit), before the absolute cap.
                                   # V4.6: the iso FIT cell is half the window cell, so the range
                                   # doubles to keep the same absolute close-up (still _CELL_CEIL-capped)
 _CELL_FLOOR = 4                   # never draw cells smaller than this (strategy view stays readable)
 _CELL_CEIL = 72                   # ...or bigger than this (close-up cap for tiny worlds)
-_ZOOM_STEP_RATIO = 1.35           # the geometric ladder between zoom buckets (~6-8 buckets)
+_ZOOM_STEP_RATIO = 1.35           # the geometric ladder between terrain-bake buckets (~6-8 buckets)
+_ZOOM_STEP = 1.1                  # V4.9: small, consistent MULTIPLICATIVE zoom per wheel/±notch —
+                                  # the target is a free float (glided), so zooming feels continuous
+_FIT_MARGIN = 0.05                # V4.9: modest frame margin the launch/floor fit leaves each side
 _TERRAIN_LRU = 3                  # non-base bucket landscapes kept baked at once (bounded memory)
 _CAM_GLIDE = 0.22                 # per-frame ease toward the camera target — pan/zoom glides
 _PAN_FRAC = 0.02                  # held-key pan speed: fraction of the viewport per frame
@@ -517,6 +527,7 @@ _CAT_PHRASE = {                # aggregate wording for a turn's MINOR churn, by 
     "faith": "{n} faith stirring{s}",
     "other": "{n} minor event{s}",
 }
+_AGG_MAX_CLAUSES = 3           # how many merged groups a turn's minor summary lists before '+N more'
 
 
 # --- V4.2: pure event-tier / story helpers (unit-testable, RNG-free, no pygame) -----------
@@ -645,9 +656,12 @@ def _trust_key(body: str) -> tuple[str | None, int]:
 def aggregate_minor(lines: list[str]) -> str | None:
     """Collapse a turn's MINOR events into ONE story-feed summary line, or None (pure).
 
-    Trust deltas are grouped by (target, direction) so the biggest movement reads plainly
-    ('8 agents' trust in Rex fell'); otherwise the largest category is summarised. Anything
-    left over is tallied as '· +N more' so the count is honest without spamming the panel.
+    EVERY event is merged into a group so nothing is silently dropped: trust deltas by
+    (target, direction) — so all of a turn's movement on one figure reads as a single honest
+    count ('5 agents' trust in LordA rose', grammatical for one agent too) — and everything
+    else by its category. The groups are listed largest-first joined by ' · '; past
+    _AGG_MAX_CLAUSES the long tail is tallied as '· +N more' (a count of the leftover EVENTS)
+    so the line stays roughly one panel wide without ever double-counting.
     """
     if not lines:
         return None
@@ -655,22 +669,24 @@ def aggregate_minor(lines: list[str]) -> str | None:
     trust: dict[tuple[str, int], int] = {}
     cats: dict[str, int] = {}
     for b in bodies:
-        low = b.lower()
-        cat = _minor_category(low)
-        cats[cat] = cats.get(cat, 0) + 1
+        cat = _minor_category(b.lower())
         if cat == "trust":
             tgt, d = _trust_key(b)
             if tgt:
                 trust[(tgt, d)] = trust.get((tgt, d), 0) + 1
-    total = len(bodies)
-    if trust:
-        (tgt, d), n = max(trust.items(), key=lambda kv: (kv[1], kv[0]))
+                continue
+            cat = "other"                      # an unparseable trust line -> the generic tally
+        cats[cat] = cats.get(cat, 0) + 1
+    clauses: list[tuple[int, str]] = []
+    for (tgt, d), n in trust.items():
         verb = "rose" if d > 0 else ("fell" if d < 0 else "shifted")
-        head = f"{n} agent{'s' if n != 1 else ''}' trust in {tgt} {verb}"
-    else:
-        cat, n = max(cats.items(), key=lambda kv: (kv[1], kv[0]))
-        head = _CAT_PHRASE[cat].format(n=n, s="s" if n != 1 else "")
-    rest = total - n
+        noun = "agent's" if n == 1 else "agents'"     # possessive: singular 's, plural s'
+        clauses.append((n, f"{n} {noun} trust in {tgt} {verb}"))
+    for cat, n in cats.items():
+        clauses.append((n, _CAT_PHRASE[cat].format(n=n, s="s" if n != 1 else "")))
+    clauses.sort(key=lambda c: (-c[0], c[1]))         # largest group first, then stable by text
+    head = "  ·  ".join(text for _, text in clauses[:_AGG_MAX_CLAUSES])
+    rest = sum(n for n, _ in clauses[_AGG_MAX_CLAUSES:])
     if rest > 0:
         head += f"  · +{rest} more"
     return head
@@ -787,6 +803,21 @@ def _cell_size(size: int) -> int:
     if size <= 0:
         return _MAX_CELL
     return max(_MIN_CELL, min(_MAX_CELL, _TARGET_PX // (size + 2 * _MARGIN_CELLS)))
+
+
+def _fit_cell(size: int, map_px: int) -> int:
+    """V4.9: the iso cell that frames the PLAYABLE world (cells 0..size) across the map viewport
+    with a modest margin — the launch view and the zoom-OUT floor (pure).
+
+    The 2:1 diamond's on-screen WIDTH is 2*size*cell, so the cell that fills the frame width
+    (minus _FIT_MARGIN each side) makes the world itself fill the frame — the wilderness margin
+    is allowed to spill past the edges into the void rather than shrinking the world to fit it.
+    Clamped to sane pixels; the whole world stays visible (its vertical slack is the filled void).
+    """
+    if size <= 0 or map_px <= 0:
+        return _MAX_CELL
+    usable = map_px * (1.0 - 2.0 * _FIT_MARGIN)
+    return int(max(_CELL_FLOOR, min(_MAX_CELL, usable / (2.0 * max(1, size)))))
 
 
 def settlement_radius_cells(center: tuple[int, int],
@@ -1617,6 +1648,10 @@ class PygameRenderer:
         self._cam_tx = 0.0                 # glide targets (pan / zoom land here)
         self._cam_ty = 0.0
         self._cam_tcell = float(_MAX_CELL)
+        self._zoom_lo = float(_CELL_FLOOR)  # V4.9: interactive zoom-OUT floor (the fit cell)
+        self._zoom_hi = float(_CELL_CEIL)   # V4.9: interactive zoom-IN ceiling (close village)
+        self._void_bg: Any = None           # V4.9: cached out-of-bounds ocean gradient
+        self._vignette: Any = None          # V4.9: cached soft edge vignette overlay
         self._cam_draw = (0.0, 0.0, _MAX_CELL)     # this frame's (centre_x, centre_y, cell)
         self._zoom_buckets: tuple[int, ...] = ()   # the quantized integer-cell zoom ladder
         self._terrain_zoom: dict[int, Any] = {}    # bucket cell -> baked landscape (LRU-capped)
@@ -1660,13 +1695,19 @@ class PygameRenderer:
         grid_px = win_cell * max(1, size)
         self._margin_px = _MARGIN_CELLS * win_cell
         self._map_px = grid_px + 2 * self._margin_px
-        # ...but the iso FIT cell is half that, so the 2:1 diamond's WIDTH fills the viewport.
-        self._cell = self._cell0 = max(_CELL_FLOOR, win_cell // 2)
+        # V4.9: the FIT cell frames the PLAYABLE world (0..size) across the viewport with a modest
+        # margin — the launch view and the zoom-OUT floor — so the world fills the frame instead of
+        # sitting small inside the wilderness margin (its 2:1 vertical slack is filled by the void).
+        self._cell = self._cell0 = _fit_cell(size, self._map_px)
         self._screen = pygame.display.set_mode((self._map_px + _PANEL_W, self._map_px + _HUD_H))
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
         self._zoom_buckets = zoom_buckets(self._cell0)
+        # V4.9: interactive zoom bounds — OUT stops at the fit-whole-world cell (never lose the
+        # world into the void), IN goes to a close village (the top baked bucket, _CELL_CEIL-capped).
+        self._zoom_lo = float(self._cell0)
+        self._zoom_hi = float(self._zoom_buckets[-1])
         self._cam_x = self._cam_tx = size / 2.0
         self._cam_y = self._cam_ty = size / 2.0
         self._cam_cell = self._cam_tcell = float(self._cell0)
@@ -1678,6 +1719,9 @@ class PygameRenderer:
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
         self._terrain_bg = self._build_terrain(self._cell0)
         self._grade = self._build_grade()
+        # V4.9: the out-of-bounds ocean + soft edge vignette (cached per window size, two blits/frame).
+        self._void_bg = self._build_void()
+        self._vignette = self._build_vignette_overlay()
         # Slice 10: the sunrise wash and the water-borne starfield are geometry-dependent,
         # so they are (re)built here with the terrain — pure hash, cached, never per frame.
         self._dawn_wash = self._build_dawn_wash()
@@ -1753,9 +1797,9 @@ class PygameRenderer:
             if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self._zoom_step(-1, centre)
                 return True
-            if event.key == pygame.K_HOME:                 # refit the whole world
+            if event.key == pygame.K_HOME:                 # ease back to the fit-whole-world view
                 self._cam_tx = self._cam_ty = self._size / 2.0
-                self._cam_tcell = float(self._cell0)
+                self._cam_tcell = self._zoom_lo
                 return True
             return event.key in _CAM_HOLD_KEYS
         if event.type == pygame.MOUSEWHEEL and event.y:
@@ -1783,16 +1827,16 @@ class PygameRenderer:
         return False
 
     def _zoom_step(self, direction: int, anchor: tuple[int, int]) -> None:
-        """Step the zoom TARGET one bucket up/down, keeping the world point under `anchor`
-        fixed on screen. Targets land exactly ON buckets, so a settled camera always blits
-        its cached landscape 1:1 (the cheap path of the cached-surface strategy)."""
-        buckets = self._zoom_buckets or (self._cell0,)
+        """V4.9: nudge the zoom TARGET by ONE small MULTIPLICATIVE notch (x_ZOOM_STEP in, its
+        reciprocal out), keeping the world point under `anchor` fixed on screen, and clamp to
+        [_zoom_lo, _zoom_hi] (fit-whole-world .. close village). The target is a free float; the
+        per-frame glide eases the live cell toward it, so zooming feels continuous at every level
+        rather than jumping between buckets. Terrain still bakes per bucket — the blit scales the
+        nearest bucket to the live cell (one cheap transform), so no bake happens per frame."""
         t = self._cam_tcell
-        if direction > 0:
-            new = next((float(b) for b in buckets if b > t + 0.5), float(buckets[-1]))
-        else:
-            new = next((float(b) for b in reversed(buckets) if b < t - 0.5), float(buckets[0]))
-        if new == t:
+        factor = _ZOOM_STEP if direction > 0 else (1.0 / _ZOOM_STEP)
+        new = max(self._zoom_lo, min(self._zoom_hi, t * factor))
+        if abs(new - t) < 1e-6:
             return
         view = (self._map_px, self._map_px)
         # V4.6: keep the world point under `anchor` fixed across the zoom (iso re-anchor).
@@ -1834,6 +1878,9 @@ class PygameRenderer:
                 if dx or dy:
                     self._cam_tx += dx * step
                     self._cam_ty += dy * step
+        # V4.9: keep the zoom TARGET inside its interactive bounds (fit-whole-world .. close village)
+        # however it was set — held keys, a stale target, or a resize that moved the floor.
+        self._cam_tcell = max(self._zoom_lo, min(self._zoom_hi, self._cam_tcell))
         self._cam_tx, self._cam_ty = clamp_camera(self._cam_tx, self._cam_ty,
                                                   self._cam_tcell, size, view)
         # Glide: ease a fraction of the remaining distance per frame; SNAP when close, so a
@@ -1992,10 +2039,14 @@ class PygameRenderer:
         # Slice 5/9/11: the cached FULL-BLEED landscape (textured grass + wilderness fringe +
         # coast + pond + vignette) under everything — the camera blits only the VISIBLE
         # sub-rect of the nearest quantized zoom bucket's bake, never rebuilding per frame.
-        screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters + beyond-the-world void
+        screen.fill(_FRAME_OUTER)  # base for the HUD/panel gutters
+        # V4.9: the OUT-OF-BOUNDS ocean fills the map zone FIRST — the transparent-void terrain
+        # bake then blits on top, so beyond the diamond the world reads as continuing into water.
+        if self._void_bg is not None:
+            screen.blit(self._void_bg, (0, 0))
         if self._terrain_bg is not None:
             self._blit_terrain()
-        else:
+        elif self._void_bg is None:
             grass_color = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
             screen.fill(grass_color, (0, 0, map_px, map_px))
         # V4.6: water shimmer & coast waves are re-seated onto the iso coast in V4.8 — off here.
@@ -2049,6 +2100,11 @@ class PygameRenderer:
             else:
                 self._draw_agent_sprite(obj, talkers, state)
         self._draw_settlement_labels(label_jobs)
+
+        # V4.9: the soft edge VIGNETTE over the map zone — depth, and no hard canvas edge where the
+        # world meets the void. Under the day/night grade so night lights still pierce cleanly.
+        if self._vignette is not None:
+            screen.blit(self._vignette, (0, 0))
 
         # Slice 9/10: occasional birds (a daytime ambience — they roost as dusk falls), then
         # the full-scene grade. Slice 10 turns the static daylight tint into the day/night
@@ -2250,8 +2306,10 @@ class PygameRenderer:
         ox, oy, W, H = self._iso_base_offsets(cell)
         if W <= 0 or H <= 0:
             return None
-        surf = pygame.Surface((W, H))
-        surf.fill(_FRAME_OUTER)                                   # the void beyond the diamond
+        # V4.9: TRANSPARENT beyond the diamond so the out-of-bounds ocean (_draw_void) shows
+        # through the bbox corners and the world reads as continuing into open water.
+        surf = pygame.Surface((W, H), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))
         grass = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
         hw, hh = cell, cell * 0.5
         lo, hi = -_MARGIN_CELLS, size + _MARGIN_CELLS
@@ -2545,19 +2603,46 @@ class PygameRenderer:
             pygame.draw.line(self._screen, _BIRD, (int(xi - s), int(yi - s * 0.6)), (xi, yi), 1)
             pygame.draw.line(self._screen, _BIRD, (xi, yi), (int(xi + s), int(yi - s * 0.6)), 1)
 
-    def _build_vignette(self, surf: Any, grid_px: int) -> None:
-        """Darken the map edges with nested translucent rings for atmospheric depth."""
-        vign = pygame.Surface((grid_px, grid_px), pygame.SRCALPHA)
-        rings = 26
-        band = max(1, grid_px // (rings * 2))
+    def _build_void(self) -> Any:
+        """V4.9: the cached OUT-OF-BOUNDS ocean for the map zone — a radial gradient, deep open
+        sea (_VOID_OCEAN) at the centre fading to near-black (_VOID_EDGE) at the frame corners.
+
+        Built once per window size and blitted behind the transparent-void terrain bake, so the
+        diamond world sits in open water that darkens outward — no diamond island on flat ground.
+        Concentric filled circles (large/dark first, small/light last) give the smooth falloff.
+        """
+        mp = self._map_px
+        if mp <= 0:
+            return None
+        surf = pygame.Surface((mp, mp))
+        surf.fill(_VOID_EDGE)                          # the far dark past the outermost circle
+        cx = cy = mp // 2
+        maxr = int(mp * 0.72)                          # reach roughly to the corners (0.707*mp)
+        steps = 48
+        for i in range(steps, 0, -1):
+            t = i / steps                              # 1 at the rim, ->0 at the centre
+            pygame.draw.circle(surf, lerp_color(_VOID_OCEAN, _VOID_EDGE, t), (cx, cy), int(maxr * t))
+        return surf
+
+    def _build_vignette_overlay(self) -> Any:
+        """V4.9: the cached soft edge VIGNETTE for the map zone (SRCALPHA) — transparent in the
+        middle, darkening toward the frame edges so the viewport has depth and no hard canvas edge.
+
+        Nested rectangular rings (each drawn once at its own alpha, so nothing double-darkens)
+        keep the whole border soft, not just the corners; blitted over the map each frame."""
+        mp = self._map_px
+        if mp <= 0:
+            return None
+        vign = pygame.Surface((mp, mp), pygame.SRCALPHA)
+        rings = 30
+        band = max(1, mp // (rings * 2))
         for i in range(rings):
-            a = int(_VIGNETTE_MAX * (1 - i / rings) ** 2)
+            a = int(_VIGNETTE_MAX * (1 - i / rings) ** 2)   # strongest at the outer edge, ->0 inward
             inset = i * band
-            if a > 0 and grid_px - 2 * inset > 0:
+            if a > 0 and mp - 2 * inset > 0:
                 pygame.draw.rect(vign, (0, 0, 0, a),
-                                 (inset, inset, grid_px - 2 * inset, grid_px - 2 * inset),
-                                 max(1, band))
-        surf.blit(vign, (0, 0))
+                                 (inset, inset, mp - 2 * inset, mp - 2 * inset), max(1, band))
+        return vign
 
     def _draw_settlement_ground(self, state: dict[str, Any]) -> None:
         """Tint settled land toward tilled DIRT (with clipped furrows) — cultivated cue (READ).
