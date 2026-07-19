@@ -91,12 +91,24 @@ except ImportError as exc:  # pragma: no cover - exercised only without pygame i
 
 
 # --- Palette (RGB) ---------------------------------------------------------
-# Slice 9: ONE central PALETTE for every scene-defining colour, so the whole look is tunable
-# in one place. Design intent: a calm, earthy base (grass/soil/wood/water), figures slightly
-# DESATURATED to sit *in* the world, and the IMPORTANT things — rulers, realm banners, battle
-# effects — kept saturated so they pop against it. The module-level constant names the slices
-# already use are kept, but each is now DERIVED from PALETTE (UI chrome — panel/HUD/feed —
-# stays beside its slice: it frames the scene rather than being part of it).
+# Slice 9 / V4.4: ONE central PALETTE for every scene-defining colour, so the whole look is
+# tunable in one place. V4.4 imposes PALETTE DISCIPLINE — a designed frame, not a swatch book.
+#
+#   BASE HUES (the whole world is toned toward these five families; vary VALUE, not hue):
+#     1. GROUND  — warm olive-green   (~ 96° hue)   grass, farmland-crop, wheat
+#     2. FOLIAGE — deeper forest-green (~110° hue)   trees, canopy
+#     3. STONE/TIMBER — warm desaturated tan→grey    settlements, houses, castles, paths
+#     4. WATER   — muted steel-teal    (~200° hue)   sea, pond, wells
+#     5. SKY/NIGHT — cool blue         (~220° hue)   the day/night grade, stars, shadow
+#
+# Design intent (V4.4): the COMMONS are desaturated so they sit BACK in the frame (ordinary
+# agents via _TRAIT_DESAT, wheat/crop/trees toned into the ground family, routine UI text kept
+# grey); SATURATION IS RESERVED for what carries the story — rulers (crown + vivid robe),
+# realm banners + territory edges, battle effects, the story banner and major-event feed lines
+# — so they POP against the calm base. Adjacent layers keep VALUE separation (dark ground <
+# mid buildings < bright-outlined agents) so silhouettes read even at far zoom. The module-
+# level constant names the slices already use are kept, but each is DERIVED from PALETTE (UI
+# chrome — panel/HUD/feed — frames the scene rather than being part of it).
 def _desat(color: tuple[int, int, int], f: float) -> tuple[int, int, int]:
     """Desaturate by fraction f in [0,1]: lerp toward the colour's own luma gray (pure)."""
     g = int(0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2])
@@ -112,16 +124,16 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "water": (46, 84, 116),
     "water_shallow": (58, 104, 132),
     "water_hi": (92, 136, 166),        # ripple/shimmer highlights
-    "farmland": (110, 82, 50),
-    "farmland_furrow": (84, 60, 38),
-    "crop": (118, 156, 80),
-    "wheat": (176, 184, 106),          # food — a soft gold-green that belongs to the grass
-    # nature features
-    "tree_trunk": (74, 52, 34),
-    "tree_canopy": (44, 76, 44),
-    "tree_canopy_hi": (58, 96, 56),
-    "rock": (92, 96, 90),
-    "rock_hi": (122, 126, 118),
+    "farmland": (108, 84, 54),
+    "farmland_furrow": (84, 62, 40),
+    "crop": (104, 132, 78),            # V4.4: crop toned INTO the ground family (was brighter)
+    "wheat": (156, 158, 104),          # V4.4: food sits into the grass — a muted gold-green
+    # nature features (FOLIAGE base — desaturated so the forest reads as calm backdrop)
+    "tree_trunk": (70, 52, 36),
+    "tree_canopy": (42, 68, 44),       # V4.4: deeper, lower-chroma canopy
+    "tree_canopy_hi": (54, 84, 54),
+    "rock": (94, 96, 92),
+    "rock_hi": (120, 122, 116),
     # settlements & structures (the old teal ring is retired for a warm, desaturated earth
     # tint that never fights the realm hues)
     "settlement_fill": (164, 152, 118),
@@ -152,14 +164,20 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "smoke": (206, 202, 194),
     "bird": (52, 56, 50),
     "daylight": (255, 214, 156),       # the warm full-scene grade (very low alpha)
-    # slice 10: the day/night cycle
-    "night": (22, 32, 70),             # V4.3: cool blue-dark night grade, lifted off pure black
+    # slice 10 / V4.5: the day/night cycle. The night is a REAL dark again (V4.5 undoes V4.3's
+    # flat brightness floor) — point lights, not a raised floor, now make the dark readable.
+    "night": (12, 18, 46),             # V4.5: deep cool blue-dark — a town becomes warm pools in it
     "dawn_gold": (255, 196, 112),      # the dawn grade + the directional sunrise wash
     "dusk_ember": (255, 134, 88),      # the burning orange/pink dusk grade
     "starlight": (222, 230, 250),      # stars mirrored on the night water
-    "window_glow": (255, 186, 92),     # the halo around a lit window at night
-    "torch_flame": (255, 168, 64),     # torch flame + its warm halo
-    "torch_core": (255, 232, 158),     # the white-hot torch heart
+    # V4.5 POINT-LIGHT palette — warm emitters that cast additive radial pools onto the scene.
+    "window_glow": (255, 190, 104),    # lit-window pool (warm amber)
+    "torch_flame": (255, 158, 60),     # gate-torch pool (deeper orange)
+    "torch_core": (255, 236, 170),     # the white-hot torch heart
+    "hearth_glow": (255, 168, 84),     # a town hearth's warm pool over the plaza at night
+    "forge_glow": (255, 116, 44),      # a metallurgy town's forge — a hotter, redder pool
+    "forge_core": (255, 226, 150),     # the forge's white-hot heart (pulsing)
+    "clash_light": (255, 240, 210),    # a battle clash-flash cast as a bright cold-white pool
     "moon_smoke": (222, 230, 244),     # chimney smoke catching the moonlight
     # visual enhancements (slice 12)
     "rain": (140, 155, 170),           # rain streak
@@ -177,7 +195,8 @@ PALETTE: dict[str, tuple[int, int, int]] = {
     "sword": (170, 180, 190),
     "coin": (240, 190, 40),
 }
-_TRAIT_DESAT = 0.22                    # how far commoner figures step toward the earth tones
+_TRAIT_DESAT = 0.40                    # V4.4: commoner figures step further toward the earth tones
+                                       # (saturation is reserved for rulers — see agent_color vivid)
 
 _TERRAIN = (38, 42, 36)        # muted dark olive — a calm flat ground (pre-slice-5 fallback)
 _GRID_LINE = (48, 53, 46)      # barely-there cell lines (drawn only when cells are large)
@@ -362,8 +381,8 @@ _TURNS_PER_DAY = 24               # sim turns per full day/night cycle (tunable)
 _PH_DAWN_END = 0.15               # dawn  [0.00, 0.15) — night brightens into gold
 _PH_DAY_END = 0.55                # day   [0.15, 0.55) — the slice-9 neutral daylight
 _PH_DUSK_END = 0.70               # dusk  [0.55, 0.70) — gold burns down into night
-_NIGHT_GRADE_A = 82               # V4.3: raised night brightness FLOOR (was 118) — buildings,
-                                  # agents and territory stay clearly visible after dark
+_NIGHT_GRADE_A = 150              # V4.5: the night is DARK again (undoes V4.3's flat floor of 82)
+                                  # — point lights, not a raised floor, now make the dark readable
 _DAWN_GRADE_A = 44                # the mid-dawn gold grade alpha
 _DUSK_GRADE_A = 58                # the mid-dusk ember grade alpha
 _DAWN_WASH_MAX_A = 46             # the directional sunrise wash at its mid-dawn peak
@@ -371,6 +390,20 @@ _STAR_COUNT = 320                 # hashed star candidates; only those on WATER 
 _NIGHT_EPS = 0.02                 # below this night factor the lights pass is skipped
 _SHADOW_NIGHT_KEEP = 0.30         # fraction of shadow alpha kept at deep night (sun-cast)
 _NIGHT_MUTE_MAX = 0.75            # how far commoner/realm colours step into the dark
+
+# V4.5: POINT LIGHTS. Each emitter (lit window, gate torch, town hearth, metallurgy forge,
+# battle clash flash) casts a cached RADIAL-GRADIENT pool blitted ADDITIVELY, so overlapping
+# pools bloom and the cost stays flat (one cached surface per radius/colour/quantized-intensity,
+# reused every frame). Intensity ties to the night factor (invisible midday, blooming dusk,
+# dominant night, dissolving dawn); a per-emitter flicker rides the frame clock via terrain_noise.
+_LIGHT_INTENSITY_STEPS = 12       # how finely per-frame light intensity is quantized (cache bound)
+_LIGHT_RADIUS_Q = 3               # radii are snapped to this multiple (bounds the stamp cache)
+_LIGHT_FALLOFF = 2.0              # radial brightness falloff exponent (higher = tighter pool)
+_LIGHT_WINDOW = 3.4               # pool radius as a multiple of the emitter's glyph size...
+_LIGHT_TORCH = 4.2               # ...per light kind (torches/hearths/forges throw farther)
+_LIGHT_HEARTH = 5.0
+_LIGHT_FORGE = 4.6
+_LIGHT_MAX_A = 235                # cap a pool's centre additive brightness (avoid pure-white blowout)
 
 # Slice 11: CAMERA — PAN, ZOOM & LEVEL-OF-DETAIL. The window/viewport never changes size;
 # the WORLD slides and scales behind it. The camera is a world-cell CENTRE plus an effective
@@ -697,9 +730,17 @@ def dominant_trait(personality: str | None) -> str:
     return best_trait
 
 
-def agent_color(personality: str | None) -> tuple[int, int, int]:
-    """The RGB colour for an agent's dominant personality trait (pure read)."""
-    return _TRAIT_COLOR.get(dominant_trait(personality), _DEFAULT_COLOR)
+def agent_color(personality: str | None, vivid: bool = False) -> tuple[int, int, int]:
+    """The RGB colour for an agent's dominant personality trait (pure read).
+
+    V4.4: `vivid` returns the FULL-CHROMA palette base (a ruler's saturated robe), while the
+    default returns the desaturated commoner tone (_TRAIT_COLOR) so the commons sit back and
+    only rulers pop. Both keep the four traits distinct.
+    """
+    trait = dominant_trait(personality)
+    if vivid:
+        return PALETTE.get(trait, _DEFAULT_COLOR)
+    return _TRAIT_COLOR.get(trait, _DEFAULT_COLOR)
 
 
 def _wealth(agent: Any) -> float:
@@ -2245,21 +2286,30 @@ class PygameRenderer:
                 continue
             stamp = self._soft_stamp(max(1, int(round(s * k_px))), PALETTE["starlight"], a)
             screen.blit(stamp, (sx - stamp.get_width() // 2, sy - stamp.get_height() // 2))
+        # V4.5: every emitter casts an ADDITIVE radial POOL (cached) so a town reads as a
+        # cluster of warm pools in the blue dark; a small bright core sits at each source.
         for kind, x, y, s in self._frame_lights:
-            if kind == "window":                           # the towns twinkle
+            if kind == "window":                           # lit windows — the towns twinkle
                 fl = 0.82 + 0.18 * terrain_noise(f // 3, x * 7 + y * 3, 67)
-                halo = self._soft_stamp(max(3, s * 2), PALETTE["window_glow"],
-                                        _q8(34 * nf * fl))
-                screen.blit(halo, (x - halo.get_width() // 2, y - halo.get_height() // 2))
+                self._blit_light(x, y, max(6, s * _LIGHT_WINDOW), PALETTE["window_glow"],
+                                 0.55 * nf * fl)
                 core = self._soft_stamp(max(1, (s + 1) // 2), PALETTE["window_lit"],
-                                        _q8(150 * nf * fl))
+                                        _q8(170 * nf * fl))
                 screen.blit(core, (x - core.get_width() // 2, y - core.get_height() // 2))
+            elif kind == "hearth":                         # a town hearth over the plaza
+                fl = 0.86 + 0.14 * terrain_noise(f // 4, x * 3 + y, 70)
+                self._blit_light(x, y, max(8, int(s * _LIGHT_HEARTH)), PALETTE["hearth_glow"],
+                                 0.5 * nf * fl)
+            elif kind == "forge":                          # a metallurgy town's forge — hot, pulsing
+                fl = 0.62 + 0.38 * terrain_noise(f // 2, x * 5 + y * 2, 78)
+                self._blit_light(x, y, max(7, int(s * _LIGHT_FORGE)), PALETTE["forge_glow"],
+                                 0.7 * nf * fl)
+                pygame.draw.circle(screen, PALETTE["forge_core"], (x, y), max(1, s // 4))
             else:                                          # torchlight at the seats of power
                 fl = 0.70 + 0.30 * terrain_noise(f // 2, x * 5 + y, 68)
                 wob = int(round(terrain_noise(f // 2, x, 69) * 2 - 1))
-                halo = self._soft_stamp(max(4, int(s * 1.6)), PALETTE["torch_flame"],
-                                        _q8(46 * nf * fl))
-                screen.blit(halo, (x - halo.get_width() // 2, y + wob - halo.get_height() // 2))
+                self._blit_light(x, y + wob, max(7, int(s * _LIGHT_TORCH)), PALETTE["torch_flame"],
+                                 0.75 * nf * fl)
                 pygame.draw.circle(screen, PALETTE["torch_core"], (x, y + wob), max(1, s // 4))
                 pygame.draw.circle(screen, PALETTE["torch_flame"], (x, y + wob),
                                    max(2, s // 3), 1)
@@ -2335,6 +2385,46 @@ class PygameRenderer:
             pygame.draw.circle(stamp, (*color, alpha), (r + 1, r + 1), r)
             self._stamps[key] = stamp
         return stamp
+
+    def _light_stamp(self, radius: float, color: tuple, intensity: float) -> Any:
+        """V4.5: a cached RADIAL-GRADIENT light pool (bright warm centre -> transparent edge),
+        meant to be blitted with pygame.BLEND_RGB_ADD so pools bloom and overlap additively.
+
+        Cost stays flat: the surface is keyed by (snapped radius, colour, quantized intensity),
+        so the handful of distinct lights on screen reuse a small bounded set of baked pools.
+        The gradient is baked as RGB (alpha is ignored under additive blend): concentric filled
+        circles from the rim inward, brightness rising as (1 - t)**falloff toward the centre.
+        """
+        r = max(2, int(round(radius / _LIGHT_RADIUS_Q)) * _LIGHT_RADIUS_Q)
+        iq = max(0, min(_LIGHT_INTENSITY_STEPS,
+                        int(round(intensity * _LIGHT_INTENSITY_STEPS))))
+        if iq == 0:
+            return None
+        key = ("light", r, color, iq)
+        stamp = self._stamps.get(key)
+        if stamp is None:
+            scale = (iq / _LIGHT_INTENSITY_STEPS) * (_LIGHT_MAX_A / 255.0)
+            d = 2 * r + 2
+            stamp = pygame.Surface((d, d), pygame.SRCALPHA)
+            c = r + 1
+            steps = max(6, r)
+            for i in range(steps, 0, -1):
+                t = i / steps                        # 1 at the rim, -> 0 at the centre
+                rr = max(1, int(round(r * t)))
+                b = ((1.0 - t) ** _LIGHT_FALLOFF) * scale
+                col = (min(255, int(color[0] * b)),
+                       min(255, int(color[1] * b)),
+                       min(255, int(color[2] * b)))
+                pygame.draw.circle(stamp, (*col, 255), (c, c), rr)
+            self._stamps[key] = stamp
+        return stamp
+
+    def _blit_light(self, x: int, y: int, radius: float, color: tuple, intensity: float) -> None:
+        """Blit one additive light pool centred at (x, y). No-op below the intensity floor."""
+        stamp = self._light_stamp(radius, color, intensity)
+        if stamp is not None:
+            self._screen.blit(stamp, (x - stamp.get_width() // 2, y - stamp.get_height() // 2),
+                              special_flags=pygame.BLEND_RGB_ADD)
 
     def _draw_water_shimmer(self) -> None:
         """Ambient ripple glints on the pond and along the coast — a few short light dashes
@@ -2823,6 +2913,13 @@ class PygameRenderer:
                 self._frame_lights.append(("torch", cx + wl["dx"],
                                            cy + wl["dy"] - wl["scale"] - 2,
                                            max(4, wl["scale"])))
+            # V4.5: every town has a HEARTH glow over its plaza; a metallurgy town (Bronze+)
+            # adds a hotter FORGE pool — both plan-derived, so positions are stable per town.
+            self._frame_lights.append(("hearth", cx, cy, max(5, plan["plaza_r"] // 2)))
+            if plan.get("forge"):
+                fx = cx - int(plan["cluster_r"] * 0.5)
+                fy = cy + int(plan["cluster_r"] * 0.4)
+                self._frame_lights.append(("forge", fx, fy, max(4, self._cell // 2)))
 
     def _draw_building(self, gx: int, gy: int, w: int, h: int, wall: tuple, roof: tuple,
                        hip: bool, lit: bool) -> None:
@@ -3374,6 +3471,10 @@ class PygameRenderer:
                     fx = m[0] + (terrain_noise(frame, k, 22) - 0.5) * cell * 1.8
                     fy = m[1] + (terrain_noise(frame, k, 23) - 0.5) * cell * 1.2
                     fr = 2 + int(terrain_noise(frame, k, 24) * cell * 0.4)
+                    # V4.5: each clash casts a bright additive POOL — so a NIGHT battle is lit by
+                    # its own fighting (stronger in the dark, present but subtle by day).
+                    self._blit_light(int(fx), int(fy), max(10, fr * 4), PALETTE["clash_light"],
+                                     0.45 + 0.55 * self._nf)
                     pygame.draw.circle(screen, _FLASH, (int(fx), int(fy)), fr)
                     pygame.draw.circle(screen, _shade(_FLASH, -70), (int(fx), int(fy)), fr, 1)
 
