@@ -4426,15 +4426,20 @@ def test_pygame_full_bleed_landscape_and_lit_scene_draw_read_only() -> None:
     pygame.init()
     try:
         r._ensure_screen(state["size"])
-        # Geometry: full-bleed map zone = playable grid + the wilderness margin ring.
-        assert r._map_px == r._cell * (state["size"] + 2 * _MARGIN_CELLS)
-        assert r._terrain_bg is not None and r._terrain_bg.get_size() == (r._map_px, r._map_px), \
-            "the baked landscape covers the WHOLE map zone — no black void"
+        # V4.6 geometry: the MAP-zone WINDOW is still the playable grid + wilderness ring sized
+        # by the window cell; the iso FIT cell is half that (the 2:1 diamond fills the width),
+        # and the terrain now bakes into a DIAMOND canvas sized by _iso_base_offsets.
+        assert r._map_px == r._win_cell * (state["size"] + 2 * _MARGIN_CELLS)
+        assert r._cell == max(4, r._win_cell // 2), "the iso fit cell halves the window cell"
+        _ox, _oy, bw, bh = r._iso_base_offsets(r._cell0)
+        assert r._terrain_bg is not None and r._terrain_bg.get_size() == (bw, bh), \
+            "the baked landscape covers the whole iso diamond canvas"
         assert r._screen.get_size() == (r._map_px + _PANEL_W, r._map_px + _HUD_H)
-        # The east margin is SEA in the baked terrain (bluish wins over red at the far edge).
-        samples = [r._terrain_bg.get_at((r._map_px - 3, y))
-                   for y in range(10, r._map_px - 10, 31)]
-        assert all(c.b > c.r for c in samples), "an east coast runs the margin, edge to edge"
+        # The +x wilderness is SEA (a meandering iso coast) — classified straight off _tile_kind.
+        assert r._tile_kind(state["size"] + 1, state["size"] // 2) == "sea", \
+            "the +x margin is open water"
+        assert r._tile_kind(state["size"] // 2, state["size"] // 2) == "land", \
+            "the playable interior is land"
         # Shadow stamps are cached per size — the second request is the SAME surface.
         s1 = r._shadow_stamp(20, 8)
         assert r._shadow_stamp(20, 8) is s1, "shadow stamps must be cached, not rebuilt"
@@ -4644,6 +4649,47 @@ def test_pygame_camera_transform_pure_and_inverse() -> None:
     print("PASS test_pygame_camera_transform_pure_and_inverse")
 
 
+def test_pygame_iso_transform_pure_and_inverse() -> None:
+    """V4.6: the ISO projection is pure, a 2:1 diamond, and its ground-plane inverse round-trips.
+
+    world_to_screen_iso / screen_to_world_iso are the one shared iso transform every map draw
+    goes through; screen_to_world_iso must invert it on the ground plane (z = 0). Skips without
+    pygame (the transform lives in the optional renderer module)."""
+    import random as _random
+    try:
+        from renderer.pygame_renderer import world_to_screen_iso, screen_to_world_iso, _ISO_ZH
+    except ImportError:
+        print("PASS test_pygame_iso_transform_pure_and_inverse (skipped: no pygame)")
+        return
+    view = (760, 760)
+    s0 = _random.getstate()
+    for cam in ((0.0, 0.0, 16), (8.0, 8.0, 12), (20.0, 5.0, 24)):
+        for pos in ((0.0, 0.0), (5.0, 3.0), (10.0, 10.0), (-2.0, 7.0)):
+            sp = world_to_screen_iso(pos, cam, view)
+            back = screen_to_world_iso(sp, cam, view)
+            assert abs(back[0] - pos[0]) < 1e-6 and abs(back[1] - pos[1]) < 1e-6, \
+                f"screen_to_world_iso must invert on the ground plane (cam={cam}, pos={pos})"
+        # The camera centre projects to the viewport centre.
+        assert world_to_screen_iso(cam[:2], cam, view) == (380.0, 380.0)
+    cam = (0.0, 0.0, 20)
+    # 2:1 DIAMOND: +x runs down-RIGHT, +y down-LEFT; a unit step is twice as wide as tall.
+    ox, oy = world_to_screen_iso((0.0, 0.0), cam, view)
+    px, py = world_to_screen_iso((1.0, 0.0), cam, view)
+    assert px > ox and py > oy, "+x runs down-right"
+    qx, qy = world_to_screen_iso((0.0, 1.0), cam, view)
+    assert qx < ox and qy > oy, "+y runs down-left"
+    assert abs((px - ox)) == 2 * abs((py - oy)), "the tile is a 2:1 diamond (twice as wide as tall)"
+    # z lifts a point straight UP the screen (height above the ground plane) and never sideways.
+    lifted = world_to_screen_iso((3.0, 4.0, 2.0), cam, view)
+    ground = world_to_screen_iso((3.0, 4.0, 0.0), cam, view)
+    assert lifted[0] == ground[0] and lifted[1] == ground[1] - 2 * cam[2] * _ISO_ZH, \
+        "z raises a point vertically by z*cell*_ISO_ZH"
+    assert world_to_screen_iso((3.0, 4.0), cam, view) == world_to_screen_iso((3.0, 4.0), cam, view), \
+        "the iso transform is pure"
+    assert _random.getstate() == s0, "the iso transform touched the global RNG stream"
+    print("PASS test_pygame_iso_transform_pure_and_inverse")
+
+
 def test_pygame_camera_clamp_buckets_and_culling_pure() -> None:
     """Slice 11: the camera-support helpers are pure and bounded — clamp_camera centres a
     world that fits the viewport and pins the view inside one that doesn't; zoom_buckets is
@@ -4653,7 +4699,7 @@ def test_pygame_camera_clamp_buckets_and_culling_pure() -> None:
     import random as _random
     try:
         from renderer.pygame_renderer import (clamp_camera, zoom_buckets, visible_on_screen,
-                                              _MARGIN_CELLS, _CELL_FLOOR, _CELL_CEIL)
+                                              _MARGIN_CELLS, _CELL_FLOOR, _CELL_CEIL, _ZOOM_IN_MAX)
     except ImportError:
         print("PASS test_pygame_camera_clamp_buckets_and_culling_pure (skipped: no pygame)")
         return
@@ -4675,7 +4721,7 @@ def test_pygame_camera_clamp_buckets_and_culling_pure() -> None:
         assert base in bs, "the fit-whole-world cell is always a bucket (launch blits 1:1)"
         assert 4 <= len(bs) <= 10, f"a small quantized ladder, got {len(bs)} for base {base}"
         assert bs[0] >= max(_CELL_FLOOR, round(base * 0.4) - 1) and bs[0] < base
-        assert bs[-1] <= min(_CELL_CEIL, base * 3) and bs[-1] > base
+        assert bs[-1] <= min(_CELL_CEIL, int(base * _ZOOM_IN_MAX)) and bs[-1] > base
         assert bs == zoom_buckets(base), "the ladder is pure"
     # Culling: inside/edge kept, beyond the padded viewport dropped.
     assert visible_on_screen(380, 380, 0, 760, 760)
@@ -8769,6 +8815,7 @@ def main_runner() -> None:
         test_pygame_phase_grade_interpolation_bounded,
         test_pygame_night_draw_is_read_only_and_lights_the_dark,
         test_pygame_camera_transform_pure_and_inverse,
+        test_pygame_iso_transform_pure_and_inverse,
         test_pygame_camera_clamp_buckets_and_culling_pure,
         test_pygame_lod_tiers_have_hysteresis,
         test_pygame_camera_state_renderer_local_and_lod_draw_read_only,
