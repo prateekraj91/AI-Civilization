@@ -1397,7 +1397,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--fullscreen", action="store_true",
         help="open the visual renderer BORDERLESS FULLSCREEN at the display resolution. F11 (or F) "
-             "toggles fullscreen at runtime; ESC leaves fullscreen before it quits.")
+             "toggles fullscreen at runtime; ESC or Q quits immediately from any mode.")
     p.add_argument(
         "--showcase", action="store_true",
         help="SHOWCASE MODE (V4.10): a hands-off, trailer-grade recording. Implies --pygame and, "
@@ -1406,7 +1406,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "each major event (battle, coronation, uprising, secession, conquest), holds through "
              "its banner, then drifts back over a slow ambient orbit — a clean title card opens, and "
              "the UI is stripped to the story banner + a small turn/phase readout (press U for the "
-             "full UI, SPACE pauses, ESC quits). Press record, walk away, get 2-3 minutes of footage.")
+             "full UI, SPACE pauses, ESC or Q quits instantly). Press record, walk away, get 2-3 min of footage.")
     return p.parse_args(argv)
 
 
@@ -2256,7 +2256,7 @@ def main(argv: list[str] | None = None) -> None:
         # V4.11: the visual window opens at the DISPLAY resolution by default; --window WxH sizes it
         # explicitly and --fullscreen goes borderless. All three are resizable/toggleable at runtime.
         # V4.10: --showcase is a RECORDING mode, so it opens BORDERLESS FULLSCREEN unless the user
-        # pinned a size with --window (F11/F still toggles; ESC leaves fullscreen before quitting).
+        # pinned a size with --window (F11/F toggles fullscreen; ESC/Q always quit immediately).
         win_target = ("fullscreen" if (args.fullscreen or (args.showcase and not args.window))
                       else args.window if args.window else "desktop")
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,

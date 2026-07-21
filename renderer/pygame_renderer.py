@@ -518,6 +518,10 @@ _LOD_CLOSE_MIN = 26.0             # at/above this cell size the map is the CLOSE
 _LOD_HYST = 1.0                   # hysteresis band so a tier never flickers at its boundary
 _CAM_HOLD_KEYS = (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN,
                   pygame.K_a, pygame.K_d, pygame.K_w, pygame.K_s)   # held-pan keys (polled)
+# V4.12: keys that ALWAYS end the run, from any mode (fullscreen included) and before any other
+# handler sees them — the viewer must never be trapped in a borderless window. Window-close and
+# macOS Cmd+Q arrive as pygame.QUIT, which is handled alongside these.
+_QUIT_KEYS = (pygame.K_ESCAPE, pygame.K_q)
 
 # V4.6: ISOMETRIC PROJECTION. The world tilts into a 2:1 diamond isometric view — every map
 # draw goes through world_to_screen_iso (and its ground-plane inverse). A world unit maps to a
@@ -1725,7 +1729,7 @@ class PygameRenderer:
     resolved turn, and `.sink` swallows the plain per-turn text. The renderer NEVER
     advances the simulation — it only reads and draws what the sim produced.
 
-    Controls: SPACE pauses/resumes, ESC or closing the window ends the run (raised as
+    Controls: SPACE pauses/resumes, ESC / Q / closing the window ends the run (raised as
     KeyboardInterrupt, which the launcher suppresses for a clean exit). Slice 11 camera:
     arrows/WASD (or left-mouse drag) pan, the wheel zooms on the cursor (+/- on the view
     centre), HOME refits the whole world; every move glides and none of it can touch the
@@ -1774,10 +1778,15 @@ class PygameRenderer:
         self._win_w = self._win_h = 0                      # the actual window size
         # V4.11: WINDOW target — None = legacy world-derived square (the tests' path); a (w,h) tuple or
         # "fullscreen" from --window/--fullscreen; _pending_size carries a live VIDEORESIZE.
-        self._window = window
+        # V4.12: "fullscreen" is a STARTING MODE, not a permanent preference — it is normalised to
+        # the fullscreen flag plus a windowed fallback, so toggling fullscreen OFF can't be
+        # immediately re-forced by the original request (which stranded the user borderless).
+        self._window = "desktop" if window == "fullscreen" else window
         self._fullscreen = window == "fullscreen"
         self._pending_size: "tuple[int, int] | None" = None
         self._win_dirty = False                            # a resize/fullscreen toggle asks _ensure_screen to rebuild
+        self._win_flags: "int | None" = None               # the flags the display was last created with
+        self._mode_sets = 0                                # set_mode call count (must stay flat while steady)
         self._frame = 0                                    # ambient-life clock (per drawn frame)
         self._stamps: dict[tuple, Any] = {}                # cached shadow/smoke alpha stamps
         self._pond: tuple | None = None                    # baked pond geometry, for the shimmer
@@ -1854,6 +1863,13 @@ class PygameRenderer:
         try:
             yield self
         finally:
+            # V4.12 SAFETY: however the run ends — ESC/Q, window close, or a Ctrl+C (SIGINT) raising
+            # KeyboardInterrupt straight through this context — drop OUT of the borderless fullscreen
+            # surface before tearing pygame down, so an interrupted run can never strand the display.
+            with contextlib.suppress(Exception):
+                if self._fullscreen and pygame.display.get_init():
+                    pygame.display.set_mode((960, 640))
+            self._fullscreen = False
             pygame.quit()
             if self._owns_sink:
                 self.sink.close()
@@ -1880,7 +1896,15 @@ class PygameRenderer:
         self._base_map = grid_px + 2 * self._margin_px
         # WINDOW: resolve the target size + flags + panel/HUD split (proportional panel, clamped),
         # then the MAP ZONE is the rectangle that remains. window=None keeps the legacy square.
-        win_w, win_h, flags, self._panel_w, self._hud_h = self._resolve_window()
+        win_w, win_h, flags, panel_w, hud_h = self._resolve_window()
+        # V4.12 FLICKER FIX: if NOTHING actually changed, return before touching the display. A
+        # set_mode emits its own VIDEORESIZE, which previously re-entered here and called set_mode
+        # again — an endless re-creation loop that read as rapid blinking in borderless fullscreen.
+        # The display (and every cached layer) is now rebuilt ONLY on a genuine size/mode change.
+        if (self._screen is not None and size == self._size
+                and (win_w, win_h, flags) == (self._win_w, self._win_h, self._win_flags)):
+            return
+        self._panel_w, self._hud_h = panel_w, hud_h
         self._map_px = max(64, win_w - self._panel_w)      # map zone WIDTH (kept named _map_px)
         self._map_h = max(64, win_h - self._hud_h)         # map zone HEIGHT
         self._view = (self._map_px, self._map_h)
@@ -1889,6 +1913,8 @@ class PygameRenderer:
         # V4.9/V4.11: the FIT cell frames the PLAYABLE world across the (now RECTANGULAR) viewport.
         self._cell = self._cell0 = _fit_cell_rect(size, self._map_px, self._map_h)
         self._screen = pygame.display.set_mode((win_w, win_h), flags)
+        self._win_flags = flags
+        self._mode_sets += 1                               # instrumentation: must stay flat when steady
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
@@ -1930,8 +1956,7 @@ class PygameRenderer:
             w, h = self._pending_size
             self._pending_size = None
             flags = (pygame.FULLSCREEN | pygame.NOFRAME) if self._fullscreen else pygame.RESIZABLE
-        elif self._fullscreen or self._window == "fullscreen":
-            self._fullscreen = True
+        elif self._fullscreen:                        # (normalised in __init__; never re-forced here)
             w, h = self._desktop_size()
             flags = pygame.FULLSCREEN | pygame.NOFRAME
         elif self._window == "desktop":                # the DEFAULT for a real run: fill the display
@@ -1963,7 +1988,13 @@ class PygameRenderer:
         return 1280, 800
 
     def _apply_resize(self, w: int, h: int) -> None:
-        """Handle a VIDEORESIZE: recompute the whole layout + caches for the new window size (V4.11)."""
+        """Handle a VIDEORESIZE: recompute the whole layout + caches for the new size (V4.11).
+
+        V4.12: resize events are IGNORED while fullscreen (the mode owns its size) and when the size
+        has not actually changed — set_mode emits its own resize event, and acting on that echo is
+        what re-created the display every frame."""
+        if self._fullscreen or (w, h) == (self._win_w, self._win_h):
+            return
         self._pending_size = (w, h)
         self._win_dirty = True
         self._ensure_screen(self._size)
@@ -1971,8 +2002,14 @@ class PygameRenderer:
     def _toggle_fullscreen(self) -> None:
         """F11/F: toggle borderless fullscreen at runtime, rebuilding the layout + caches (V4.11)."""
         self._fullscreen = not self._fullscreen
-        if not self._fullscreen and self._window not in (None, "fullscreen"):
-            self._pending_size = self._window          # restore the windowed size
+        if not self._fullscreen:
+            # V4.12: leaving fullscreen must land on a REAL windowed size, else the next resolve
+            # would put us straight back and the user would be stranded borderless.
+            if isinstance(self._window, tuple):
+                self._pending_size = self._window
+            else:
+                dw, dh = self._desktop_size()
+                self._pending_size = (max(320, int(dw * 0.8)), max(240, int(dh * 0.8)))
         self._win_dirty = True
         self._ensure_screen(self._size)
 
@@ -1999,8 +2036,8 @@ class PygameRenderer:
 
     # -- input -------------------------------------------------------------
     def _window_event(self, event: Any) -> bool:
-        """V4.11: handle a window event (resize / F11-F fullscreen). True when consumed. ESC exits
-        fullscreen before it is allowed to quit — handled by the callers."""
+        """V4.11: handle a window event (resize / F11-F fullscreen). True when consumed. Quit keys are
+        handled by the CALLERS, ahead of this, so nothing can swallow them."""
         if event.type == pygame.VIDEORESIZE:
             self._apply_resize(event.w, event.h)
             return True
@@ -2010,45 +2047,41 @@ class PygameRenderer:
         return False
 
     def _pump_events(self) -> None:
-        """Drain the OS event queue; window/camera events first, pause on SPACE, quit/ESC ends
-        (ESC exits fullscreen before it quits)."""
+        """Drain the OS event queue; window/camera events first, pause on SPACE.
+
+        V4.12: ESC and Q ALWAYS quit immediately, from any mode — fullscreen included. (ESC used to
+        merely leave fullscreen, which stranded the viewer in a borderless window with no chrome.)
+        QUIT (window close, and macOS Cmd+Q) quits too; F11/F is the fullscreen toggle."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise KeyboardInterrupt
+            if event.type == pygame.KEYDOWN and event.key in _QUIT_KEYS:
+                raise KeyboardInterrupt                  # checked BEFORE any other handler
             if self._window_event(event):
                 continue
             if self._handle_camera_event(event):
                 continue
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if self._fullscreen:
-                        self._toggle_fullscreen()        # ESC leaves fullscreen before quitting
-                    else:
-                        raise KeyboardInterrupt
-                elif event.key == pygame.K_SPACE:
+                if event.key == pygame.K_SPACE:
                     self.paused = not self.paused
                 elif event.key == pygame.K_u:            # V4.10: toggle the full UI back on mid-run
                     self._minimal = not self._minimal
 
     def _pump_cinema_events(self) -> bool:
-        """Input during a cinematic: window resize/fullscreen still apply; quit/ESC still ends the
-        run (ESC exits fullscreen first); any NON-CAMERA key SKIPS the scene."""
+        """Input during a cinematic: window resize/fullscreen still apply; ESC/Q/QUIT still END THE
+        RUN immediately (V4.12 — never trap the viewer mid-battle); any NON-CAMERA key SKIPS the scene."""
         skip = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                raise KeyboardInterrupt
+            if event.type == pygame.KEYDOWN and event.key in _QUIT_KEYS:
                 raise KeyboardInterrupt
             if self._window_event(event):
                 continue
             if self._handle_camera_event(event):
                 continue
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if self._fullscreen:
-                        self._toggle_fullscreen()
-                    else:
-                        raise KeyboardInterrupt
-                else:
-                    skip = True
+                skip = True
         return skip
 
     # -- Slice 11: the camera (renderer-local; the sim is never consulted or touched) ------
@@ -2387,22 +2420,26 @@ class PygameRenderer:
         if el > _TITLE_DUR:
             return
         fade = max(0.0, min(1.0, el / 1.0, (_TITLE_DUR - el) / 1.4))
-        w, h = self._view
-        mx, my = w // 2, h // 2
-        ov = pygame.Surface(self._view, pygame.SRCALPHA)
-        ov.fill((7, 9, 14, int(165 * fade)))
-        tf, sf = (self._title_font or self._big_font or self._font), (self._font)
-        if tf is not None:
-            name = tf.render(_TITLE_NAME, True, _STORY_FG)
-            name.set_alpha(int(255 * fade))
-            ov.blit(name, (mx - name.get_width() // 2, my - name.get_height()))
-            pygame.draw.line(ov, (*_STORY_ACCENT, int(220 * fade)),
-                             (mx - 90, my + 6), (mx + 90, my + 6), 2)
-        if sf is not None:
-            sub = sf.render(_TITLE_SUB, True, _STAT_VALUE)
-            sub.set_alpha(int(230 * fade))
-            ov.blit(sub, (mx - sub.get_width() // 2, my + 16))
-        self._screen.blit(ov, (0, 0))
+        # V4.12: the card is COMPOSED ONCE (cached per viewport size) and only its surface alpha
+        # moves per frame — it used to re-render the text and re-fill a full-screen surface every
+        # frame, which is exactly the kind of per-frame rebuild that made the open look unstable.
+        card = self._stamps.get(("titlecard", self._view))
+        if card is None:
+            w, h = self._view
+            mx, my = w // 2, h // 2
+            card = pygame.Surface(self._view, pygame.SRCALPHA)
+            card.fill((7, 9, 14, 165))
+            tf, sf = (self._title_font or self._big_font or self._font), self._font
+            if tf is not None:
+                name = tf.render(_TITLE_NAME, True, _STORY_FG)
+                card.blit(name, (mx - name.get_width() // 2, my - name.get_height()))
+                pygame.draw.line(card, (*_STORY_ACCENT, 220), (mx - 90, my + 6), (mx + 90, my + 6), 2)
+            if sf is not None:
+                sub = sf.render(_TITLE_SUB, True, _STAT_VALUE)
+                card.blit(sub, (mx - sub.get_width() // 2, my + 16))
+            self._stamps[("titlecard", self._view)] = card
+        card.set_alpha(int(255 * fade))
+        self._screen.blit(card, (0, 0))
 
     def _draw_showcase_readout(self, state: dict[str, Any]) -> None:
         """The one unobtrusive HUD element left in showcase: a small turn · phase chip, low-corner."""

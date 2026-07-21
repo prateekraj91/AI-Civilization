@@ -4957,6 +4957,89 @@ def test_pygame_window_sizing_rect_layout_and_resize() -> None:
     print("PASS test_pygame_window_sizing_rect_layout_and_resize")
 
 
+def test_pygame_display_mode_stable_and_always_escapable() -> None:
+    """V4.12 regression: the two bugs that made --showcase unusable.
+
+    (1) FLICKER — set_mode emits its own VIDEORESIZE, which used to re-enter _ensure_screen and call
+    set_mode again: an endless display re-creation loop that read as rapid blinking in borderless
+    fullscreen. The display must be created ONCE and never re-created while the mode is steady, and
+    resize ECHOES must be ignored. (2) TRAPPED — ESC only left fullscreen, stranding the viewer in a
+    borderless window; ESC/Q/QUIT must now END THE RUN from any mode, and F11 must actually be able
+    to leave fullscreen without being re-forced. Headless SDL-dummy; skips without pygame."""
+    import os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, _QUIT_KEYS
+    except ImportError:
+        print("PASS test_pygame_display_mode_stable_and_always_escapable (skipped: no pygame)")
+        return
+    size = 24
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2}},
+        "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {},
+        "events": ["turn 9: a talked to b: \"hi\""], "agents": list(village.values()),
+    }
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.0, showcase=True, window="fullscreen")
+        r._ensure_screen(size)
+        assert r._fullscreen and r._mode_sets == 1, "the display opens with exactly one set_mode"
+        surfaces = {id(r._screen)}
+        for _ in range(60):                       # a steady run: draw + the per-turn _ensure_screen
+            r._draw(state)
+            r._ensure_screen(size)
+            surfaces.add(id(r._screen))
+        assert r._mode_sets == 1, f"display re-created while steady (set_mode={r._mode_sets})"
+        assert len(surfaces) == 1, "the display surface was replaced mid-run (flicker)"
+        for _ in range(10):                       # the echo set_mode emits, and a fullscreen resize
+            r._apply_resize(*r._screen.get_size())
+            r._apply_resize(1234, 777)
+        assert r._mode_sets == 1, "a resize ECHO re-created the display (the flicker loop)"
+        # ESC / Q / QUIT must end the run from ANY mode, in both the normal and cinematic pumps.
+        for key in _QUIT_KEYS:
+            for fullscreen in (True, False):
+                for pump in (r._pump_events, r._pump_cinema_events):
+                    r._fullscreen = fullscreen
+                    pygame.event.clear()
+                    pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=key))
+                    try:
+                        pump()
+                        raise AssertionError(f"key {key} did not quit (fullscreen={fullscreen})")
+                    except KeyboardInterrupt:
+                        pass
+        pygame.event.clear()
+        pygame.event.post(pygame.event.Event(pygame.QUIT))
+        try:
+            r._pump_events()
+            raise AssertionError("QUIT (window close / macOS Cmd+Q) did not end the run")
+        except KeyboardInterrupt:
+            pass
+        # F11 must genuinely leave fullscreen, and the next turn must not snap back.
+        r2 = PygameRenderer(turn_delay=0.0, showcase=True, window="fullscreen")
+        r2._ensure_screen(size)
+        assert r2._fullscreen, "showcase starts fullscreen"
+        r2._toggle_fullscreen()
+        assert not r2._fullscreen, "F11 must leave fullscreen"
+        r2._ensure_screen(size)
+        assert not r2._fullscreen, "leaving fullscreen must not be re-forced on the next turn"
+        # an interrupted run releases fullscreen rather than stranding the display
+        r3 = PygameRenderer(turn_delay=0.0, showcase=True, window="fullscreen")
+        try:
+            with r3.live():
+                r3._ensure_screen(size)
+                raise KeyboardInterrupt          # simulate Ctrl+C (SIGINT) mid-run
+        except KeyboardInterrupt:
+            pass
+        assert not r3._fullscreen, "an interrupted run must release the fullscreen surface"
+    finally:
+        pygame.quit()
+    print("PASS test_pygame_display_mode_stable_and_always_escapable")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -8910,6 +8993,7 @@ def main_runner() -> None:
         test_pygame_lod_tiers_have_hysteresis,
         test_pygame_camera_state_renderer_local_and_lod_draw_read_only,
         test_pygame_window_sizing_rect_layout_and_resize,
+        test_pygame_display_mode_stable_and_always_escapable,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
