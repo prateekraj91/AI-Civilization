@@ -9441,6 +9441,120 @@ def test_a_dead_kings_crown_falls_and_lies_vacant() -> None:
     print("PASS test_a_dead_kings_crown_falls_and_lies_vacant")
 
 
+def test_the_vacant_crown_breathes_without_brightening() -> None:
+    """V4.17 (5.4): the fallen crown PULSES — slowly, and only ever downward from its resting gold.
+
+    The mark on the ground has to keep drawing the eye across a long vacancy, and MOTION does that
+    where more brightness cannot: a hotter peak would out-shout the crown's own silhouette (the
+    reason 5.3's gleam is a bare halo). So the breath is pinned to two properties — it never exceeds
+    1.0, and one full cycle takes seconds, not frames.
+    """
+    try:
+        from renderer.pygame_renderer import crown_breath, _CROWN_PULSE_SECS, _CROWN_PULSE_DEPTH
+    except ImportError:
+        print("PASS test_the_vacant_crown_breathes_without_brightening (skipped: no pygame)")
+        return
+    samples = [crown_breath(i * _CROWN_PULSE_SECS / 400.0) for i in range(1200)]
+    assert max(samples) <= 1.0 + 1e-9, "the pulse must never brighten past the resting gold"
+    assert abs(min(samples) - (1.0 - _CROWN_PULSE_DEPTH)) < 1e-6, "and it must visibly dim"
+    assert abs(crown_breath(0.0) - 1.0) < 1e-9
+    assert abs(crown_breath(_CROWN_PULSE_SECS / 2) - (1.0 - _CROWN_PULSE_DEPTH)) < 1e-9, \
+        "the trough sits half a cycle in"
+    assert abs(crown_breath(_CROWN_PULSE_SECS) - crown_breath(0.0)) < 1e-9, "one full cycle"
+    assert 1.0 <= _CROWN_PULSE_SECS <= 4.0, \
+        "a breath, not a blink: seconds per cycle (this is duration, not decoration)"
+    print("PASS test_the_vacant_crown_breathes_without_brightening")
+
+
+def test_discontent_pulses_and_a_rising_takes_sides() -> None:
+    """V4.17 (5.4): pressure is visible before it blows, and a rising is legible while it burns.
+
+    Four claims, all renderer-local reads:
+      * the PULSE scales with the M4.4 gauge — nothing below the floor, stronger and FASTER as it
+        climbs — so a town approaching a rising reads turns before it fires;
+      * the SIDES are reconstructed from LAST turn's rolls. This is the whole difficulty: uprising.py
+        zeroes the victors' gauge and deletes the monarch record as it resolves, so by the time the
+        renderer sees the turn, the state it would need is already gone;
+      * only a rising's own dead FLASH AND DROP — an unrelated starvation on the same turn does not;
+      * the seized hoard leaves the HALL (the seat's centre) for the surviving risers.
+    And drawing all of it mutates nothing.
+    """
+    import copy, os as _os
+    import discontent as _discontent
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import (PygameRenderer, unrest_period, _RESENTFUL,
+                                              _DISCONTENT_FLOOR)
+    except ImportError:
+        print("PASS test_discontent_pulses_and_a_rising_takes_sides (skipped: no pygame)")
+        return
+    assert _RESENTFUL == _discontent.RESENTMENT_THRESHOLD, \
+        "the renderer's copy of the resentment bar has drifted from M4.4's"
+    assert unrest_period(1.0) < unrest_period(0.5) < unrest_period(0.0), \
+        "the pulse must QUICKEN as the gauge climbs — the rate is half the reading"
+
+    class _A:
+        def __init__(self, name, alive=True, pos=(6, 6)):
+            self.name, self.alive, self.position = name, alive, pos
+            self.personality, self.settlement = "curious", "S001"
+            self.money = self.stockpile = 0.0
+
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.0, window=(600, 500))
+        r._ensure_screen(24)
+        cast = ["Ann", "Bob", "Cal", "Gar", "Lord"]
+        base = {"size": 24, "food": [], "kingdoms": {}, "empires": {}, "leaders": {},
+                "settlements": {"S001": {"id": "S001", "center": (6, 6),
+                                         "members": set(cast), "founded": 1}}}
+        # TURN 5 — the pressure builds. Ann is furious, Bob resentful, Cal merely grumbling.
+        building = dict(base, turn=5, events=[],
+                        agents=[_A(n) for n in cast],
+                        monarchs={"S001": {"monarch": "Lord", "since": 2, "garrison": {"Gar"}}},
+                        discontent={"Ann": 11.0, "Bob": 6.5, "Cal": 2.0})
+        r._track_unrest(building)
+        assert not r._uprisings, "no rising has fired yet"
+        assert r._unrest_level("Ann", building) > r._unrest_level("Bob", building) > 0.0, \
+            "the pulse must scale with the gauge"
+        assert r._unrest_level("Cal", building) == 0.0, f"below {_DISCONTENT_FLOOR} nothing shows"
+        assert r._unrest_level("Ann", {}) == 0.0, "a run with the gauge OFF shows nothing at all"
+
+        # TURN 6 — it blows, and the engine has ALREADY answered the grievance: the gauge is reset
+        # and the monarch record deleted. Only last turn's snapshot can still name the two sides.
+        risen = dict(base, turn=6, monarchs={}, discontent={},
+                     agents=[_A("Ann"), _A("Bob"), _A("Cal"), _A("Gar", alive=False),
+                             _A("Lord", alive=False)],
+                     events=["turn 5: something older", "turn 6: UPRISING in S001 — 2 risers rise "
+                             "against monarch Lord (2 defenders: 1 standing + 1 hired)",
+                             "turn 6: Gar died (fell in battle)",
+                             "turn 6: Zed died (starved)",
+                             "turn 6: the risers EXPROPRIATED Lord's hoard of 30.00 — split among 2",
+                             "turn 6: the UPRISING in S001 TRIUMPHED — monarch Lord is DEPOSED; "
+                             "Ann to rule by consent (1 risers fell)"])
+        r._track_unrest(risen)
+        assert len(r._uprisings) == 1, "the rising must be picked up from the event tail"
+        assert r._side_of("Ann") == "riser" and r._side_of("Bob") == "riser", \
+            "the resentful members rose"
+        assert r._side_of("Gar") == "defender" and r._side_of("Lord") == "defender", \
+            "the garrison and the lord it is paid by held the seat"
+        assert r._side_of("Cal") is None, "a member below the resentment bar did not rise"
+        assert [c["side"] for c in r._casualties] == ["defender"], \
+            "only the rising's own dead flash and drop (Zed starved elsewhere)"
+        assert len(r._hoards) == 1 and r._hoards[0]["coins"] > 0
+        assert r._hoards[0]["src"] == (6.0, 6.0), "the hoard leaves the HALL — the seat's centre"
+        assert len(r._hoards[0]["dests"]) == 2, "and flies to the risers who lived to take it"
+
+        before = copy.deepcopy({k: v for k, v in risen.items() if k != "agents"})
+        r._draw(risen)
+        assert {k: v for k, v in risen.items() if k != "agents"} == before, \
+            "drawing the unrest layer mutated the state it read"
+    finally:
+        pygame.quit()
+    print("PASS test_discontent_pulses_and_a_rising_takes_sides")
+
+
 def test_a_crown_falling_is_legendary() -> None:
     """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
 
@@ -10095,6 +10209,8 @@ def main_runner() -> None:
         test_rank_reads_from_the_silhouette_alone,
         test_allegiance_tints_the_people_not_just_the_ground,
         test_a_dead_kings_crown_falls_and_lies_vacant,
+        test_the_vacant_crown_breathes_without_brightening,
+        test_discontent_pulses_and_a_rising_takes_sides,
         test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,

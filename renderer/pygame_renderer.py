@@ -399,6 +399,47 @@ _CROWN_LIE_SECS = 26.0        # how long a fallen crown lies before the world fo
 _CROWN_FADE = 1.2             # fade out over this long, whether claimed or merely forgotten
 _CROWN_FLAT = 0.42            # vertical squash — a crown lying on its side, not standing up
 _CROWN_GLINT_PERIOD = 62      # frames per glint cycle: a slow catch of light, not a blink
+# A vacant crown also BREATHES: a slow, wall-clock brightness swell that never rises above the
+# resting gold. The pulse dims and returns; it does not brighten. A throne standing empty is a
+# state that PERSISTS, and a mark that moves is the one the eye keeps coming back to — but a
+# brighter peak would out-shout the silhouette, which is the thing being read (see _LIGHT_GLEAM).
+_CROWN_PULSE_SECS = 2.0       # seconds per breath — slow enough to read as duration, not a blink
+_CROWN_PULSE_DEPTH = 0.30     # how far it dims at the bottom of the breath (peak stays put)
+
+# V4.17 (5.4): DISCONTENT MADE VISIBLE — pressure you can watch build, and a rising you can read.
+# The M4.4 gauge is the sim's most legible engine of drama and, until now, the least visible thing
+# in the world: a town seethed for fifteen turns and the picture showed farmers walking about. Three
+# encodings, all pure reads of state the sim already keeps:
+#   * a RED PULSE on any agent past the floor, its strength AND its rate scaling with the gauge —
+#     so a settlement approaching a rising visibly quickens, several turns before it fires;
+#   * during a rising, RISERS burn ember and DEFENDERS go cold steel, so the two sides are
+#     distinguishable at a glance, and the fallen FLASH and drop where they stood;
+#   * the seized hoard SCATTERS as coins from the lord's hall to the surviving risers — the one
+#     moment in the run where wealth visibly changes hands by force.
+_DISCONTENT_FLOOR = 5.0       # gauge value at which an agent starts to show it (below: nothing)
+_RESENTFUL = 6.0              # mirror of M4.4's RESENTMENT_THRESHOLD — the bar a RISER has crossed.
+                              # Copied, not imported: the renderer may not reach into decision logic
+                              # (see test_pygame_renderer_imports_only_state_reading_modules), and a
+                              # test pins this constant to discontent.py so the two cannot drift.
+_DISCONTENT_FULL = 12.0       # ...and where the pulse reaches full strength. NOT the gauge's cap
+                              # (25): twice the resentment bar is already a settlement on the edge
+                              # of rising, and a scale that only saturates at 25 spends its whole
+                              # range on values a run never reaches — everyone reads as calm.
+_DISCONTENT_PERIOD = 2.4      # seconds per pulse at the floor — a slow simmer
+_DISCONTENT_PERIOD_HOT = 0.9  # ...and at full: a quickened, angry beat
+_DISCONTENT_MAX_A = 170       # peak alpha of the resentment halo at full strength
+_DISCONTENT_HALO = 2.6        # halo radius as a multiple of the agent's own radius
+_ANGER = (206, 58, 44)        # resentment red — hotter than blood, cooler than the clash flash
+_RISER = (240, 108, 44)       # a riser in arms: ember/torch orange
+_DEFENDER = (158, 186, 214)   # a defender of the seat: cold steel
+_SIDE_MIX = 0.55              # how far a combatant's own colour is pulled toward its side's
+_UPRISING_SECS = 7.0          # how long a rising's highlights hold after the turn it fires
+_CASUALTY_FLASH = 0.22        # the white flash as a body is cut down (seconds)
+_CASUALTY_SECS = 1.7          # flash + fall + fade of one casualty
+_HOARD_SECS = 2.4             # the seized hoard's flight from the hall to the risers
+_HOARD_MAX_COINS = 24         # cap the scatter (the true sum lives in the log/feed)
+_HOARD_PER_COIN = 3.0         # roughly one coin per this much seized wealth
+_COIN = (232, 194, 92)        # the hoard's gold in flight
 _REALM_FILL_ALPHA = 62            # realm territory tint (a touch stronger than plain teal)
 _REALM_EDGE_ALPHA = 150
 _SPEAR = (208, 206, 198)          # a soldier's spear shaft
@@ -1720,6 +1761,27 @@ def dawn_wash_factor(phase: float) -> float:
     return math.sin(math.pi * (p / _PH_DAWN_END))
 
 
+def crown_breath(t: float) -> float:
+    """The vacant crown's slow breath at wall-clock time `t`, as a factor in (0, 1] (pure).
+
+    1.0 at the top of the breath and 1 - _CROWN_PULSE_DEPTH at the bottom — it DIMS and returns,
+    and never rises above the resting gold. A throne standing empty is a state that persists, and a
+    mark that moves is the one the eye keeps returning to; a brighter peak would only out-shout the
+    silhouette, which is the thing actually being read.
+    """
+    return 1.0 - _CROWN_PULSE_DEPTH * (0.5 - 0.5 * math.cos(2 * math.pi * (t / _CROWN_PULSE_SECS)))
+
+
+def unrest_period(level: float) -> float:
+    """Seconds per resentment pulse at gauge `level` (0..1) — a slow simmer that QUICKENS (pure).
+
+    The RATE carries as much of the reading as the brightness does: a settlement whose people are
+    beating faster every turn is visibly approaching a rising, without a number anywhere on screen.
+    """
+    lv = max(0.0, min(1.0, level))
+    return _DISCONTENT_PERIOD - (_DISCONTENT_PERIOD - _DISCONTENT_PERIOD_HOT) * lv
+
+
 def night_mute(color: tuple[int, int, int], nf: float) -> tuple[int, int, int]:
     """Dim + gently desaturate a colour into the dark by night factor `nf` in [0,1] (pure).
 
@@ -1922,6 +1984,15 @@ class PygameRenderer:
         # grass. Both renderer-local — the sim has no idea either exists.
         self._crown_seats: dict[str, str] = {}
         self._fallen_crowns: list[dict[str, Any]] = []
+        # V4.17 (5.4): the unrest layer. `_unrest_prev` is LAST turn's gauge/rolls — an uprising
+        # RESETS the gauge and DELETES the monarch record as it resolves, so by the time the
+        # renderer sees the turn the sides can only be reconstructed from the turn before. The
+        # three lists are the live effects (a rising in progress, bodies dropping, gold in flight).
+        self._unrest_prev: dict[str, Any] = {}
+        self._uprisings: list[dict[str, Any]] = []
+        self._casualties: list[dict[str, Any]] = []
+        self._hoards: list[dict[str, Any]] = []
+        self._frame_unrest: list[tuple] = []               # this frame's queued unrest marks
         self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
         self._big_font: Any = None                         # the aftermath banner face
         self._feed_bold: Any = None                        # V4.2: bold face for MAJOR feed rows
@@ -2294,6 +2365,7 @@ class PygameRenderer:
         self._ensure_screen(int(state.get("size", 0)) or 1)
         self._enqueue_banners(state)      # V4.2: queue this turn's MAJOR-event announcements
         self._track_crowns(state)         # V4.17 (5.3): a dead king's crown falls where he stood
+        self._track_unrest(state)         # V4.17 (5.4): who rose, who held, who fell, what was seized
         self._pump_events()
         if self._prev_snapshot is not None and self.turn_delay > 0:
             lines = turn_events(state.get("events") or [], int(state.get("turn", 0)))
@@ -2646,6 +2718,7 @@ class PygameRenderer:
         if self._puffs:                                    # age out finished rise/collapse puffs
             self._puffs = [p for p in self._puffs if f - p[2] < _PUFF_LIFE]
         self._emitters = []                                # refilled by _emit_town at close zoom
+        self._frame_unrest = []                            # V4.17 (5.4): refilled by the sprite pass
 
     def _note_population(self, sid: str, living: int, center: tuple, rad_cells: float) -> None:
         """Detect a settlement's building count rising/falling between turns and spawn a DUST burst
@@ -3285,9 +3358,11 @@ class PygameRenderer:
         # middle of a built-up town, where as a ground decal under the sprite pass it was hidden by
         # that town's own halls and label. Drawn OVER the sprites instead: legibility wins over
         # strict depth here, because the whole job of this object is to be noticed.
+        self._draw_unrest_marks()         # V4.17 (5.4): pressure, over the roofs it builds under
         self._draw_fallen_crowns()
         self._draw_settlement_labels(label_jobs)
         self._draw_puffs()                # V4.9: rise dust / collapse puffs, over the buildings
+        self._draw_unrest_fx()            # V4.17 (5.4): the fallen drop, the seized hoard flies
 
         # V4.9: the soft edge VIGNETTE over the map zone — depth, and no hard canvas edge where the
         # world meets the void. Under the day/night grade so night lights still pierce cleanly.
@@ -4187,7 +4262,13 @@ class PygameRenderer:
             # terrain sank it into the grass — and the one object on the field that must never be
             # missed is the one saying the throne is empty. A 'gleam' is a HALO ONLY (see
             # _LIGHT_GLEAM): a torch's hot core out-shouted the crown it was meant to reveal.
-            self._frame_lights.append(("gleam", sx, sy, max(4, w)))
+            # The BREATH: a slow wall-clock swell that dims and returns to the resting gold, never
+            # past it. Applied to the halo's radius (which is what the gleam's strength is set by)
+            # and to the gold itself, so the whole object breathes as one rather than acquiring a
+            # separate glowing outline. Wall-clock, not frame-clock, so the rate is the same on a
+            # slow frame as on a fast one — this reads as duration, and duration must be honest.
+            breath = crown_breath(now)
+            self._frame_lights.append(("gleam", sx, sy, max(4, int(w * breath))))
             pad = w * 2
             surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
             ox = oy = pad
@@ -4199,6 +4280,7 @@ class PygameRenderer:
                    (ox + w // 2, oy - h // 3), (ox + w, oy - h), (ox + w, oy)]
             # Only half-muted at night: the crown is lit by its own gleam, not by the sun.
             gold = lerp_color(_CROWN, night_mute(_CROWN, self._nf), 0.45)
+            gold = _shade(gold, -int(34 * (1.0 - breath) / _CROWN_PULSE_DEPTH))
             pygame.draw.polygon(surf, gold, pts)
             pygame.draw.polygon(surf, _OUTLINE, pts, 1)
             # The glint: the gold catches the light on a slow cycle, so a vacant crown draws the
@@ -4209,6 +4291,290 @@ class PygameRenderer:
             surf.set_alpha(int(255 * max(0.0, min(1.0, alpha))))
             self._screen.blit(surf, (sx - pad, sy - pad))
         self._fallen_crowns = live
+
+    # -- V4.17 (5.4): DISCONTENT, THE RISING, AND THE HOARD ------------------
+    def _track_unrest(self, state: dict[str, Any]) -> None:
+        """Read THIS turn's unrest from the event tail plus LAST turn's gauge (pure read).
+
+        Ordering is the whole difficulty. `uprising.py` resolves a rising and only THEN answers
+        the grievance: the victors' gauge is zeroed, the crushed survivors' is scaled down, the
+        deposed monarch's record is deleted and his town may already have seceded. The renderer is
+        handed the state AFTER all of that, so the two sides no longer exist in it by the time the
+        UPRISING line can be read. They are reconstructed from `_unrest_prev` — last turn's gauge,
+        members, ruler and garrison — which is exactly the state the sim itself decided on, so the
+        picture names the same risers the engine did.
+
+        Events are read through the director's typed classifier, not by substring: the parse table
+        is the one place log wording is allowed to matter (see renderer/director.py).
+        """
+        turn = int(state.get("turn", 0))
+        now = time.monotonic()
+        prev = self._unrest_prev
+        for line in turn_events(state.get("events") or [], turn):
+            e = _director.classify(line)
+            if e.kind == "uprising_begins":
+                self._open_rising(e.focus, now, prev)
+            elif e.kind == "expropriation":
+                self._scatter_hoard(e.fields.get("n"), state, now)
+            elif e.kind == "death":
+                self._note_casualty(e.fields.get("who"), state, now)
+        self._unrest_prev = self._unrest_snapshot(state)
+
+    def _unrest_snapshot(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Copy the gauge and the rolls a rising is fought over, for next turn's reconstruction."""
+        sets = state.get("settlements") or {}
+        monarchs, leaders = state.get("monarchs") or {}, state.get("leaders") or {}
+        members: dict[str, set] = {}
+        rulers: dict[str, str] = {}
+        guards: dict[str, set] = {}
+        for sid, rec in sets.items():
+            if not isinstance(rec, dict):
+                continue
+            members[sid] = set(rec.get("members") or ())
+            mon = monarchs.get(sid)
+            lead = leaders.get(sid)
+            # The same precedence `monarchy.defenders_of` uses: a crown's paid garrison first,
+            # else a leader's followers. Whoever holds the seat is the one the mob comes for.
+            if isinstance(mon, dict) and mon.get("monarch"):
+                rulers[sid], guards[sid] = mon["monarch"], set(mon.get("garrison") or ())
+            elif isinstance(lead, dict) and lead.get("leader"):
+                rulers[sid], guards[sid] = lead["leader"], set(lead.get("followers") or ())
+        return {"gauge": dict(state.get("discontent") or {}), "members": members,
+                "rulers": rulers, "guards": guards}
+
+    def _open_rising(self, sid: "str | None", now: float, prev: dict[str, Any]) -> None:
+        """Record who rose and who held the seat, from last turn's rolls (pure)."""
+        if not sid or not prev:
+            return
+        ruler = (prev.get("rulers") or {}).get(sid)
+        guards = set((prev.get("guards") or {}).get(sid) or ())
+        gauge = prev.get("gauge") or {}
+        # Mirrors uprising._risers: a resentful member who is neither the ruler nor one of his
+        # men. Children never appear because the gauge only ever measures settled adults.
+        risers = {n for n in (prev.get("members") or {}).get(sid, ())
+                  if n != ruler and n not in guards and gauge.get(n, 0.0) >= _RESENTFUL}
+        defenders = set(guards)
+        if ruler:
+            defenders.add(ruler)
+        self._uprisings.append({"sid": sid, "born": now, "risers": risers, "defenders": defenders})
+
+    def _side_of(self, name: "str | None") -> "str | None":
+        """'riser' / 'defender' / None — which side `name` is on in a rising playing right now."""
+        if not name:
+            return None
+        for up in self._uprisings:
+            if name in up["risers"]:
+                return "riser"
+            if name in up["defenders"]:
+                return "defender"
+        return None
+
+    def _note_casualty(self, name: "str | None", state: dict[str, Any], now: float) -> None:
+        """A death this turn that belongs to a rising: flash and drop where the body stands."""
+        side = self._side_of(name)
+        if side is None:
+            return
+        agent = next((a for a in state.get("agents", []) if getattr(a, "name", None) == name), None)
+        pos = getattr(agent, "position", None)
+        if not pos:
+            return
+        self._casualties.append({"pos": (float(pos[0]), float(pos[1])), "born": now, "side": side})
+
+    def _scatter_hoard(self, amount: "str | None", state: dict[str, Any], now: float) -> None:
+        """The seized hoard leaves the hall: coins flying from the seat to the surviving risers.
+
+        The origin is the SETTLEMENT CENTRE — the ground point its hall rises from, and the same
+        anchor a fallen crown lies on (5.3). Wealth taken by force should visibly leave the
+        building it was hoarded in, not appear over the dead man's body in a field.
+        """
+        up = self._uprisings[-1] if self._uprisings else None
+        if up is None:
+            return
+        rec = (state.get("settlements") or {}).get(up["sid"])
+        centre = rec.get("center") if isinstance(rec, dict) else None
+        if centre is None:
+            return
+        alive = {a.name: a for a in state.get("agents", [])
+                 if getattr(a, "alive", True) and getattr(a, "position", None)}
+        dests = [(float(alive[n].position[0]), float(alive[n].position[1]))
+                 for n in sorted(up["risers"]) if n in alive]
+        if not dests:
+            return                    # the rising won and nobody lived to take the gold
+        try:
+            amt = float(amount or 0.0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        coins = max(4, min(_HOARD_MAX_COINS, int(amt / _HOARD_PER_COIN)))
+        self._hoards.append({"src": (float(centre[0]), float(centre[1])), "dests": dests,
+                             "born": now, "coins": coins})
+
+    def _unrest_level(self, name: str, state: dict[str, Any]) -> float:
+        """0.0 .. 1.0 — how far `name`'s discontent has climbed past the visible floor (pure read).
+
+        0.0 for a content agent, for one below the floor, and for every agent in a run with the
+        gauge off (no "discontent" key is ever written then) — so this whole layer is inert unless
+        the simulation is actually modelling class pressure.
+        """
+        gauge = state.get("discontent")
+        if not gauge:
+            return 0.0
+        value = gauge.get(name, 0.0)
+        if value < _DISCONTENT_FLOOR:
+            return 0.0
+        return min(1.0, (value - _DISCONTENT_FLOOR) / (_DISCONTENT_FULL - _DISCONTENT_FLOOR))
+
+    def _unrest_paint(self, agent: Any, state: dict[str, Any], color: tuple, gx: int, gy: int,
+                      r: int) -> tuple:
+        """QUEUE one agent's unrest mark, and return the body colour to draw the figure with.
+
+        Three exclusive states, strongest first: fighting a rising right now (an ember/steel side
+        ring, and the body pulled toward its side), simmering (a red halo + ground ring whose
+        strength and beat rate rise with the gauge), or content (nothing queued, colour untouched).
+
+        The mark is QUEUED rather than drawn, because a villager standing in its own town is behind
+        two roofs and a palisade for most of the run — drawn in sprite order the whole pressure
+        layer disappeared into the buildings. `_draw_unrest_marks` empties the queue after the
+        sprite pass: the same trade 5.3's fallen crown makes, and for the same reason. The one thing
+        this layer exists to say is "this town is about to blow", and strict depth is not worth
+        losing it behind a hut.
+        """
+        name = getattr(agent, "name", "")
+        side = self._side_of(name)
+        if side is not None:
+            hue = _RISER if side == "riser" else _DEFENDER
+            self._frame_unrest.append((gx, gy, r, hue, 1.0, None, True))
+            return lerp_color(color, night_mute(hue, self._nf * 0.5), _SIDE_MIX)
+        level = self._unrest_level(name, state)
+        if level <= 0.0:
+            return color
+        # The per-agent phase salt is stable (a name sum), so a settlement throbs raggedly rather
+        # than strobing in unison — many private grievances, not one municipal alarm.
+        salt = (sum(ord(c) for c in name) % 100) / 100.0
+        resentful = (state.get("discontent") or {}).get(name, 0.0) >= _RESENTFUL
+        self._frame_unrest.append((gx, gy, r, _ANGER, level, salt, resentful))
+        return lerp_color(color, _ANGER, 0.28 * level)     # a flush in the body itself
+
+    def _draw_unrest_marks(self) -> None:
+        """Draw this frame's queued unrest marks, over the sprites (see `_unrest_paint`)."""
+        if not self._frame_unrest:
+            return
+        now = time.monotonic()
+        for gx, gy, r, hue, level, salt, flag in self._frame_unrest:
+            if salt is None:                               # a combatant: a steady, fast side ring
+                beat = 0.5 - 0.5 * math.cos(2 * math.pi * (now / _DISCONTENT_PERIOD_HOT))
+                w = max(4, int(r * 2.4))
+                h = max(2, int(w * 0.5))                   # flattened onto the iso ground plane
+                ring = pygame.Surface((w * 2 + 4, h * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.ellipse(ring, (*hue, int(140 + 80 * beat)),
+                                    (2, 2, w * 2, h * 2), max(2, r // 3))
+                self._screen.blit(ring, (gx - w - 2, gy - h - 2))
+                continue
+            # A slow simmer QUICKENS as the gauge climbs — the rate carries the reading as much as
+            # the brightness does, so a town approaching a rising is legible turns before it fires.
+            beat = 0.5 - 0.5 * math.cos(2 * math.pi * (now / unrest_period(level) + salt))
+            alpha = int(_DISCONTENT_MAX_A * (0.45 + 0.55 * level) * (0.45 + 0.55 * beat))
+            rad = max(5, int(r * _DISCONTENT_HALO))
+            stamp = self._soft_stamp(rad, hue, alpha)
+            self._screen.blit(stamp, (gx - stamp.get_width() // 2,
+                                      gy - int(r * 0.6) - stamp.get_height() // 2))
+            # The ring is the load-bearing mark: in a frame holding the whole world an agent is ten
+            # pixels tall and a soft glow dissolves into a lit town, while a hard ellipse on the
+            # ground survives the zoom, the night grade and the torchlight. Radius and weight carry
+            # the gauge; past M4.4's resentment bar it thickens — this one would actually rise.
+            w = max(5, int(r * (1.9 + 0.7 * level)))
+            h = max(3, int(w * 0.5))
+            ring = pygame.Surface((w * 2 + 4, h * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.ellipse(ring, (*_shade(hue, int(30 * beat)), min(255, int(alpha * 1.7))),
+                                (2, 2, w * 2, h * 2), max(2, r // 3) + (1 if flag else 0))
+            self._screen.blit(ring, (gx - w - 2, gy - h - 2))
+        self._frame_unrest = []
+
+    def _draw_unrest_fx(self) -> None:
+        """The rising's transient effects — bodies dropping, and the hoard changing hands."""
+        now = time.monotonic()
+        self._uprisings = [u for u in self._uprisings if now - u["born"] < _UPRISING_SECS]
+        if self._casualties:
+            self._draw_casualties(now)
+        if self._hoards:
+            self._draw_hoards(now)
+
+    def _draw_casualties(self, now: float) -> None:
+        """A fighter cut down: a white flash, then the figure topples flat and fades where it fell."""
+        cell, live = self._cell, []
+        for c in self._casualties:
+            age = now - c["born"]
+            if age >= _CASUALTY_SECS:
+                continue
+            live.append(c)
+            gx, gy = self._to_px(*c["pos"])
+            if not visible_on_screen(gx, gy, cell * 3, self._cull, self._cull):
+                continue
+            if age < _CASUALTY_FLASH:                      # the blow lands
+                # An EXPANDING RING with a small hot core, not a fat white disc: six men falling in
+                # one turn drew six opaque bubbles that read as soap, not as blows. A ring reads as
+                # an impact, gets out of the way of the figure, and survives being drawn six times.
+                f = age / _CASUALTY_FLASH
+                cy = gy - int(cell * 0.3)
+                rad = max(3, int(cell * (0.16 + 0.34 * f)))
+                ring = pygame.Surface((rad * 2 + 4, rad * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(ring, (*_FLASH, int(225 * (1.0 - f))),
+                                   (rad + 2, rad + 2), rad, max(1, cell // 12))
+                self._screen.blit(ring, (gx - rad - 2, cy - rad - 2))
+                core = self._soft_stamp(max(2, int(cell * 0.14)), _FLASH, int(200 * (1.0 - f)))
+                self._screen.blit(core, (gx - core.get_width() // 2, cy - core.get_height() // 2))
+                continue
+            # The fall: an upright body flattening onto the ground over the first third of what
+            # is left, then lying there fading — a drop the eye can follow, not a vanishing.
+            p = (age - _CASUALTY_FLASH) / (_CASUALTY_SECS - _CASUALTY_FLASH)
+            fall = min(1.0, p * 2.6)
+            hue = night_mute(_RISER if c["side"] == "riser" else _DEFENDER, self._nf)
+            w = max(2, int(cell * (0.15 + 0.34 * fall)))
+            h = max(2, int(cell * 0.66 * (1.0 - 0.82 * fall)))
+            surf = pygame.Surface((w * 2 + 4, h * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.ellipse(surf, hue, (2, 2, w * 2, h * 2))
+            pygame.draw.ellipse(surf, _OUTLINE, (2, 2, w * 2, h * 2), 1)
+            surf.set_alpha(int(215 * (1.0 - p)))
+            self._screen.blit(surf, (gx - w - 2, gy - h - 2))
+        self._casualties = live
+
+    def _draw_hoards(self, now: float) -> None:
+        """The expropriated hoard in flight: coins arcing from the hall out to the risers."""
+        cell, live = self._cell, []
+        for hd in self._hoards:
+            t = (now - hd["born"]) / _HOARD_SECS
+            if t >= 1.0:
+                continue
+            live.append(hd)
+            sx, sy = self._to_px(*hd["src"])
+            n = hd["coins"]
+            for i in range(n):
+                # Staggered launch: the hoard SCATTERS out of the hall over the first third of the
+                # flight instead of leaving as one volley.
+                off = 0.34 * (i / max(1, n))
+                if t <= off:
+                    continue
+                q = min(1.0, (t - off) / (1.0 - off))
+                dx, dy = self._to_px(*hd["dests"][i % len(hd["dests"])])
+                ease = q * q * (3.0 - 2.0 * q)
+                spread = (terrain_noise(i, 3, 340) - 0.5) * cell * 1.1
+                lift = cell * (1.0 + 1.1 * terrain_noise(i, 7, 341))   # each coin its own arc
+                px = int(sx + (dx - sx) * ease + spread * (1.0 - ease))
+                py = int(sy + (dy - sy) * ease - math.sin(math.pi * q) * lift)
+                if not visible_on_screen(px, py, cell, self._cull, self._cull):
+                    continue
+                # A minted COIN, not a spark: a filled gold disc with a dark rim and a highlight.
+                # A soft stamp this small washed out to a pale dot and read as dust — which is the
+                # opposite of the point, since this is the one moment wealth changes hands by force.
+                rad = max(2, cell // 6)
+                alpha = int(255 * min(1.0, 3.0 * (1.0 - q)))
+                coin = pygame.Surface((rad * 2 + 3, rad * 2 + 3), pygame.SRCALPHA)
+                pygame.draw.circle(coin, _COIN, (rad + 1, rad + 1), rad)
+                pygame.draw.circle(coin, _OUTLINE, (rad + 1, rad + 1), rad, 1)
+                if rad >= 3:
+                    pygame.draw.circle(coin, _shade(_COIN, 40), (rad, rad), max(1, rad // 3))
+                coin.set_alpha(alpha)
+                self._screen.blit(coin, (px - coin.get_width() // 2, py - coin.get_height() // 2))
+        self._hoards = live
 
     def _draw_crown(self, cx: int, base_y: int, w: int, *, double: bool) -> None:
         """A gold zig-zag crown sitting on baseline `base_y`; `double` stacks a second (emperor)."""
@@ -4538,6 +4904,10 @@ class PygameRenderer:
                                   getattr(agent, "settlement", None), state, self._territory_lerp,
                                   _ALLEGIANCE_MIX_RULER if role else _ALLEGIANCE_MIX)
         color = night_mute(tinted, self._nf)
+        # V4.17 (5.4): unrest is painted UNDER the figure and re-tints it — a simmering commoner
+        # pulses red, a riser burns ember, a defender of the seat goes cold steel. Inert (returns
+        # `color` untouched, draws nothing) whenever the gauge is off or the agent is content.
+        color = self._unrest_paint(agent, state, color, gx, gy, r)
         if self._lod == "far":
             dot = max(2, r)
             pygame.draw.circle(self._screen, _OUTLINE, (gx, gy), dot + 1)
