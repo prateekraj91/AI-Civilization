@@ -234,6 +234,17 @@ _BUBBLE_DOT = (92, 98, 88)    # the "..." inside the bubble
 _HOUSE_WALL = (156, 124, 94)  # warm clay walls of a settlement house
 _HOUSE_ROOF = (120, 84, 68)   # darker roof
 _FIGURE_MIN_R = 3             # below this radius a cell is too small for a figure -> plain dot
+# V4.17 RANK SILHOUETTE — rank as SHAPE, so it survives being small, dim or half-occluded:
+# rank -> (height scale, shoulder scale, robe kind). The ladder is `agent_role`'s, and the steps
+# are deliberately coarse: an emperor is a third taller than a commoner, which reads instantly,
+# where a 5% difference would only read side by side. `None` (a commoner) is the unscaled figure.
+_RANK_SILHOUETTE: dict[str, tuple[float, float, str | None]] = {
+    "emperor": (1.38, 1.34, "cloak"),    # tallest, broadest, full cloak past the feet
+    "king":    (1.26, 1.22, "cloak"),
+    "monarch": (1.16, 1.12, "mantle"),   # a sovereign crown, but a local one — a short cape
+    "lord":    (1.09, 1.06, "mantle"),
+    "leader":  (1.05, 1.00, None),       # raised by consent, not by title: no cloth, just a star
+}
 _FOOD_GLYPH_MIN_CELL = 9      # below this cell size food stays a simple dot (wheat won't read)
 _HOUSE_MIN_CELL = 8           # below this cell size houses stay implied by the region only
 _MAX_HOUSES = 6               # cap the house glyphs drawn per settlement (keeps a village tidy)
@@ -1123,14 +1134,29 @@ def talkers_this_turn(events: list[str], turn: int) -> set[str]:
 def agent_role(name: str, state: dict[str, Any]) -> str | None:
     """The highest ruling role `name` holds, or None — a pure read of the institution dicts.
 
-    Precedence EMPEROR > MONARCH (king) > LEADER, so an agent who is several at once wears
-    only its top insignia. Each lookup degrades gracefully when its dict is absent (no
-    empires -> nobody is an emperor, etc.), so the map simply shows fewer markers.
+    V4.17: the FULL feudal ladder, the one the sim actually runs (empire.py's header states it:
+    EMPEROR -> subject-KING -> vassal-LORDS -> settlements), because rank is now drawn into the
+    silhouette and not just stamped above the head:
+
+        emperor > king > monarch > lord > leader > None (a commoner)
+
+    A KING is keyed by name in `kingdoms`; a LORD is a vassal inside some king's realm. Neither
+    was visible here before, so a king read as a plain settlement monarch and a lord read as a
+    commoner. A sovereign MONARCH outranks a vassal LORD: a crown that answers to nobody sits
+    above a lord who has sworn to one, even though the lord belongs to the larger institution.
+
+    An agent who is several at once wears only its top rank. Each lookup degrades gracefully when
+    its dict is absent (no empires -> nobody is an emperor), so the map simply shows fewer markers.
     """
     if name in state.get("empires", {}):                      # empires are keyed by emperor name
         return "emperor"
+    if name in state.get("kingdoms", {}):                     # kingdoms are keyed by king name
+        return "king"
     if any(r.get("monarch") == name for r in state.get("monarchs", {}).values()):
         return "monarch"
+    for rec in state.get("kingdoms", {}).values():
+        if isinstance(rec, dict) and name in (rec.get("vassals") or {}):
+            return "lord"
     if any(r.get("leader") == name for r in state.get("leaders", {}).values()):
         return "leader"
     return None
@@ -3933,7 +3959,7 @@ class PygameRenderer:
 
     # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
     def _draw_agent_figure(self, cx: int, cy: int, r: int, color: tuple[int, int, int],
-                           squash: float = 1.0) -> int:
+                           squash: float = 1.0, rank: str | None = None) -> int:
         """Draw a little person (head circle + trapezoid body) centred on (cx, cy).
 
         Colour is the personality colour and the whole figure scales with `r` (wealth), so
@@ -3941,18 +3967,34 @@ class PygameRenderer:
         a crown/star/bubble is stacked). A tiny cell (r below _FIGURE_MIN_R) falls back to the
         slice-1 dot so it never collapses into noise. V4.9: `squash` (>1 stretch, <1 squash) scales
         the figure's HEIGHT about its feet with an inverse width — a 1px step spring. squash==1.0 is
-        byte-identical to the pre-juice figure."""
+        byte-identical to the pre-juice figure.
+
+        V4.17 RANK SILHOUETTE: `rank` (see `agent_role`) changes the figure's SHAPE, not just what
+        is stamped over its head. A ruler stands TALLER, carries BROADER shoulders, and wears a
+        CLOAK that flares past its feet; the higher the rank the more of each. The point is that
+        rank survives being small, dim, or half-behind a roof — you can pick the king out of a
+        crowd by outline alone, with the insignia only confirming what the shape already said.
+        `rank=None` (a commoner) is byte-identical to the pre-V4.17 figure.
+        """
         if r < _FIGURE_MIN_R:
             pygame.draw.circle(self._screen, _OUTLINE, (cx, cy), r + 1)
             pygame.draw.circle(self._screen, color, (cx, cy), r)
             return cy - r
         screen = self._screen
+        hs, ws, robe = _RANK_SILHOUETTE.get(rank or "", (1.0, 1.0, None))
         base = cy + r                                # the feet — the squash pivots here
-        vy = lambda y: int(round(base - (base - y) * squash))
+        # Rank lifts the whole figure about its feet, exactly as the juice spring does, so the two
+        # compose: a king mid-hop is a tall figure hopping, not a commoner-shaped one.
+        stretch = squash * hs
+        vy = lambda y: int(round(base - (base - y) * stretch))
         head_r = max(2, round(r * 0.6))
         hx, hy = cx, vy(cy - head_r)                 # head sits in the upper half of the cell
-        bw = max(2, round(r * 0.95 / max(0.6, squash)))   # inverse width keeps the volume ~constant
+        # Inverse width keeps the SPRING's volume ~constant, then rank widens the shoulders on top
+        # of it — a ruler is broader, and must not be thinned by standing taller.
+        bw = max(2, round(r * 0.95 * ws / max(0.6, squash)))
         top, bot = vy(cy - 1), base                  # body spans from under the head to the base
+        if robe is not None:
+            self._draw_robe(cx, top, bot, bw, color, robe)
         body = [(cx - round(bw * 0.5), top), (cx + round(bw * 0.5), top),
                 (cx + bw, bot), (cx - bw, bot)]
         pygame.draw.polygon(screen, color, body)
@@ -3961,8 +4003,37 @@ class PygameRenderer:
         pygame.draw.circle(screen, _OUTLINE, (hx, hy), head_r, 1)
         return hy - head_r
 
+    def _draw_robe(self, cx: int, top: int, bot: int, bw: int,
+                   color: tuple[int, int, int], kind: str) -> None:
+        """The cloak (a king/emperor) or short mantle (a monarch/lord) BEHIND a ruler's figure.
+
+        Drawn first, so the body sits on top of it and the flare reads as cloth hanging behind the
+        shoulders. A deeper shade of the wearer's own colour, so the robe never fights the
+        allegiance/personality read the body carries — it only broadens the silhouette.
+        """
+        # Deep enough that the body still reads as a body ON the cloth rather than merging with it
+        # into one solid cone — the first pass flared to 2x the body width in a near-body shade,
+        # and the emperor came out as a red triangle with a head on top.
+        deep = _shade(color, -62)
+        if kind == "cloak":                       # full length: shoulders to past the feet
+            flare, hem = bw * 1.5, bot + max(1, (bot - top) // 8)
+            pts = [(cx - round(bw * 0.62), top), (cx + round(bw * 0.62), top),
+                   (cx + round(flare), hem), (cx - round(flare), hem)]
+        else:                                     # mantle: a short cape over the shoulders only
+            flare, hem = bw * 1.24, top + max(2, (bot - top) // 2)
+            pts = [(cx - round(bw * 0.6), top), (cx + round(bw * 0.6), top),
+                   (cx + round(flare), hem), (cx - round(flare), hem)]
+        pygame.draw.polygon(self._screen, deep, pts)
+        pygame.draw.polygon(self._screen, _OUTLINE, pts, 1)
+
     def _draw_role_marker(self, cx: int, top_y: int, r: int, role: str | None) -> None:
-        """Stamp a ruler's insignia just above a figure: leader STAR, monarch / emperor CROWN."""
+        """Stamp a ruler's insignia just above a figure: leader STAR, crowns for the crowned.
+
+        V4.17: the insignia now only CONFIRMS what the silhouette already said (see
+        `_RANK_SILHOUETTE`), so it grades with the ladder — an emperor's double crown, a king's
+        wide one, a local monarch's plain one. A LORD wears no crown: he holds his seat from a
+        king, and his mantle is the whole of his claim.
+        """
         if role is None:
             return
         gap = max(2, r // 3)
@@ -3971,6 +4042,8 @@ class PygameRenderer:
             self._draw_star(cx, base - max(3, r // 2), max(3, r * 0.7))
         elif role == "monarch":
             self._draw_crown(cx, base, max(4, r), double=False)
+        elif role == "king":
+            self._draw_crown(cx, base, max(5, int(r * 1.1)), double=False)
         elif role == "emperor":
             self._draw_crown(cx, base, max(5, int(r * 1.2)), double=True)
 
@@ -4296,14 +4369,15 @@ class PygameRenderer:
         agent, gx, gy, r, squash = obj
         role = agent_role(agent.name, state)
         color = night_mute(agent_color(getattr(agent, "personality", ""),
-                                       vivid=role in ("monarch", "emperor")), self._nf)
+                                       vivid=role in ("monarch", "king", "emperor")), self._nf)
         if self._lod == "far":
             dot = max(2, r)
             pygame.draw.circle(self._screen, _OUTLINE, (gx, gy), dot + 1)
             pygame.draw.circle(self._screen, color, (gx, gy), dot)
             return
         self._blit_shadow(gx, gy, r * 2.1, max(2, int(r * 0.8)))     # shadow at the feet
-        figure_top = self._draw_agent_figure(gx, gy - r, r, color, squash)   # feet on the ground point
+        # feet on the ground point; `role` shapes the silhouette as well as the insignia (V4.17)
+        figure_top = self._draw_agent_figure(gx, gy - r, r, color, squash, role)
         self._draw_role_marker(gx, figure_top, r, role)
         if agent.name in talkers:
             pers = getattr(agent, "personality", "")

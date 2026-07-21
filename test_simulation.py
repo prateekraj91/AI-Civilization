@@ -3871,6 +3871,18 @@ def test_pygame_role_and_talk_helpers_read_state() -> None:
     assert agent_role("Emi", state) == "emperor", "EMPEROR outranks LEADER"
     # Degrades gracefully when an institution dict is entirely absent.
     assert agent_role("Ken", {"leaders": {}}) is None, "no monarchs dict -> nobody is a monarch"
+    # V4.17: the full feudal ladder the sim actually runs. A KING is keyed by name in `kingdoms`
+    # and a LORD is a vassal inside one — before this a king read as a plain settlement monarch
+    # and a lord read as an ordinary villager.
+    state["kingdoms"] = {"Ken": {"king": "Ken", "home": "S001", "settlements": {"S001"},
+                                 "vassals": {"Vic": {"loyalty": 1.0}}, "founded": 3,
+                                 "discontent": {}}}
+    assert agent_role("Ken", state) == "king", "a king is more than the monarch of his home seat"
+    assert agent_role("Vic", state) == "lord", "a vassal lord is not a commoner"
+    assert agent_role("Emi", state) == "emperor", "EMPEROR still outranks KING"
+    # A sovereign crown outranks a sworn vassal, even one inside the larger institution.
+    state["monarchs"]["S002"] = {"monarch": "Vic", "since": 4, "garrison": set()}
+    assert agent_role("Vic", state) == "monarch", "MONARCH outranks LORD"
     # Talk signal: only the CURRENT turn's speakers, parsed from the contiguous tail.
     events = ["turn 4: X talked to Y: \"hi\"",          # an earlier turn — must be ignored
               "turn 5: Ann talked to Bo: \"hello\"",
@@ -9239,6 +9251,61 @@ def test_world_firsts_and_bloodless_battles_are_demoted() -> None:
     print("PASS test_world_firsts_and_bloodless_battles_are_demoted")
 
 
+def test_rank_reads_from_the_silhouette_alone() -> None:
+    """V4.17 (5.1): rank is drawn into the SHAPE, not only stamped above the head.
+
+    Measured off the rendered pixels rather than off the table that drives them: a figure of each
+    rank is drawn on its own surface in a flat colour, and the painted region is compared. The
+    ladder must be monotonic in HEIGHT and in WIDTH — you should be able to pick the king out of a
+    crowd by outline alone, with the crown only confirming it — and a commoner must be untouched,
+    because every existing frame of a village is commoners.
+    """
+    import os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import PygameRenderer, _RANK_SILHOUETTE
+    except ImportError:
+        print("PASS test_rank_reads_from_the_silhouette_alone (skipped: no pygame)")
+        return
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.0, window=(400, 400))
+        r._ensure_screen(24)
+
+        def extent(rank):
+            """(height, width) of the pixels a figure of `rank` actually paints."""
+            surf = pygame.Surface((400, 400))
+            surf.fill((0, 0, 0))
+            r._screen = surf
+            r._draw_agent_figure(200, 200, 14, (255, 0, 0), 1.0, rank)
+            lit = [(x, y) for x in range(120, 281) for y in range(100, 281)
+                   if surf.get_at((x, y))[:3] != (0, 0, 0)]
+            assert lit, f"{rank} painted nothing"
+            xs = [p[0] for p in lit]
+            ys = [p[1] for p in lit]
+            return max(ys) - min(ys), max(xs) - min(xs)
+
+        ladder = ["commoner", "leader", "lord", "monarch", "king", "emperor"]
+        sizes = {name: extent(None if name == "commoner" else name) for name in ladder}
+        heights = [sizes[n][0] for n in ladder]
+        widths = [sizes[n][1] for n in ladder]
+        assert heights == sorted(heights), f"rank must read as HEIGHT, monotonically: {sizes}"
+        assert widths == sorted(widths), f"rank must read as WIDTH, monotonically: {sizes}"
+        # Coarse enough to read at a glance, not just under a ruler.
+        assert sizes["emperor"][0] >= sizes["commoner"][0] * 1.25, \
+            f"an emperor must be obviously taller than a villager: {sizes}"
+        assert sizes["king"][1] > sizes["leader"][1], \
+            f"a king's cloak must broaden him past a leader: {sizes}"
+        # A commoner is byte-identical to the pre-V4.17 figure: no rank, no robe, no scaling.
+        assert _RANK_SILHOUETTE.get("") is None and None not in _RANK_SILHOUETTE, \
+            "a commoner must have no entry — it takes the unscaled (1.0, 1.0, None) default"
+    finally:
+        pygame.quit()
+    print("PASS test_rank_reads_from_the_silhouette_alone")
+
+
 def test_a_crown_falling_is_legendary() -> None:
     """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
 
@@ -9890,6 +9957,7 @@ def main_runner() -> None:
         test_director_imports_only_stdlib,
         test_director_classifies_every_engine_event_shape,
         test_world_firsts_and_bloodless_battles_are_demoted,
+        test_rank_reads_from_the_silhouette_alone,
         test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,
