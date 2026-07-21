@@ -468,6 +468,12 @@ _LIGHT_WINDOW = 3.4               # pool radius as a multiple of the emitter's g
 _LIGHT_TORCH = 4.2               # ...per light kind (torches/hearths/forges throw farther)
 _LIGHT_HEARTH = 5.0
 _LIGHT_FORGE = 4.6
+# V4.17 (5.3): the fallen crown's GLEAM — a halo only, with no bright core and no flame ring. A
+# torch drew a hot white core that became the dominant shape, so a vacant crown read as "a gleam
+# with a crown in it" rather than "a crown, gleaming". The halo exists solely to keep the gold off
+# the night grass; when in doubt it errs DIM, because the silhouette is the thing being read.
+_LIGHT_GLEAM = 2.6
+_LIGHT_GLEAM_STRENGTH = 0.34
 _LIGHT_MAX_A = 200                # cap a single pool's centre additive brightness
 # V4-fix: LIGHT BLOWOUT. All the town's additive pools accumulate on ONE offscreen layer, then that
 # layer is CLAMPED (per-channel MIN) to a warm cap before compositing — so however many windows/hearth/
@@ -3229,9 +3235,6 @@ class PygameRenderer:
         talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
         self._update_trails(state, motion)
         self._draw_trails()
-        # V4.17 (5.3): crowns lying on the grass are GROUND DECALS — drawn here so the sprite pass
-        # below can occlude them: a villager walking in front of a vacant throne's crown hides it.
-        self._draw_fallen_crowns()
 
         # V4.6: PAINTER'S ALGORITHM. Settlements, food and agents share ONE list sorted
         # back-to-front by projected ground depth (screen y), so nearer things correctly
@@ -3278,6 +3281,11 @@ class PygameRenderer:
                     self._draw_wheat(px, py, cell)
             else:
                 self._draw_agent_sprite(obj, talkers, state)
+        # V4.17 (5.3): a fallen crown lies on the SEAT it belonged to — which means it lies in the
+        # middle of a built-up town, where as a ground decal under the sprite pass it was hidden by
+        # that town's own halls and label. Drawn OVER the sprites instead: legibility wins over
+        # strict depth here, because the whole job of this object is to be noticed.
+        self._draw_fallen_crowns()
         self._draw_settlement_labels(label_jobs)
         self._draw_puffs()                # V4.9: rise dust / collapse puffs, over the buildings
 
@@ -3679,7 +3687,8 @@ class PygameRenderer:
         layer = self._light_layer
         if layer is None or layer.get_size() != (hvw, hvh):
             layer = self._light_layer = pygame.Surface((hvw, hvh))
-        _pool_r = {"window": _LIGHT_WINDOW, "hearth": _LIGHT_HEARTH, "forge": _LIGHT_FORGE}
+        _pool_r = {"window": _LIGHT_WINDOW, "hearth": _LIGHT_HEARTH, "forge": _LIGHT_FORGE,
+                   "gleam": _LIGHT_GLEAM}
         dirty = None
         for kind, x, y, s in self._frame_lights:
             rr = int(max(6, s * _pool_r.get(kind, _LIGHT_TORCH))) + 4
@@ -3707,6 +3716,11 @@ class PygameRenderer:
                 self._blit_light(hx, hy, max(4, int(s * _LIGHT_FORGE / ds)), PALETTE["forge_glow"],
                                  0.7 * nf * fl, target=layer)
                 pygame.draw.circle(screen, PALETTE["forge_core"], (x, y), max(1, s // 4))
+            elif kind == "gleam":                          # a fallen crown on the night grass
+                # Halo ONLY — no core, no ring. The shape must win over the glow, so this does the
+                # single job of lifting the gold off dark ground and nothing else.
+                self._blit_light(hx, hy, max(3, int(s * _LIGHT_GLEAM / ds)), PALETTE["torch_flame"],
+                                 _LIGHT_GLEAM_STRENGTH * nf, target=layer)
             else:                                          # torchlight at the seats of power
                 fl = 0.70 + 0.30 * terrain_noise(f // 2, x * 5 + y, 68)
                 wob = int(round(terrain_noise(f // 2, x, 69) * 2 - 1))
@@ -4109,20 +4123,26 @@ class PygameRenderer:
         taken from him — there is nothing lying on the grass — and the drama of that is the coup,
         which the director already frames. A seat that refills claims whatever crown was lying for
         it, which is what makes a succession read as somebody picking the thing up.
+
+        It falls on the SEAT'S settlement centre, not where the body fell. The crown is the
+        institution, not the man: a crown lying in open country where a king happened to die is
+        unreadable, while a crown lying on the throne it belongs to says "this town has no ruler"
+        instantly. Where he actually died stays truthful in the event log — only the symbol moves.
         """
         seats = {sid: rec["monarch"] for sid, rec in (state.get("monarchs") or {}).items()
                  if isinstance(rec, dict) and rec.get("monarch")}
         now = time.monotonic()
-        # The snapshot is LAST turn's, so it still holds the position of someone who has just died.
-        positions = (self._prev_snapshot or {}).get("positions") or {}
+        sets = state.get("settlements") or {}
         alive = {a.name for a in state.get("agents", []) if getattr(a, "alive", True)}
         for sid, holder in self._crown_seats.items():
             if seats.get(sid) == holder or holder in alive:
                 continue                      # still reigning, or deposed alive: no crown falls
-            pos = positions.get(holder)
-            if pos is not None:
+            rec = sets.get(sid)
+            centre = rec.get("center") if isinstance(rec, dict) else None
+            if centre is not None:            # a seat whose town is gone has no throne to lie on
                 self._fallen_crowns.append({"sid": sid, "who": holder, "born": now,
-                                            "pos": (float(pos[0]), float(pos[1])), "taken": None})
+                                            "pos": (float(centre[0]), float(centre[1])),
+                                            "taken": None})
         for c in self._fallen_crowns:         # a refilled seat CLAIMS the crown lying for it
             if c["taken"] is None and seats.get(c["sid"]):
                 c["taken"] = now
@@ -4153,6 +4173,11 @@ class PygameRenderer:
                 continue                      # forgotten or claimed: gone for good
             live.append(c)
             sx, sy = self._to_px(*c["pos"])
+            # The seat's centre is the ground point the town's HALL rises from, so a crown drawn
+            # there — over the sprites, where it has to be to stay visible — reads as an ornament
+            # sitting on a roof. Nudged forward (down-screen) onto the plaza in front of the hall,
+            # where it rests on open ground and reads as an object lying at the foot of the throne.
+            sy += int(cell * 0.95)
             w = max(4, int(cell * 0.44))
             h = max(3, int(w * _CROWN_FLAT))
             if not visible_on_screen(sx, sy, w * 3, self._cull, self._cull):
@@ -4160,8 +4185,9 @@ class PygameRenderer:
             # A vacant crown GLEAMS in the dark. Registered with the point-light system (which the
             # night pass consumes later this frame), because night-muting the gold like ordinary
             # terrain sank it into the grass — and the one object on the field that must never be
-            # missed is the one saying the throne is empty.
-            self._frame_lights.append(("torch", sx, sy, max(4, w)))
+            # missed is the one saying the throne is empty. A 'gleam' is a HALO ONLY (see
+            # _LIGHT_GLEAM): a torch's hot core out-shouted the crown it was meant to reveal.
+            self._frame_lights.append(("gleam", sx, sy, max(4, w)))
             pad = w * 2
             surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
             ox = oy = pad

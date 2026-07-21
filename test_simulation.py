@@ -9360,10 +9360,11 @@ def test_allegiance_tints_the_people_not_just_the_ground() -> None:
 def test_a_dead_kings_crown_falls_and_lies_vacant() -> None:
     """V4.17 (5.3): the crown is an OBJECT — it falls where its holder died and lies there.
 
-    The lifecycle, all renderer-local and all a pure read of the snapshot: a crown falls ONLY on
-    the holder's death (a monarch deposed alive had his crown taken, and there is nothing on the
-    grass), it lies vacant while the seat is empty, a refilled seat CLAIMS it, and it is forgotten
-    if nobody ever comes. The sim is never touched by any of it.
+    The lifecycle, all renderer-local and all a pure read of state: a crown falls ONLY on the
+    holder's death (a monarch deposed alive had his crown taken, and there is nothing on the
+    grass), it falls on the SEAT it belonged to rather than on the body, it lies vacant while the
+    seat is empty, a refilled seat CLAIMS it, and it is forgotten if nobody ever comes. The sim is
+    never touched by any of it.
     """
     import os as _os, time as _time
     _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -9398,15 +9399,19 @@ def test_a_dead_kings_crown_falls_and_lies_vacant() -> None:
                           agents=[_A("Ken"), _A("Rex")])
         r._track_crowns(alive_coup)
         assert not r._fallen_crowns, "a monarch deposed ALIVE had his crown taken, not dropped"
-        # DIED: the crown falls where he stood, and lies vacant while the seat is empty.
+        # DIED: the crown falls on the SEAT it belongs to, and lies vacant while that seat is empty.
         r._crown_seats = {"S001": "Ken"}
-        r._prev_snapshot = {"positions": {"Ken": (6.0, 6.0)}}
+        # He died far from his throne — the crown is the institution, not the body, so the symbol
+        # belongs on the seat. A vacant crown in open country is unreadable; one on the throne says
+        # "this town has no ruler" instantly. Where he fell stays truthful in the event log.
+        r._prev_snapshot = {"positions": {"Ken": (19.0, 2.0)}}
         dead = dict(base, monarchs={}, agents=[_A("Ken", alive=False)])
         r._track_crowns(dead)
         assert len(r._fallen_crowns) == 1, "a dead king's crown must fall"
         crown = r._fallen_crowns[0]
-        assert crown["pos"] == (6.0, 6.0) and crown["taken"] is None, \
-            "it falls where he STOOD, and lies vacant"
+        assert crown["pos"] == (6.0, 6.0), \
+            f"the crown lies on the SEAT's centre, not where the body fell: {crown['pos']}"
+        assert crown["taken"] is None, "and it lies vacant"
         now = _time.monotonic()
         assert r._crown_alpha(crown, now) == 1.0, "a vacant crown is solid, not ghosted"
         # It is still there many seconds later — a vacancy is not a flicker.
@@ -9420,6 +9425,11 @@ def test_a_dead_kings_crown_falls_and_lies_vacant() -> None:
         assert crown["taken"] is not None, "a new monarch on that seat claims the fallen crown"
         assert r._crown_alpha(crown, crown["taken"] + _CROWN_FADE * 1.1) <= 0.0, \
             "a claimed crown fades off the ground"
+        # A seat whose town no longer exists has no throne to lie on — drop nothing rather than
+        # stranding a crown at (0, 0).
+        r._fallen_crowns, r._crown_seats = [], {"S404": "Gone"}
+        r._track_crowns(dict(base, monarchs={}, agents=[_A("Gone", alive=False)]))
+        assert not r._fallen_crowns, "a seat with no surviving town drops no crown"
         # Drawing it neither raises nor touches the state it reads.
         r._fallen_crowns = [crown]
         crown["taken"] = None
