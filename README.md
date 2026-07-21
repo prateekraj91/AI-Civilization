@@ -164,6 +164,28 @@ A world where betrayal is common would be a world whose incentives were mis-tune
 The mechanics make dramatic acts *possible*; the agents reserve them for when they
 actually pay off, which is exactly what makes the rare ones feel earned.
 
+### Known limitation: a staged cast does not survive a long run
+
+A `--stage`d scene (and therefore `--showcase`) is populated by a cast that **thins
+out badly past roughly turn 50**. In a measured 90-turn showcase run only 16 of 147
+agents were still alive at the end: the staging battles kill a third of the cast
+outright, the survivors of the mercenary pools have no settlement to feed them, and
+the heavy crown levy keeps the commons too poor to bank a buffer. Two visible
+consequences, both measured rather than suspected:
+
+- **The back half of a long run is empty.** Turns 1–45 of a showcase run have no gap
+  longer than 6 turns without a major beat; turns 45–90 have gaps of 13, 12 and 15.
+  This is why `--showcase` defaults to **45 turns** rather than 90.
+- **Late wars are bloodless.** The war engine keeps firing (six wars in 45 turns),
+  but from about turn 10 the realms can only field hosts of one or two against a
+  defence of zero. Those clashes are real ledger events and are deliberately demoted
+  out of the showcase's camera by `renderer/director.py`, since a battle in which
+  nobody falls has nothing to watch.
+
+Fixing this means population sustainability under staged conditions — food, wages and
+levy pressure balanced so a staged realm reproduces faster than it starves. That is a
+simulation-balance project, not a rendering one, and it is **not currently scoped**.
+
 ---
 
 ## Roadmap / V2

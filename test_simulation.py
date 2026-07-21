@@ -5202,6 +5202,21 @@ def test_showcase_scene_opens_in_a_standoff_that_must_break() -> None:
              for k in kings}
     assert len(set(hosts.values())) == 1 and min(hosts.values()) > 0, \
         f"the realms must open in an exact STANDOFF (no winnable war on turn 1), got {hosts}"
+    # V4.15: the standoff is EQUAL on purpose, and the equality is what holds fire on turn 1 (the
+    # launch test is a strict >). Staggering the openings was tried and measured: any inequality
+    # here fires a war on turn 1, before the title card has cleared. The pacing is bought instead
+    # by the CHEST being the binding term — see scenario._SHOWCASE_REALMS. A chest deep enough to
+    # out-fund the mercenary pool pins every host at its ceiling, so a war permanently spends the
+    # realm that wins it and no second war can ever fire.
+    import monarchy as _m
+    for name in kings:
+        king = next(a for a in state["agents"] if a.name == name)
+        pool = len(_m._available_mercenaries(state, king, {king.name}))
+        coin = int(king.money // _m.FIGHTER_COST)
+        assert coin <= pool, (
+            f"{name}'s COIN out-hires his mercenary pool ({coin} > {pool}): the chest would stop "
+            "binding, hosts would pin at the pool ceiling, and a war would permanently spend the "
+            "realm that won it — one war, then eighty-five dead turns")
     print("PASS test_showcase_scene_opens_in_a_standoff_that_must_break")
 
 
@@ -9066,6 +9081,262 @@ def test_minds_off_is_byte_identical_and_a_bad_response_falls_back() -> None:
     print("PASS test_minds_off_is_byte_identical_and_a_bad_response_falls_back")
 
 
+# --- V4.15: the showcase DIRECTOR (severity, captions, pacing) ---------------
+def test_director_imports_only_stdlib() -> None:
+    """renderer/director.py is a PURE classifier — stdlib only, no sim, no pygame.
+
+    Mirrors the two existing renderer AST boundary tests. The director decides where the camera
+    looks and what the caption says; if it could import decision logic (or mutate anything) the
+    presentation layer would have reached into the simulation. Parses the file, never imports it.
+    """
+    import ast
+    with open("renderer/director.py") as f:
+        tree = ast.parse(f.read())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported <= {"__future__", "re", "typing"}, f"director imports beyond stdlib: {imported}"
+    print("PASS test_director_imports_only_stdlib")
+
+
+def test_director_classifies_every_engine_event_shape() -> None:
+    """Each event KIND is pinned to the VERBATIM string its engine module emits.
+
+    This is the contract that keeps the typed-event boundary honest: the director keys everything
+    on `kind`, and these cases are what tie each kind back to the f-string in monarchy/kingdoms/
+    empire/uprising/lineage/eras. If an engine ever rewords an event, exactly one case fails here
+    and names the kind that went stale — instead of the showcase silently losing a camera beat.
+    """
+    from renderer.director import classify, LEGENDARY, MAJOR, MINOR, NOISE
+    cases = {
+        # LEGENDARY (the wording is monarchy.py / kingdoms.py / empire.py / lineage.py verbatim)
+        "turn 3: KING Aldric DEFEATED Cyrus in war (10 loyal host vs 9; 4+5 fell) -> Cyrus SUBJUGATED as a subject-king; an EMPIRE rises":
+            ("war_won", LEGENDARY, None),
+        "turn 8: KING Borin's war on Aldric FAILED (3 loyal host vs 9; 2+1 fell)":
+            ("war_failed", LEGENDARY, None),
+        "turn 0: KING Aldric CONQUERED S0A2 into the realm (6 host vs 4 defenders; 2+3 fell) -> vassal LordA; realm now 2 settlements":
+            ("realm_conquest", LEGENDARY, "S0A2"),
+        "turn 0: Aldric seized S0A1 by force (9 fighters vs 6 defenders; 3+4 fell) -> MONARCH of S0A1":
+            ("town_seized", LEGENDARY, "S0A1"),
+        "turn 34: the line of Aldric is extinguished; the crown of [king of the realm of S0A1] lies vacant":
+            ("dynasty_extinct", LEGENDARY, None),
+        "turn 40: subject-king Cyrus was freed from Aldric's empire by the coalition":
+            ("empire_broken", LEGENDARY, None),
+        # MAJOR
+        "turn 34: LordC OVERTHREW Aldric and seized S0A1 by force (2 fighters vs 1 defenders; 1+1 fell) -> MONARCH of S0A1":
+            ("coup", MAJOR, "S0A1"),
+        "turn 22: the UPRISING in S0B2 TRIUMPHED — lord LordB is DEPOSED; BWV4 to rule by consent (2 risers fell)":
+            ("uprising_triumph", MAJOR, "S0B2"),
+        "turn 26: the UPRISING in S0C2 was CRUSHED — lord LordC holds (2 guards + 2 risers fell); the survivors are cowed":
+            ("uprising_crushed", MAJOR, "S0C2"),
+        "turn 22: UPRISING in S0B2 — 4 risers rise against lord LordB (3 defenders: 3 standing + 0 hired)":
+            ("uprising_begins", MAJOR, "S0B2"),
+        "turn 22: BWV4 led the rising in S0B2 — the survivors rally to him (power to be legitimised by consent, M3.2)":
+            ("uprising_leader", MAJOR, "S0B2"),
+        "turn 22: the risers EXPROPRIATED LordB's hoard of 37.60 — split among 2 (the heirs inherit nothing)":
+            ("expropriation", MAJOR, None),
+        "turn 36: subject-king Cyrus BROKE AWAY from Aldric's empire — reclaiming independence with his realm (loyalty collapsed)":
+            ("breakaway_empire", MAJOR, None),
+        "turn 22: S0B2 SECEDED from Borin's realm (the lord was deposed) — independent again":
+            ("secession", MAJOR, "S0B2"),
+        "turn 17: S0B2 entered the Iron Age": ("era", MAJOR, "S0B2"),
+        "turn 2: LordA devised WRITING in S0A2": ("writing", MAJOR, "S0A2"),
+        "turn 17: LordB forged the first WEAPONS in S0B2": ("weapons", MAJOR, "S0B2"),
+        "turn 34: Rhea succeeded LordC as [monarch of S0A1] (eldest child)": ("succession", MAJOR, None),
+        "turn 4: LordA emerged as leader of S0A2 (3 followers)": ("leader_consent", MAJOR, "S0A2"),
+        # MINOR / NOISE — the churn that must never take the camera
+        "turn 12: Iris was born to AWV2 and LordA in S0A2": ("birth", MINOR, "S0A2"),
+        "turn 9: AKM0 died (starved)": ("death", MINOR, None),
+        "turn 5: LordA and AWV2 formed an ALLIANCE": ("alliance_formed", MINOR, None),
+        "turn 7: BV3 taught 'metalworking' to BWV2": ("teaching", MINOR, None),
+        "turn 6: MONARCH Cyrus levied 3.2 from S0C1 by force (rate 0.45)": ("levy", NOISE, "S0C1"),
+        "turn 6: imperial tribute cascaded up: 4.1 subject-king Cyrus->EMPEROR Aldric":
+            ("tribute_imperial", NOISE, None),
+        "turn 6: tribute cascaded up S0A2: 2.0 members->LordA, 1.0 LordA->KING Aldric":
+            ("tribute_realm", NOISE, "S0A2"),
+        'turn 2: LordA talked to AWV2: "Hi! Want to team up?"': ("talk", NOISE, None),
+        "turn 3: BV3 trust in LordB: 0 -> 1 (friendly message)": ("trust", NOISE, None),
+        "turn 26: AWV0 seethes under LordA's tribute (discontent 6.0)": ("grievance", NOISE, None),
+    }
+    for line, (kind, sev, focus) in cases.items():
+        e = classify(line)
+        assert e.kind == kind, f"{line[:60]!r} -> {e.kind}, expected {kind}"
+        assert e.severity == sev, f"{kind}: severity {e.severity}, expected {sev}"
+        assert e.focus == focus, f"{kind}: focus {e.focus}, expected {focus}"
+    # An event the director has never seen degrades quietly to NOISE rather than crashing a run.
+    unknown = classify("turn 4: something entirely new happened")
+    assert (unknown.kind, unknown.severity) == ("unknown", NOISE)
+    print("PASS test_director_classifies_every_engine_event_shape")
+
+
+def test_world_firsts_and_bloodless_battles_are_demoted() -> None:
+    """A beat is only a beat ONCE, and a battle with no dead is not a battle.
+
+    Two demotions the showcase depends on. WORLD-FIRSTS: the first town to devise writing is a
+    turning point, the seventh is ordinary progress — and the Neolithic is never a beat at all
+    (a staged run drops five settlements into it on turn 1). BLOODLESS: `empire.update` will march
+    ten fighters at a realm that can field zero, and the log calls it a war; with nothing falling on
+    either side there is nothing to watch, so it must not take the camera.
+    """
+    from renderer.director import classify, MAJOR, MINOR
+    seen: set = set()
+    first = classify("turn 2: LordA devised WRITING in S0A2", seen)
+    again = classify("turn 9: BT5 devised WRITING in S0B1", seen)
+    assert (first.severity, again.severity) == (MAJOR, MINOR), "only the world's FIRST writing is a beat"
+    bronze = classify("turn 4: S0A1 entered the Bronze Age", seen)
+    bronze2 = classify("turn 9: S0B1 entered the Bronze Age", seen)
+    iron = classify("turn 17: S0B2 entered the Iron Age", seen)
+    assert (bronze.severity, bronze2.severity, iron.severity) == (MAJOR, MINOR, MAJOR), \
+        "each AGE is a beat once; a second town reaching the same age is not"
+    neo = classify("turn 1: S0A2 entered the Neolithic", seen)
+    assert neo.severity == MINOR, "the Neolithic is staging scenery, never a beat"
+    bloody = classify("turn 3: KING Aldric DEFEATED Cyrus in war (10 loyal host vs 9; 4+5 fell) -> x")
+    hollow = classify("turn 3: KING Borin DEFEATED Aldric in war (8 loyal host vs 0; 0+0 fell) -> x")
+    assert bloody.severity != hollow.severity and hollow.severity == MINOR, \
+        "a war in which nobody fell is a bloodless annexation, not a camera beat"
+    print("PASS test_world_firsts_and_bloodless_battles_are_demoted")
+
+
+def test_turn_severity_and_beat_editing() -> None:
+    """A turn is as important as its biggest event, and one story gets ONE cut.
+
+    Covers the four edits `beats` makes: turn-0 staging is dropped (the scenario builder's six
+    conquests are set dressing), an uprising's set-up and consequences FOLD into its outcome,
+    consequences that name no settlement INHERIT the focus of the beat that does, and repeats of a
+    collapsible kind on one turn become a single captioned group.
+    """
+    from renderer.director import (classify_turn, turn_severity, beats, caption,
+                                   LEGENDARY, MAJOR, NOISE)
+    quiet = classify_turn(["turn 5: MONARCH Cyrus levied 3.2 from S0C1 by force (rate 0.45)",
+                           'turn 5: LordA talked to AWV2: "Hi!"'])
+    assert turn_severity(quiet) == NOISE and beats(quiet) == []
+    assert turn_severity([]) == NOISE, "an empty turn is quiet, not a crash"
+    mixed = classify_turn(["turn 9: AKM0 died (starved)",
+                           "turn 9: KING Aldric DEFEATED Cyrus in war (10 loyal host vs 9; 4+5 fell) -> x"])
+    assert turn_severity(mixed) == LEGENDARY, "the turn takes the rank of its biggest event"
+    # Turn 0 is the staging builder — six conquest lines before the title card has cleared.
+    staging = classify_turn(["turn 0: Aldric seized S0A1 by force (9 fighters vs 6 defenders; 3+4 fell) -> MONARCH of S0A1"])
+    assert beats(staging) == [] and len(beats(staging, drop_staging=False)) == 1
+    # One revolt = one cut: the rising, the leader, the hoard and the secession fold into the outcome.
+    revolt = classify_turn([
+        "turn 22: UPRISING in S0B2 — 4 risers rise against lord LordB (3 defenders: 3 standing + 0 hired)",
+        "turn 22: BWV4 led the rising in S0B2 — the survivors rally to him (power to be legitimised by consent, M3.2)",
+        "turn 22: the UPRISING in S0B2 TRIUMPHED — lord LordB is DEPOSED; BWV4 to rule by consent (2 risers fell)",
+        "turn 22: the risers EXPROPRIATED LordB's hoard of 37.60 — split among 2 (the heirs inherit nothing)",
+        "turn 22: S0B2 SECEDED from Borin's realm (the lord was deposed) — independent again"])
+    b = beats(revolt)
+    assert [e.kind for e in b] == ["uprising_triumph"], f"one revolt, one cut: got {[e.kind for e in b]}"
+    title, sub = caption(b[0])
+    assert title == "THE RISING OF S0B2" and "Lord B falls" in sub, (title, sub)
+    # A consequence with no settlement of its own inherits the focus of the beat that has one.
+    war = classify_turn([
+        "turn 41: KING Aldric CONQUERED S0B1 into the realm (6 host vs 4 defenders; 2+3 fell) -> held directly",
+        "turn 41: the line of Borin is extinguished; the crown of [monarch of S0B1] lies vacant"])
+    focuses = {e.kind: e.focus for e in beats(war)}
+    assert focuses["dynasty_extinct"] == "S0B1", f"the camera must know where to look: {focuses}"
+    # Three towns choosing a leader on one turn is one beat, and the caption says so.
+    many = classify_turn([f"turn 4: Lord{r} emerged as leader of S0{r}2 (3 followers)" for r in "ABC"])
+    got = beats(many)
+    assert len(got) == 1, f"repeats of one kind collapse: got {[e.kind for e in got]}"
+    assert "and 2 more" in (caption(got[0])[1] or ""), caption(got[0])
+    print("PASS test_turn_severity_and_beat_editing")
+
+
+def test_no_two_wars_chain_in_one_turn() -> None:
+    """A realm's fate is not decided twice in one turn (the v4.15 cascade fix).
+
+    THE BUG: the strongest crown won its war and was left exhausted — casualties taken, chest
+    spent — and the next crown down the same loop saw a host of zero and took the victor together
+    with everything it had just won. Three realms collapsed into one empire between two frames and
+    the war engine had nothing to iterate over for the rest of the run. A crown that has already
+    fought this turn is now spent; the rival must wait for the next turn.
+    """
+    import empire, scenario, world
+    world.create_world(size=26)
+    state = world.world_state
+    state["taxation_on"] = True
+    scenario.apply(state, "showcase")
+    fought: list[str] = []
+    real = empire.wage_war
+
+    def spy(st, att, dfn, turn):
+        fought.append(f"{att}->{dfn}")
+        return real(st, att, dfn, turn)
+
+    empire.wage_war = spy
+    try:
+        # Set up the exact cascade shape: Aldric can beat Cyrus, and Borin could then take the
+        # exhausted Aldric on the SAME turn. Cyrus is stripped so a war certainly fires.
+        by = {a.name: a for a in state["agents"] if a.alive}
+        by["Cyrus"].money = by["Cyrus"].stockpile = 0.0
+        assert empire.imperial_host_size(state, by["Aldric"]) > 0, "Aldric must be able to march"
+        assert empire.imperial_host_size(state, by["Borin"]) > 0, "Borin must be able to follow up"
+        empire.update(state, 1)
+        assert len(fought) == 1, f"one turn must not chain wars, got {fought}"
+    finally:
+        empire.wage_war = real
+    print("PASS test_no_two_wars_chain_in_one_turn")
+
+
+def test_an_empire_keeps_the_borders_it_conquered() -> None:
+    """Territory won stays territory — an empire is reachable through everything it holds.
+
+    Adjacency used to read only the emperor's PERSONAL realm, so a conquest ERASED the frontier it
+    had just won: the moment a rival was subjugated its towns stopped counting toward the empire's
+    reach, every remaining power found itself bordering nobody, and the war loop went silent for
+    the rest of the run. The empire's neighbours must still see it after it grows.
+    """
+    import empire, scenario, world
+    world.create_world(size=26)
+    state = world.world_state
+    state["taxation_on"] = True
+    scenario.apply(state, "showcase")
+    # Borin borders Aldric only through Aldric's own towns; Cyrus is far from Borin.
+    assert "Cyrus" not in empire._kingdom_neighbours(state, "Borin"), "B and C must not start as neighbours"
+    held = empire._imperial_settlements(state, "Aldric")
+    assert held == set(state["kingdoms"]["Aldric"]["settlements"]), "an empire-less king holds just his realm"
+    # Aldric subjugates Cyrus (stripped so the clash is decisive): Cyrus's towns become Aldric's
+    # frontier too.
+    cyrus = next(a for a in state["agents"] if a.name == "Cyrus")
+    cyrus.money = cyrus.stockpile = 0.0
+    empire.wage_war(state, "Aldric", "Cyrus", 1)
+    assert not empire.is_sovereign(state, "Cyrus"), "the staged war must actually subjugate Cyrus"
+    grown = empire._imperial_settlements(state, "Aldric")
+    assert grown > held, f"the empire must hold what it won: {grown} vs {held}"
+    assert set(state["kingdoms"]["Cyrus"]["settlements"]) <= grown, "the subject-king's towns count"
+    assert "Aldric" in empire._kingdom_neighbours(state, "Borin"), \
+        "the empire must stay attackable after it grows — otherwise the war engine dies"
+    print("PASS test_an_empire_keeps_the_borders_it_conquered")
+
+
+def test_debug_war_observes_without_touching_the_run() -> None:
+    """--debug-war is PURE OBSERVATION: same events, same state, only stderr differs."""
+    import contextlib, copy, io
+    import empire, scenario, world
+
+    def run(debug: bool):
+        world.create_world(size=26)
+        state = world.world_state
+        state["taxation_on"] = True
+        scenario.apply(state, "showcase")
+        state["debug_war"] = debug
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for turn in range(1, 6):
+                empire.update(state, turn)
+        return list(state["events"]), copy.deepcopy(state["empires"]), err.getvalue()
+
+    ev_off, emp_off, err_off = run(False)
+    ev_on, emp_on, err_on = run(True)
+    assert ev_on == ev_off, "the debug flag changed the event log"
+    assert emp_on == emp_off, "the debug flag changed the empires"
+    assert err_off == "" and "sovereign powers:" in err_on, "the gate must be reported on stderr only"
+    print("PASS test_debug_war_observes_without_touching_the_run")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -9370,6 +9641,13 @@ def main_runner() -> None:
         test_crushed_uprising_carries_its_motive,
         test_belief_changes_at_most_once_per_turn_no_flipflop,
         test_minds_off_is_byte_identical_and_a_bad_response_falls_back,
+        test_director_imports_only_stdlib,
+        test_director_classifies_every_engine_event_shape,
+        test_world_firsts_and_bloodless_battles_are_demoted,
+        test_turn_severity_and_beat_editing,
+        test_no_two_wars_chain_in_one_turn,
+        test_an_empire_keeps_the_borders_it_conquered,
+        test_debug_war_observes_without_touching_the_run,
     ]
     for t in tests:
         t()

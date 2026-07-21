@@ -384,15 +384,34 @@ def _realm_settlements(state: dict[str, Any], king_name: str) -> set[str]:
     return set(state.get("kingdoms", {}).get(king_name, {}).get("settlements", set()))
 
 
-def _kingdom_neighbours(state: dict[str, Any], king_name: str) -> list[str]:
-    """Other SOVEREIGN kings whose realm lies within KINGDOM_REACH of `king_name`'s realm (sorted).
+def _imperial_settlements(state: dict[str, Any], king_name: str) -> set[str]:
+    """Every settlement a sovereign CONTROLS: his own realm plus his subject-kings', recursively.
 
-    Realm-vs-realm adjacency (the analogue of M3.5's settlement reach): two realms are neighbours if
-    any settlement of one is within kingdoms.KINGDOM_REACH of any settlement of the other. Only
-    INDEPENDENT kingdoms are candidates (a subject-king is already inside an empire). Pure read.
+    An empire's borders are the borders of everything it holds, not just of the emperor's personal
+    realm. Reading only the personal realm made a conquest ERASE the frontier it had just won: the
+    moment a rival realm was subjugated, its towns stopped counting toward the empire's reach, the
+    empire's remaining neighbours found themselves bordering nobody, and the war engine went quiet
+    for the rest of the run — the map consolidated and then froze. Territory won stays territory.
+    """
+    out = set(_realm_settlements(state, king_name))
+    emp = state.get("empires", {}).get(king_name)
+    if emp is not None:
+        for sk in sorted(emp["subject_kings"]):
+            if sk != king_name:
+                out |= _imperial_settlements(state, sk)
+    return out
+
+
+def _kingdom_neighbours(state: dict[str, Any], king_name: str) -> list[str]:
+    """Other SOVEREIGN kings whose territory lies within KINGDOM_REACH of `king_name`'s (sorted).
+
+    Realm-vs-realm adjacency (the analogue of M3.5's settlement reach): two powers are neighbours if
+    any settlement either CONTROLS (see `_imperial_settlements`) is within kingdoms.KINGDOM_REACH of
+    any settlement the other controls. Only INDEPENDENT kingdoms are candidates (a subject-king is
+    already inside an empire and is reached through its emperor). Pure read.
     """
     sets = state.get("settlements", {})
-    mine = [sets[s]["center"] for s in _realm_settlements(state, king_name) if s in sets]
+    mine = [sets[s]["center"] for s in _imperial_settlements(state, king_name) if s in sets]
     out = []
     for other in sorted(state.get("kingdoms", {})):
         # Skip self, subject-kings (already inside an empire), and any king whose agent is no longer
@@ -400,10 +419,36 @@ def _kingdom_neighbours(state: dict[str, Any], king_name: str) -> list[str]:
         # `update`), and admitting one would later NoneType-crash the host-size dry runs.
         if other == king_name or not is_sovereign(state, other) or _find(state, other) is None:
             continue
-        theirs = [sets[s]["center"] for s in _realm_settlements(state, other) if s in sets]
+        theirs = [sets[s]["center"] for s in _imperial_settlements(state, other) if s in sets]
         if any(monarchy._chebyshev(a, b) <= kingdoms.KINGDOM_REACH for a in mine for b in theirs):
             out.append(other)
     return out
+
+
+def _war_debug(state: dict[str, Any], turn: int) -> Any:
+    """Return a per-turn war-gate LOGGER, or a no-op when `--debug-war` is off (pure observation).
+
+    The showcase lives or dies on whether the war engine actually fires, so this makes the gate
+    legible: for every sovereign crown it reports the host it could field, each neighbour it
+    weighs, and the verdict. It writes to STDERR only — never to world_state and never to the
+    event log — so a debugged run is byte-identical to an undebugged one. It also prints the
+    SOVEREIGN COUNT, which is what silently drops to one when an empire swallows the map (a run
+    with fewer than two sovereign powers has no war engine left to fire).
+    """
+    if not state.get("debug_war"):
+        return lambda *a, **k: None
+    import sys
+    kings = sorted(k for k in state.get("kingdoms", {}) if is_sovereign(state, k))
+    sizes = {k: imperial_host_size(state, _find(state, k)) for k in kings if _find(state, k)}
+    print(f"[war] turn {turn:3d} | sovereign powers: {len(sizes)} "
+          f"({', '.join(f'{k}={v}' for k, v in sizes.items()) or 'none'})", file=sys.stderr)
+
+    def log(att: str, tgt: "str | None", a_size: "int | None", d_size: "int | None", why: str) -> None:
+        edge = "" if a_size is None else f" host={a_size}"
+        edge += "" if d_size is None else f" vs {d_size}"
+        against = f" -> {tgt}" if tgt else ""
+        print(f"[war]          {att}{against}{edge}: {why}", file=sys.stderr)
+    return log
 
 
 def update(state: dict[str, Any], turn: int) -> list[str]:
@@ -421,18 +466,33 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
     before = len(state["events"])
     tribute(state, turn)
     _check_fragmentation(state, turn)
+    # --debug-war: a pure OBSERVATION of the gate below (why a war does or does not fire this
+    # turn). Writes to stderr only — never to world_state, never to the event log — so a run with
+    # it on is byte-identical to one with it off. Off by default; `dbg` is a no-op then.
+    dbg = _war_debug(state, turn)
 
     # War: a SOVEREIGN king (independent realm) marches on the strongest neighbour it can beat. The
     # attacker's assessable host and the defender's defendable host are both dry-run LOYAL counts, so
     # a kingdom with disloyal vassals assesses (and fields) a SMALLER host. Strongest attacker first.
     kings = [k for k in sorted(state.get("kingdoms", {})) if is_sovereign(state, k)
              and _find(state, k) is not None]
+    # A realm's fate is not decided twice in one turn. Without this, a single turn CASCADES: the
+    # strongest crown wins its war and is left exhausted (casualties taken, chest spent), the next
+    # crown down the list sees a host of zero and takes the victor AND everything it just won, and
+    # a three-realm world collapses into one empire between two frames. A crown that has just
+    # fought — as attacker or defender — is spent for the turn; the rival must wait until next
+    # turn, by which point the defender's host is a real number again. Hosts recover, so nothing
+    # is made permanently immune; the conquest simply takes the turn it should always have taken.
+    fought: set[str] = set()
     for attacker_name in sorted(kings, key=lambda k: (-imperial_host_size(state, _find(state, k)), k)):
+        if attacker_name in fought:
+            continue
         attacker = _find(state, attacker_name)
         # M4.3 REGENCY: a DEPENDENT child-king (or child-emperor) holds its realm but wages
         # no war — the existing is_dependent_child gate keeps its powers dormant until it
         # comes of age (a no-op when lineage is off, so byte-identical there).
         if world.is_dependent_child(attacker, state):
+            dbg(attacker_name, None, None, None, "REGENCY (a dependent child-king wages no war)")
             continue
         att_strength = imperial_host_size(state, attacker)
         # Target the strongest neighbour the attacker can still out-field (deterministic, winnable).
@@ -449,12 +509,20 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
         if minds:
             import mind
         targets = []
-        for t in _kingdom_neighbours(state, attacker_name):
+        neighbours = _kingdom_neighbours(state, attacker_name)
+        if not neighbours:
+            dbg(attacker_name, None, att_strength, None, "NO NEIGHBOUR within KINGDOM_REACH")
+        for t in neighbours:
+            if t in fought:
+                dbg(attacker_name, t, att_strength, None, "SPENT — it already fought this turn")
+                continue
             if diplo and diplomacy.war_forbidden(state, attacker_name, t):
+                dbg(attacker_name, t, att_strength, None, "BARRED by a non-aggression pact")
                 continue
             # M4.15: two coalition members do not fight each other while the common hegemon threatens
             # them (fear suspends the feud). Gated -> byte-identical off.
             if coal and coalitions.allied_against_hegemon(state, attacker_name, t):
+                dbg(attacker_name, t, att_strength, None, "SUSPENDED — both fear the hegemon")
                 continue
             def_size = (diplomacy.defensive_host_size(state, t) if diplo
                         else imperial_host_size(state, _find(state, t)))
@@ -466,10 +534,14 @@ def update(state: dict[str, Any], turn: int) -> list[str]:
             if minds:
                 go, _ = mind.tilt(state, attacker_name, "war", att_strength - def_size, go,
                                   {"att": att_strength, "def": def_size, "target": t}, turn)
+            dbg(attacker_name, t, att_strength, def_size,
+                "GO — can out-field the defence" if go else "HOLD — cannot out-field the defence")
             if go:
                 targets.append(t)
         if not targets:
             continue
         target = max(targets, key=lambda t: (imperial_host_size(state, _find(state, t)), t))
+        dbg(attacker_name, target, att_strength, None, "WAR LAUNCHED")
         wage_war(state, attacker_name, target, turn)
+        fought.update((attacker_name, target))
     return state["events"][before:]

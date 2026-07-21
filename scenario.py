@@ -306,35 +306,68 @@ _SHOW_MERCS_KING = 9           # the poor within muster range of each king's sea
 _SHOW_MERCS_LORD = 6           # ...and of each vassal lord, for the hosts he can raise later
 
 
-def stage_showcase(state: dict[str, Any], cognition: str) -> None:
-    """Three rival realms in a border STANDOFF, on a 36-cell world — the showcase scene.
+# --- The showcase realm table (v4.15 pacing fix) ------------------------------------------------
+# THE SYMPTOM. A 90-turn showcase produced exactly two wars, both in the same breath (turns 3 and
+# 4), after which the world was ONE empire with no rival left to fight and eighty-five turns had
+# nothing in them. The three realms all opened with a host of 9 — a genuine standoff, since the
+# launch test is a strict `>` — and then the tie broke, every crown became war-capable at once, and
+# the map was eaten between two frames.
+#
+# WHAT ACTUALLY FIXED IT — measured, not theorised. The first instinct was to STAGGER the realms
+# (different chests, pools and king-seat distances so they matured at different times). Measurement
+# killed that idea: unequal opening hosts just moved the war to turn 1, which is worse, because a
+# strict `>` fires the instant any inequality exists. The realms are therefore still IDENTICAL, and
+# the pacing comes from three other places — two of them in empire.py, one here:
+#
+#   * empire.py: a crown that has already fought this turn is spent (no same-turn cascade), and an
+#     empire's borders now include the territory it has conquered (so it stays attackable).
+#   * HERE, the chest: 30 rather than 45. A realm's host is
+#         min(chest // FIGHTER_COST, poor agents within MUSTER_RADIUS)
+#     and at 45 the chest was so deep that the merc pool was always the binding term — hosts sat
+#     pinned at the ceiling and a war permanently spent the realm that won it. At 30 the CHEST
+#     binds, so a host falls when a war is paid for and RISES AGAIN as tribute refills the coffers.
+#     That is what makes war recur instead of happening once. Wars land at turns 3, 4, 10, 22, 23,
+#     29 and 41 rather than 3 and 4.
+#   * main.py, the imperial share (0.75, well over kingdoms.KING_CONSENT): a grasping emperor loses
+#     his subject-kings' loyalty and the empire FRAGMENTS back into sovereign realms that can fight
+#     again — the "cohesion decays with size" pressure, using the verified M3.6 breakaway path.
+#
+# The columns are kept per-realm even though all three currently agree: they are the knobs a future
+# scene would vary, and the equality is now a deliberate, tested property rather than an accident.
+# Nothing here decides who wins, or when — empire.update still runs the identical verified test
+# every turn against the hosts the simulation itself produced.
+_SHOWCASE_REALMS = (
+    # prefix king      seat      capital  centre    vassal   centre    lord     chest larder mk ml town
+    ("A", "Aldric", (2, 19), "S0A1", (12, 12), "S0A2", (18, 12), "LordA", 30.0, 60.0, 9, 6, 9.0),
+    ("B", "Borin", (23, 3), "S0B1", (8, 5), "S0B2", (14, 3), "LordB", 30.0, 60.0, 9, 6, 9.0),
+    ("C", "Cyrus", (23, 22), "S0C1", (16, 19), "S0C2", (10, 21), "LordC", 30.0, 60.0, 9, 6, 9.0),
+)
 
-    A (west) borders B (north-east) and C (south-east); B and C are out of KINGDOM_REACH of each
+
+def stage_showcase(state: dict[str, Any], cognition: str) -> None:
+    """Three rival realms on a 26-cell world, reaching war-readiness at DIFFERENT times.
+
+    A (centre) borders B (north-west) and C (south-east); B and C are out of KINGDOM_REACH of each
     other, so A is both the natural empire-builder and the natural target. Each realm is built by
-    the REAL monarchy + kingdoms paths (a king who seized his capital and vassalised a neighbour)
-    and armed to EQUAL strength. Every capital sits more than monarchy.ATTACK_RADIUS from its own
-    vassal town and every king's seat well clear of both, so no realm can eat itself on turn 1.
+    the REAL monarchy + kingdoms paths (a king who seized his capital and vassalised a neighbour).
+    They differ only in the OPENING CONDITIONS in `_SHOWCASE_REALMS` — chest, larder, mercenary
+    pools and how close the king sits to his own towns — which is what spaces their wars across
+    the run instead of firing them all on turn 3. See that table for the reasoning.
     """
-    # The scene is deliberately COMPACT (a 26-cell world): B and C must be more than
-    # kingdoms.KINGDOM_REACH apart while both border A, which sets the shape, and everything else
-    # is pulled in as tight as the radii allow so the towns read LARGE on screen rather than as
-    # specks in an empty map. Each capital is 6 cells from its own vassal town (over
-    # monarchy.ATTACK_RADIUS, under KINGDOM_REACH) and every king's seat is clear of all six.
-    realms = (
-        # prefix, king,     seat,     capital, capital centre, vassal sid, vassal centre, lord
-        ("A", "Aldric", (2, 19), "S0A1", (12, 12), "S0A2", (18, 12), "LordA"),
-        ("B", "Borin", (23, 3), "S0B1", (8, 5), "S0B2", (14, 3), "LordB"),
-        ("C", "Cyrus", (23, 22), "S0C1", (16, 19), "S0C2", (10, 21), "LordC"),
-    )
-    for prefix, king_name, seat, home_sid, home_c, vassal_sid, vassal_c, lord_name in realms:
+    for (prefix, king_name, seat, home_sid, home_c, vassal_sid, vassal_c, lord_name,
+         chest, larder, n_king, n_lord, town_w) in _SHOWCASE_REALMS:
         king, lord = _stage_realm(state, cognition, prefix, king_name, seat,
                                   home_sid, home_c, vassal_sid, vassal_c, lord_name)
-        king.money, king.stockpile = _SHOW_CHEST_KING, _SHOW_LARDER_KING
+        king.money, king.stockpile = chest, larder
         lord.money, lord.stockpile = _SHOW_CHEST_LORD, _SHOW_LARDER_LORD
+        # A richer commonalty pays a fatter tribute, so `town_w` also grades how fast each crown's
+        # war chest refills between wars — the second half of the staggering.
+        for a in state["agents"]:
+            if a.alive and a.settlement in (home_sid, vassal_sid) and a.name.startswith(f"{prefix}T"):
+                a.stockpile = town_w
         # Fresh mercenary pools: the staging conquests above spent the ones they were built with.
-        # Placed BELOW each seat (the northern kings' seats sit near the top edge).
-        _mercs(state, f"{prefix}WK", (king.position[0], king.position[1] + 2), _SHOW_MERCS_KING, cognition)
-        _mercs(state, f"{prefix}WV", (lord.position[0], lord.position[1] + 2), _SHOW_MERCS_LORD, cognition)
+        _mercs(state, f"{prefix}WK", (king.position[0], king.position[1] + 2), n_king, cognition)
+        _mercs(state, f"{prefix}WV", (lord.position[0], lord.position[1] + 2), n_lord, cognition)
 
 
 # --- Dispatch --------------------------------------------------------------

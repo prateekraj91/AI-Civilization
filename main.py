@@ -1421,6 +1421,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "the story-banner zoom-punch and the clash screen-shake. They are OFF by default in "
              "--showcase because they read as a jittering frame in a recording; with this flag the "
              "camera only rests between its deliberate eases to events.")
+    p.add_argument(
+        "--debug-war", action="store_true",
+        help="Print the WAR GATE to stderr every turn: how many SOVEREIGN powers are left, the host "
+             "each could field, every neighbour it weighs, and why it marches or holds. Pure "
+             "observation — a run with it on is byte-identical to one without.")
     return p.parse_args(argv)
 
 
@@ -1460,7 +1465,7 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
                    intertrade_on: bool = False,
                    coalitions_on: bool = False,
                    chronicle_on: bool = False,
-                   minds_on: bool = False) -> None:
+                   minds_on: bool = False, debug_war: bool = False) -> None:
     """The setup + shared survival loop + end-of-run analysis (Day 17 extracted).
 
     Pulled out of main() so the exact production loop can be driven head-less with an
@@ -1669,6 +1674,9 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # AICIV_PROVIDER=random the tilt is a deterministic, personality-weighted stand-in (no LLM, no RNG),
     # so every test/verify runs as today; a live provider upgrades it to genuine reasoning (walled off).
     world_state["minds_on"] = minds_on
+    # --debug-war: empire.update prints its gate to stderr. Pure observation (no state
+    # written, no event logged), so a debugged run stays byte-identical.
+    world_state["debug_war"] = debug_war
 
     strategies: dict[str, Strategy] = {}
     survived: dict[str, int] = {a.name: 0 for a in world_state["agents"]}
@@ -2083,8 +2091,21 @@ def main(argv: list[str] | None = None) -> None:
             args.tax_rate = 0.45               # over kingdoms.KING_CONSENT -> grievance, then revolt
         args.uprising = True                   # implies --discontent
         args.lineage = True
+        # V4.15 PACING: a GRASPING emperor. The share sits well over kingdoms.KING_CONSENT, so a
+        # subject-king's loyalty erodes and the empire FRAGMENTS back into sovereign realms after a
+        # few turns. Without it the first conquest is final — one empire, no rival, and the war
+        # engine has nothing left to iterate over for the rest of the run. With it, the map keeps
+        # breaking back apart into powers that can fight again (all through the verified M3.6
+        # breakaway path — no new mechanics).
+        if args.imperial_share is None:
+            args.imperial_share = 0.75
         if args.turns is None:
-            args.turns = 90                    # ~2 min at the showcase pace (fast turns + event holds)
+            # V4.15: 45, not 90. The staged cast does not SURVIVE 90 turns — by turn ~50 most of
+            # the population is dead, the realms cannot field hosts, and the back half of the run
+            # is measurably empty (gaps of 13, 12 and 15 turns with no major beat, against gaps of
+            # at most 6 in the first 45). A showcase should end while the world is still alive, so
+            # the default run is the dense half: ~20 beats, 18 major/legendary turns, no gap over 6.
+            args.turns = 45
         if args.speed == _SPEED_PRESETS["normal"]:
             args.speed = 0.35                  # brisk base pace; _SHOWCASE_HOLD slows the big beats
 
@@ -2268,7 +2289,7 @@ def main(argv: list[str] | None = None) -> None:
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
                            coalitions_on=coalitions_on, chronicle_on=args.chronicle,
-                           minds_on=args.minds)
+                           minds_on=args.minds, debug_war=args.debug_war)
         finally:
             sys.stdout = original
             log_file.close()
@@ -2307,7 +2328,7 @@ def main(argv: list[str] | None = None) -> None:
                            writing_on=writing_on, metallurgy_on=metallurgy_on, eras_on=eras_on,
                            diplomacy_on=diplomacy_on, intertrade_on=intertrade_on,
                            coalitions_on=coalitions_on, chronicle_on=args.chronicle,
-                           minds_on=args.minds)
+                           minds_on=args.minds, debug_war=args.debug_war)
 
     # M4.16: export the run's saga. The structured markdown is deterministic; --narrate wraps it in LLM
     # prose (the only place a model touches output — it reads the same structured record, changing nothing).
