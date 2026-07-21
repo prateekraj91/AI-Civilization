@@ -9555,6 +9555,49 @@ def test_discontent_pulses_and_a_rising_takes_sides() -> None:
     print("PASS test_discontent_pulses_and_a_rising_takes_sides")
 
 
+def test_a_town_seethes_and_a_hoarding_seat_towers() -> None:
+    """V4.17 (5.4b + 5.5): unrest reads at WIDE zoom, and the ruler's seat carries his hoard.
+
+    The wide-zoom half of the pressure layer and the wealth-as-architecture slice share one seam:
+    both are calibrated to M4.4/M4.5, so a town at full red is one the engine is about to rise, and
+    a seat's height tracks the exact hoard an expropriation will empty. Pure functions, no display.
+    """
+    try:
+        from renderer.pygame_renderer import (settlement_unrest, seat_lift, build_town_plan,
+                                              _DISCONTENT_FULL, _RESENTFUL)
+        import uprising as _uprising
+    except ImportError:
+        print("PASS test_a_town_seethes_and_a_hoarding_seat_towers (skipped: no pygame)")
+        return
+    # The town scale is the ENGINE's scale: full red == the aggregate M4.5 actually fires on.
+    assert _DISCONTENT_FULL == _uprising.UPRISING_MIN_PRESSURE, \
+        "the town's saturation must be the pressure an uprising triggers on, or the red lies"
+    members = {"Ann", "Bob", "Cal", "Dan"}
+    calm = {"Ann": 5.0, "Bob": 2.0}                      # nobody past the resentment bar
+    assert settlement_unrest(members, calm) == 0.0, "grumbling below the bar is not a seething town"
+    assert settlement_unrest(members, {}) == 0.0, "gauge off -> no town ever seethes"
+    # Only RESENTFUL members count, and their summed grievance drives the red toward saturation.
+    hot = {"Ann": _RESENTFUL + 1, "Bob": 3.0, "Cal": 3.0}   # one member just over the bar
+    part = settlement_unrest(members, hot)
+    assert 0.0 < part < 1.0, part
+    boiling = {"Ann": 25.0, "Bob": 25.0, "Cal": 25.0}    # three maxed-out members
+    assert settlement_unrest(members, boiling) == 1.0, "a town over the trigger is full red"
+    # SEAT LIFT: 0 at an empty hoard (so an unruled/penniless run is unchanged), monotone up, capped.
+    assert seat_lift(0.0) == 0.0 and seat_lift(-5.0) == 0.0
+    assert seat_lift(10.0) < seat_lift(60.0) < seat_lift(250.0), "a bigger hoard raises the seat"
+    assert seat_lift(1e9) == 1.0, "and it saturates (a keep does not grow without bound)"
+    # A rich lord's keep is genuinely TALLER and WIDER than a penniless one's — same town, same rank.
+    col = (170, 150, 205)
+    poor = build_town_plan((6, 6), 8, "castle", col, False, 16, lift=seat_lift(2.0))
+    rich = build_town_plan((6, 6), 8, "castle", col, False, 16, lift=seat_lift(250.0))
+    assert rich["central"]["z"] > poor["central"]["z"] * 1.3, "the hoard must visibly TOWER the keep"
+    assert rich["central"]["foot"] > poor["central"]["foot"], "and widen it"
+    # lift=0 reproduces the pre-5.5 plan EXACTLY (the default path is byte-identical).
+    assert (build_town_plan((6, 6), 8, "castle", col, False, 16)["central"]["z"]
+            == build_town_plan((6, 6), 8, "castle", col, False, 16, lift=0.0)["central"]["z"])
+    print("PASS test_a_town_seethes_and_a_hoarding_seat_towers")
+
+
 def test_a_crown_falling_is_legendary() -> None:
     """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
 
@@ -10211,6 +10254,7 @@ def main_runner() -> None:
         test_a_dead_kings_crown_falls_and_lies_vacant,
         test_the_vacant_crown_breathes_without_brightening,
         test_discontent_pulses_and_a_rising_takes_sides,
+        test_a_town_seethes_and_a_hoarding_seat_towers,
         test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,

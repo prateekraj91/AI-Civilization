@@ -440,6 +440,30 @@ _HOARD_SECS = 2.4             # the seized hoard's flight from the hall to the r
 _HOARD_MAX_COINS = 24         # cap the scatter (the true sum lives in the log/feed)
 _HOARD_PER_COIN = 3.0         # roughly one coin per this much seized wealth
 _COIN = (232, 194, 92)        # the hoard's gold in flight
+# The WIDE-ZOOM half of the same reading. The per-agent pulse above is a close-zoom encoding: at
+# showcase framing a villager is ten pixels tall, and the build-up — which is the whole point of
+# the layer, since it is the FORESHADOWING — dissolves into generic glow. So the TOWN carries it
+# too: a settlement's region gains a slow red pulse as it approaches the trigger. Note the scale is
+# not invented. `settlement_unrest` sums the grievance of members past _RESENTFUL and saturates at
+# _DISCONTENT_FULL — which is exactly `uprising.UPRISING_MIN_PRESSURE`, the aggregate M4.5 actually
+# fires on (a test pins the two). A town at full red is a town the engine is about to rise.
+_TOWN_UNREST_FILL_A = 58      # peak alpha of the red wash inside a seething town's region
+_TOWN_UNREST_EDGE_A = 205     # ...and of the pulsing ring at its edge (unmistakable at wide zoom)
+_TOWN_UNREST_MIN = 0.12       # below this the town is calm: no wash, no ring (grumbling is not unrest)
+
+# V4.17 (5.5): THE SEAT IS THE HOARD. A ruler's keep/hall now grows and brightens with the wealth
+# he is actually sitting on (money + stockpile), so hoarding is visible as ARCHITECTURE — the tax
+# a town pays turns into the building it can see from across the map — and an M4.5 expropriation,
+# which zeroes that hoard in one turn, visibly shrinks the hall the risers just emptied. It is
+# drawn on the settlement CENTRE, the same anchor 5.3's fallen crown lies on and 5.4's coins fly
+# from, so the crown, the gold and the hall all agree on where the seat is.
+_SEAT_WEALTH_FULL = 200.0     # hoard at which the seat is at full height/brightness. A run's rulers
+                              # sit between ~5 and ~250, and the curve below is a SQRT, so the poor
+                              # end of that range still separates instead of all reading as "small".
+_SEAT_Z_GAIN = 0.55           # extra height at a full hoard, as a fraction of the base seat height
+_SEAT_FOOT_GAIN = 0.22        # ...and extra footprint (less, so it grows UP more than OUT)
+_SEAT_LIGHT = 34              # how much a full hoard lightens the seat's stone/timber
+_SEAT_LIFT_STEPS = 8          # lift is banded this finely for the town-plan cache key (no churn)
 _REALM_FILL_ALPHA = 62            # realm territory tint (a touch stronger than plain teal)
 _REALM_EDGE_ALPHA = 150
 _SPEAR = (208, 206, 198)          # a soldier's spear shaft
@@ -1249,7 +1273,7 @@ def _pick(seq: tuple, t: float):
 
 def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str | None,
                     ruler_color: tuple[int, int, int], emperor: bool, cell: int,
-                    era_style: str = "neolithic") -> dict[str, Any]:
+                    era_style: str = "neolithic", lift: float = 0.0) -> dict[str, Any]:
     """Lay out a settlement's buildings + civic structure deterministically (pure, no pygame).
 
     GROWTH: the number of detailed houses scales with `n_members` (a hamlet shows a couple of
@@ -1315,10 +1339,15 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
               else _HALL_Z if central_kind == "hall" else 0.0)
     seat_foot = (_KEEP_FOOT if central_kind == "castle"
                  else _HALL_FOOT if central_kind == "hall" else 0.0)
+    # V4.17 (5.5): the ruler's HOARD raises and widens his seat. `lift` is 0 for an unruled village,
+    # a penniless lord, and every caller that predates this — so the default plan is unchanged.
+    lift = max(0.0, min(1.0, lift))
+    seat_z *= 1.0 + _SEAT_Z_GAIN * lift
+    seat_foot *= 1.0 + _SEAT_FOOT_GAIN * lift
     return {
         "buildings": buildings,
         "central": {"kind": central_kind, "color": ruler_color, "emperor": emperor,
-                    "z": seat_z, "foot": seat_foot},
+                    "z": seat_z, "foot": seat_foot, "lift": lift},
         "granary": granary,
         "fence_rc": fence_rc,
         "fence_r": fence_r,
@@ -1770,6 +1799,34 @@ def crown_breath(t: float) -> float:
     silhouette, which is the thing actually being read.
     """
     return 1.0 - _CROWN_PULSE_DEPTH * (0.5 - 0.5 * math.cos(2 * math.pi * (t / _CROWN_PULSE_SECS)))
+
+
+def seat_lift(wealth: float) -> float:
+    """0..1 — how far a ruler's HOARD raises and brightens his seat (pure).
+
+    A SQRT curve, not a linear one: rulers in a run range from a few coins to a couple of hundred,
+    and linear scaling would render every lord but the richest as the same small hut. Zero (an
+    expropriated or penniless ruler) leaves the seat at exactly its base height — so a run where
+    nobody hoards draws exactly the building it drew before this existed.
+    """
+    return min(1.0, math.sqrt(max(0.0, wealth) / _SEAT_WEALTH_FULL))
+
+
+def settlement_unrest(members: Any, gauge: dict) -> float:
+    """0..1 — how close a TOWN is to rising, by the engine's own maths (pure).
+
+    The summed grievance of its RESENTFUL members (each past `_RESENTFUL`, M4.4's bar), against
+    `_DISCONTENT_FULL` — which is exactly `uprising.UPRISING_MIN_PRESSURE`, the aggregate M4.5
+    triggers on. So this is not an invented "unhappiness index": a town at full red is a town the
+    engine is genuinely about to rise, and a town creeping up the scale is the rising approaching.
+
+    A MEAN was the obvious alternative and is wrong here — it dilutes an angry faction with the
+    contented majority it is about to fight, and in a real run it never crosses the floor at all.
+    """
+    if not gauge:
+        return 0.0
+    pressure = sum(v for v in (gauge.get(m, 0.0) for m in members) if v >= _RESENTFUL)
+    return min(1.0, pressure / _DISCONTENT_FULL)
 
 
 def unrest_period(level: float) -> float:
@@ -4666,6 +4723,7 @@ class PygameRenderer:
         overlay = pygame.Surface(self._paint, pygame.SRCALPHA)
         towns: list[dict[str, Any]] = []
         regions: list[tuple] = []
+        seething: list[tuple] = []                   # V4.17 (5.4b): towns approaching a rising
         for sid in sorted(settlements):
             rec = settlements[sid]
             center = rec.get("center")
@@ -4699,12 +4757,30 @@ class PygameRenderer:
                 edge_a = min(205, int(round(_SETTLEMENT_EDGE_ALPHA * 1.2)))
                 edge_w = 2
             regions.append((cx, cy, rx, ry, fill, fill_a, edge, edge_a, edge_w))
+            # V4.17 (5.4b): the WIDE-ZOOM unrest read. Queued with the region so it rides the same
+            # projected ellipse the realm tint does — the town seethes as a PLACE.
+            unrest = settlement_unrest(members, state.get("discontent") or {})
+            if unrest >= _TOWN_UNREST_MIN:
+                seething.append((cx, cy, rx, ry, unrest,
+                                 (sum(ord(c) for c in sid) % 100) / 100.0))
             towns.append({"sid": sid, "center": center, "cx": cx, "cy": cy,
                           "count": living, "rx": rx, "owner": owner})
         for cx, cy, rx, ry, fill, fill_a, _e, _ea, _ew in regions:        # V4.3: fills first
             pygame.draw.ellipse(overlay, (*fill, fill_a), (cx - rx, cy - ry, 2 * rx, 2 * ry))
         for cx, cy, rx, ry, _f, _fa, edge, edge_a, edge_w in regions:     # ...then all edges
             pygame.draw.ellipse(overlay, (*edge, edge_a), (cx - rx, cy - ry, 2 * rx, 2 * ry), edge_w)
+        # ...and the unrest LAST, over both, so a seething town is not muddied by its own realm
+        # tint. The realm colour still owns the fill (5.2's allegiance read is untouched); unrest
+        # arrives as a separate red wash + a ring that BREATHES on the town's own slow beat.
+        if seething:
+            now = time.monotonic()
+            for cx, cy, rx, ry, level, salt in seething:
+                beat = 0.5 - 0.5 * math.cos(2 * math.pi * (now / unrest_period(level) + salt))
+                swell = (0.55 + 0.45 * beat) * (0.35 + 0.65 * level)
+                box = (cx - rx, cy - ry, 2 * rx, 2 * ry)
+                pygame.draw.ellipse(overlay, (*_ANGER, int(_TOWN_UNREST_FILL_A * swell)), box)
+                pygame.draw.ellipse(overlay, (*_ANGER, int(_TOWN_UNREST_EDGE_A * swell)), box,
+                                    max(2, int(rx * 0.07 * (0.5 + 0.5 * level))))
         self._screen.blit(overlay, (0, 0))
         # Prune plans for settlements that no longer exist (keeps the cache bounded).
         self._town_plans = {s: v for s, v in self._town_plans.items() if s in settlements}
@@ -4740,18 +4816,26 @@ class PygameRenderer:
             kind, ruler, is_emp = "hall", led, False
         else:
             kind, ruler, is_emp = None, None, False
-        pers = ""
+        pers, hoard = "", 0.0
         if ruler is not None:
             for a in state.get("agents", []):
                 if getattr(a, "name", None) == ruler:
                     pers = getattr(a, "personality", "")
+                    # V4.17 (5.5): what he is SITTING ON — coin and grain both, since a lord who
+                    # hoards food is hoarding all the same. Pure read; `_wealth` is the same
+                    # money+stockpile the agent's own body size has always used.
+                    hoard = _wealth(a)
                     break
         color = agent_color(pers, vivid=True) if ruler else _DEFAULT_RULER
         era_style = _ERA_STYLE.get(state.get("eras", {}).get(sid), "neolithic")
-        key = (count, kind, ruler, is_emp, cell, era_style)
+        # The lift is BANDED before it reaches the cache key: a hoard drifts by a fraction of a coin
+        # every turn, and keying the plan on the raw float would rebuild the whole town every frame.
+        band = int(seat_lift(hoard) * _SEAT_LIFT_STEPS)
+        key = (count, kind, ruler, is_emp, cell, era_style, band)
         cached = self._town_plans.get(sid)
         if cached is None or cached[0] != key:
-            cached = (key, build_town_plan(center, count, kind, color, is_emp, cell, era_style))
+            cached = (key, build_town_plan(center, count, kind, color, is_emp, cell, era_style,
+                                           band / _SEAT_LIFT_STEPS))
             self._town_plans[sid] = cached
         return cached[1]
 
@@ -4830,8 +4914,11 @@ class PygameRenderer:
                 self._frame_lights.append(("forge", fx, fy, max(4, cell // 2)))
             if plan["central"]["kind"] == "castle":
                 th = int(plan["central"]["z"] * 0.5 * zh)
-                self._frame_lights.append(("torch", cx - int(cell * 1.1), cy - th, cell))
-                self._frame_lights.append(("torch", cx + int(cell * 1.1), cy - th, cell))
+                # V4.17 (5.5): a rich keep burns more torches — the hoard reads at night too, when
+                # the silhouette is half swallowed and the light is doing most of the talking.
+                ts = int(cell * (1.0 + 0.45 * plan["central"].get("lift", 0.0)))
+                self._frame_lights.append(("torch", cx - int(cell * 1.1), cy - th, ts))
+                self._frame_lights.append(("torch", cx + int(cell * 1.1), cy - th, ts))
             elif plan["fence_rc"]:
                 self._frame_lights.append(("torch", wx, wy - int(_WELL_Z * zh) - 2, max(4, cell // 2)))
 
@@ -4864,9 +4951,10 @@ class PygameRenderer:
         else:                                          # the ruler's seat
             _k, cx, cy, c = obj
             if c["kind"] == "castle":
-                self._draw_castle(cx, cy, c["z"], c["foot"], c["color"], c["emperor"])
+                self._draw_castle(cx, cy, c["z"], c["foot"], c["color"], c["emperor"],
+                                  c.get("lift", 0.0))
             else:
-                self._draw_hall(cx, cy, c["z"], c["foot"], c["color"])
+                self._draw_hall(cx, cy, c["z"], c["foot"], c["color"], c.get("lift", 0.0))
 
     def _draw_settlement_labels(self, jobs: list[tuple[str, int, int, int]]) -> None:
         """Draw the settlement name·size labels LAST, on a translucent chip above each cluster,
@@ -5111,29 +5199,40 @@ class PygameRenderer:
         self._ipoly(poly, _shade(color, -34), 1)
         pygame.draw.lines(s, _shade(color, 55), False, top_edge, 1)   # the lit windward edge
 
-    def _draw_hall(self, cx: int, cy: int, z: float, foot: float, color) -> None:
+    def _draw_hall(self, cx: int, cy: int, z: float, foot: float, color, lift: float = 0.0) -> None:
         """A trust-leader's HALL: a longhouse volume well above the huts, a big hip roof and a
-        pennant in the leader's colour — between a common hut and a monarch's keep."""
+        pennant in the leader's colour — between a common hut and a monarch's keep.
+
+        V4.17 (5.5): `lift` is the owner's hoard (0..1). It already raised `z`/`foot` in the plan;
+        here it also LIGHTENS the timber, so a rich hall reads as newer, better-kept wood."""
         color = night_mute(color, self._nf)
-        self._draw_iso_box(cx, cy, foot, foot * 0.8, z, _WALL_TONES[1], _ROOF_TONES[3],
+        wall = _shade(_WALL_TONES[1], int(_SEAT_LIGHT * lift))
+        self._draw_iso_box(cx, cy, foot, foot * 0.8, z, wall, _shade(_ROOF_TONES[3], int(_SEAT_LIGHT * 0.6 * lift)),
                            roof_h=1.05, lit=True, door=True, windows=2)
         self._pennant(cx, cy, z + 0.7, color)
 
-    def _draw_castle(self, cx: int, cy: int, z: float, foot: float, color, emperor: bool) -> None:
+    def _draw_castle(self, cx: int, cy: int, z: float, foot: float, color, emperor: bool,
+                     lift: float = 0.0) -> None:
         """A monarch's CASTLE: a tall crenellated stone KEEP that genuinely TOWERS, flanked by two
         towers with conical roofs in the ruler's colour, a gate on the lit face and a banner — a
-        capital readable as a capital from across the map by silhouette alone."""
+        capital readable as a capital from across the map by silhouette alone.
+
+        V4.17 (5.5): `lift` is the owner's hoard (0..1) — it has already raised and widened the keep
+        in the plan, and here it lightens the dressed stone. A hoarding crown's keep is pale and
+        towering; the morning after the risers empty him it is squat and dark again."""
         color = night_mute(color, self._nf)
+        stone = _shade(_CASTLE_STONE, int(_SEAT_LIGHT * lift))
+        stone_dk = _shade(_CASTLE_STONE_DK, int(_SEAT_LIGHT * lift))
         cell = self._cell
         # flanking towers seated just OUTSIDE the keep's footprint (at its west/east corners) and a
         # touch behind it, so the keep sits between them and each tower reads distinctly at close zoom.
         tx_off = int(round((foot + _TOWER_FOOT) * cell))
         ty = cy - int(round(cell * 0.15))
-        for sgn, tone in ((-1, _CASTLE_STONE), (1, _CASTLE_STONE_DK)):
+        for sgn, tone in ((-1, stone), (1, stone_dk)):
             tx = cx + sgn * tx_off
-            self._draw_iso_box(tx, ty, _TOWER_FOOT, _TOWER_FOOT, _TOWER_Z, tone, _CASTLE_STONE_DK)
+            self._draw_iso_box(tx, ty, _TOWER_FOOT, _TOWER_FOOT, _TOWER_Z, tone, stone_dk)
             self._iso_cone(tx, ty, _TOWER_FOOT, _TOWER_Z, 0.9, color)
-        self._draw_iso_box(cx, cy, foot, foot, z, _CASTLE_STONE, _CASTLE_STONE)   # the keep
+        self._draw_iso_box(cx, cy, foot, foot, z, stone, stone)   # the keep
         # a dark gate arch on the lit (south-west) face
         (gN, gE, gS, gW), (tN, tE, tS, tW), _z = self._iso_box_corners(cx, cy, foot, foot, z)
         lf = [gW, gS, tS, tW]
