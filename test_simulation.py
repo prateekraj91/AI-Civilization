@@ -4801,7 +4801,8 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
     _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         import pygame  # noqa: F401
-        from renderer.pygame_renderer import PygameRenderer, _MARGIN_CELLS, _TERRAIN_LRU
+        from renderer.pygame_renderer import (PygameRenderer, _MARGIN_CELLS, _TERRAIN_LRU,
+                                              clamp_camera)
     except ImportError:
         print("PASS test_pygame_camera_state_renderer_local_and_lod_draw_read_only (skipped: no pygame)")
         return
@@ -4831,19 +4832,27 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
     pygame.init()
     try:
         r._ensure_screen(size)
-        # Default start: the FIT-WHOLE-WORLD view, resting exactly on the base bucket.
+        # Default start (before the first drawn frame): the whole-world fit, centred on the grid.
         assert (r._cam_x, r._cam_y) == (size / 2.0, size / 2.0) == (r._cam_tx, r._cam_ty)
         assert r._cell == r._cell0 and r._cam_cell == float(r._cell0)
         assert r._cell0 in r._zoom_buckets, "the fit cell is a zoom bucket (1:1 blits)"
+        # V4.10: the FIRST inhabited frame SNAPS the camera onto the member-weighted settlement
+        # centroid and fits the inhabited region — the world opens on the action, not empty grid.
+        # (The centroid is then clamped so the view never leaves the world; here the two towns span
+        # the whole map so the inhabited fit ~ the whole-world fit and the centre clamps to the grid.)
+        hx, hy, hcell = r._home_view(state)
+        ecx, ecy = clamp_camera(hx, hy, hcell, size, (r._map_px, r._map_px))
         r._draw(state)
-        assert r._cell == r._cell0, "an idle camera stays on the fit view"
-        # V4.9: zooming OUT past the fit-whole-world floor is CLAMPED — the world can never be lost
-        # into the void. A target below _zoom_lo settles back exactly on the fit cell.
+        assert (r._cam_x, r._cam_y) == (ecx, ecy), "the launch frame centres on the settlement centroid"
+        assert r._cam_cell == hcell and r._zoom_lo == hcell, \
+            "the launch frame fits the inhabited region; the zoom-out floor tracks it"
+        # V4.10: zooming OUT past the INHABITED-region floor is CLAMPED — the whole empty map can
+        # never be pulled back into view. A target below _zoom_lo settles exactly on the floor.
         r._cam_tcell = float(r._zoom_buckets[0])          # below the floor (a bake bucket, not a bound)
         for _ in range(60):
             r._draw(state)
-        assert r._cam_tcell == r._zoom_lo == float(r._cell0), "zoom-out is clamped to the fit floor"
-        assert r._cell == r._cell0, "gliding out settles on the fit-whole-world view"
+        assert r._cam_tcell == r._zoom_lo == hcell, "zoom-out is clamped to the inhabited-region floor"
+        assert r._cell == int(round(hcell)), "gliding out settles on the inhabited-region view"
         # GLIDE IN to the close village (top bound) with an absurd pan target: the clamp keeps the
         # view inside the world and the tier lands CLOSE.
         r._cam_tx, r._cam_ty = -999.0, 999.0
@@ -4866,11 +4875,13 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
         t_before = r._cam_tcell
         r._handle_camera_event(pygame.event.Event(pygame.MOUSEWHEEL, y=-1, x=0))
         assert r._zoom_lo <= r._cam_tcell < t_before, "wheel-down nudges the zoom target out one notch"
+        # V4.10: HOME eases back to the INHABITED-region view (centroid + fit), not the grid centre.
         r._handle_camera_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_HOME))
-        assert r._cam_tcell == float(r._cell0) and (r._cam_tx, r._cam_ty) == (20.0, 20.0)
+        assert r._cam_tcell == hcell and (r._cam_tx, r._cam_ty) == (hx, hy), \
+            "HOME re-frames onto the settlement centroid"
         for _ in range(60):
             r._draw(state)
-        assert r._cell == r._cell0, "HOME glides back to the fit-whole-world view"
+        assert r._cell == int(round(hcell)), "HOME glides back to the inhabited-region view"
     finally:
         pygame.quit()
     assert set(state) == keys_before, "the camera wrote a key into world_state"

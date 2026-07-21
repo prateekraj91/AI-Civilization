@@ -297,6 +297,38 @@ _ERA_ROOF_TONES = {
     "bronze": ((120, 92, 60), (146, 110, 68), (100, 80, 52), (128, 100, 60), (134, 104, 66)),
     "iron": ((96, 100, 110), (118, 122, 132), (84, 88, 98), (126, 130, 140), (104, 108, 118)),
 }
+# V4.7: ISO BUILDING VOLUMES. Structures stop being flat forms on the tilt and become 3D VOLUMES
+# hung off the iso ground plane — two visible wall faces (a sun-lit one + a shaded one per the same
+# top-left sun the whole scene uses) and roof planes, standing at a HEIGHT so a settlement's RANK
+# reads by silhouette alone from across the map. Heights (z) and footprints are in WORLD CELLS (z =
+# cells straight up the height axis, projected by _ISO_ZH); ERA lifts the whole town's style from low
+# Neolithic huts -> Bronze timber -> tall Iron stone. Every quantity is deterministic (nz/terrain_noise,
+# never the sim RNG) and baked into the cached plan, so the volume set rebuilds only on the same
+# membership/ruler/zoom-bucket change the slice-6 plan already keyed on.
+_ERA_HUT_Z = {"neolithic": 0.62, "bronze": 0.82, "iron": 1.04}   # a common dwelling's wall height
+_HUT_FOOT = 0.80                 # a hut's ground footprint edge, in world cells (square-ish)
+_HALL_Z = 1.75                   # a trust-leader's HALL stands well above the huts
+_HALL_FOOT = 1.55
+_KEEP_Z = 3.1                    # a monarch's KEEP genuinely TOWERS — a capital reads as a capital
+_KEEP_Z_EMPEROR = 3.9            # an emperor's seat rises higher still
+_KEEP_FOOT = 1.75
+_TOWER_Z = 2.4                   # flanking corner towers — taller than any dwelling
+_TOWER_FOOT = 0.72
+_GRANARY_Z = 1.55               # a tall narrow store (distinct volume, conical roof)
+_GRANARY_FOOT = 0.82
+_WELL_Z = 0.5                   # a low stone ring with its little roof on posts
+_POST_Z = 0.9                   # palisade post height — a ring of real posts, not a flat line
+# V4-fix: PALISADE reads as a defensive WALL — a ring of thicker posts joined by rails, in an
+# era-appropriate wood/stone tone (never near-white), not a scatter of pale shards across the town.
+_PAL_WALL_Z = 0.72              # the connecting rail/wall panel height (world cells)
+_PAL_POST_Z = 1.0              # the posts rise a little above the rail
+_PAL_POST_FOOT = 0.34          # a post's footprint — thicker than the old 0.24 shards
+_PAL_WOOD = (108, 84, 58)      # a timber palisade (Neolithic/Bronze) — warm brown
+_PAL_STONE = (120, 122, 128)   # an Iron-age dressed-stone wall — muted grey, NOT near-white
+_FACE_LIT = 18                  # V4.7: how much a volume's SUN-facing (south-west) wall lightens
+_FACE_DARK = -30                # ...and how much its shaded (south-east) wall darkens (deeper than 2D)
+_ROOF_LIT = 16                  # a sun-facing roof plane lightens
+_ROOF_DARK = -26                # a sun-away roof plane darkens
 _DOOR = PALETTE["door"]
 _WINDOW_LIT = PALETTE["window_lit"]   # a warm lit window (flickers gently, slice 9)
 _WINDOW_DARK = PALETTE["window_dark"]
@@ -409,7 +441,25 @@ _LIGHT_WINDOW = 3.4               # pool radius as a multiple of the emitter's g
 _LIGHT_TORCH = 4.2               # ...per light kind (torches/hearths/forges throw farther)
 _LIGHT_HEARTH = 5.0
 _LIGHT_FORGE = 4.6
-_LIGHT_MAX_A = 235                # cap a pool's centre additive brightness (avoid pure-white blowout)
+_LIGHT_MAX_A = 200                # cap a single pool's centre additive brightness
+# V4-fix: LIGHT BLOWOUT. All the town's additive pools accumulate on ONE offscreen layer, then that
+# layer is CLAMPED (per-channel MIN) to a warm cap before compositing — so however many windows/hearth/
+# forge pools overlap on a wall face, the added light rises toward WARM AMBER and never saturates to
+# white. Blue is capped lowest so the accumulation stays warm; the glow halo below the cap is untouched.
+_LIGHT_ACC_CAP = (150, 108, 60)   # max additive light per pixel (R, G, B) — warm, B kept well under R
+_LIGHT_DS = 2                     # downscale factor for the light-accumulation layer (perf; pools are smooth)
+
+# V4.9 JUICE — subtle motion that reads as production value COLLECTIVELY, never a carnival. Every
+# effect is frame-clock / hash driven (zero sim RNG) and NEUTRAL (byte-identical) when not firing:
+# a screen SHAKE on clashes, DUST on a building rising / a COLLAPSE puff when one falls, a gentle
+# zoom-PUNCH as the story banner fires, agent squash-&-stretch + arrival hop, rippling flag cloth,
+# an impact FLASH + brief slow-motion on the decisive blow, and coins/embers over a market/forge.
+_SHAKE_DECAY = 0.80               # clash screen-shake amplitude falloff per drawn frame (short, sharp)
+_SHAKE_MAX = 8.0                  # cap the clash shake amplitude (screen px)
+_PUNCH_DUR = 0.42                 # story-banner zoom-punch duration (s), ease in -> ease back
+_PUNCH_MAX = 0.028                # peak extra zoom of the punch (a gentle few percent)
+_FLASH_DECAY = 0.78               # decisive-blow impact-flash falloff per frame
+_PUFF_LIFE = 30                   # frames a building rise/collapse puff lives
 
 # Slice 11: CAMERA — PAN, ZOOM & LEVEL-OF-DETAIL. The window/viewport never changes size;
 # the WORLD slides and scales behind it. The camera is a world-cell CENTRE plus an effective
@@ -437,8 +487,30 @@ _ZOOM_STEP_RATIO = 1.35           # the geometric ladder between terrain-bake bu
 _ZOOM_STEP = 1.1                  # V4.9: small, consistent MULTIPLICATIVE zoom per wheel/±notch —
                                   # the target is a free float (glided), so zooming feels continuous
 _FIT_MARGIN = 0.05                # V4.9: modest frame margin the launch/floor fit leaves each side
+# V4.10: FRAMING & COMPOSITION. The launch/HOME view and the zoom-OUT floor frame the INHABITED
+# region (a square world box around the member-weighted settlement centroid) rather than the whole
+# empty grid — the action fills the frame, the wilderness no longer dwarfs the towns. Falls back to
+# the grid centre + whole-world fit when no settlement exists yet.
+_INHABITED_PAD = 4.5             # world-cell breathing room added around the inhabited region
+_INHABITED_MIN_HALF = 6.0       # smallest half-span of the framed box (a lone town isn't over-zoomed)
+_FRAME_FILL = 1.5               # zoom past pure width-contain so LAND fills the frame (a 2:1 diamond
+                                # in a square viewport would otherwise sit half-height in ocean); the
+                                # far wilderness/ocean tips crop, never the padded inhabited region
 _TERRAIN_LRU = 3                  # non-base bucket landscapes kept baked at once (bounded memory)
 _CAM_GLIDE = 0.22                 # per-frame ease toward the camera target — pan/zoom glides
+# V4.10 SHOWCASE MODE — a hands-off, trailer-grade recording mode (opt-in via --showcase; every
+# addition is gated on self._showcase, so the DEFAULT renderer stays byte-identical). The camera
+# auto-DIRECTS: it eases to each major event, holds through its banner, then drifts back over a slow
+# ambient orbit; a title card opens; the UI strips to the story banner + a small turn/phase readout.
+_SHOWCASE_GLIDE = 0.045           # slow cinematic camera ease (vs _CAM_GLIDE) — never a snap cut
+_SHOWCASE_FOCUS_ZOOM = 1.7        # how much CLOSER than the realm overview an event is framed
+_SHOWCASE_FOCUS_LEAD = 1.2        # extra seconds the camera holds an event past its banner
+_SHOWCASE_ORBIT_R = 2.6           # ambient orbit radius around the overview centre (world cells)
+_SHOWCASE_ORBIT_SPEED = 0.17      # ambient orbit angular speed (rad/s) — a slow idle drift
+_SHOWCASE_DAY_SECS = 80.0         # wall-clock seconds per full day/night cycle (a dusk within ~2 min)
+_TITLE_DUR = 5.0                  # title-card total on-screen time (fade in / hold / fade out)
+_TITLE_NAME = "AI  CIVILIZATION"
+_TITLE_SUB = "an emergent history — a world makes itself"
 _PAN_FRAC = 0.02                  # held-key pan speed: fraction of the viewport per frame
 _LOD_FAR_MAX = 11.0               # at/below this cell size the map is the FAR strategy view
                                   # (11 keeps FAR reachable: every ladder's low bucket dips in)
@@ -459,6 +531,7 @@ _ISO_ZPAD_CELLS = 2              # bake rows of head-room above the diamond (fut
 _ISO_ELEV = 0.9                  # elevation-shading strength (lighter on sun-facing ground slopes)
 _ISO_ELEV_CELLS = 3.0           # world-cell wavelength of the height field (broad rolling ground)
 _ISO_RX = 1.41421356            # a ground circle of world-radius R -> a 2:1 ellipse of rx = R*cell*√2
+_CLOUD_Z = 9.0                  # V4.8: cloud-puff height above the ground, in world cells (sky layer)
 
 # Trait -> keywords (a verbatim inline of personality.TRAIT_KEYWORDS, so we classify
 # the agent's free-text personality WITHOUT importing the personality decision module).
@@ -522,7 +595,7 @@ _CAT_PHRASE = {                # aggregate wording for a turn's MINOR churn, by 
     "belief": "{n} belief shift{s}",
     "teaching": "{n} teaching{s}",
     "talk": "{n} exchange{s} of words",
-    "levy": "{n} routine levy/levies",
+    "levy": "{n} routine levy",           # plural ('levies') handled in aggregate_minor (irregular)
     "kin": "{n} birth{s}/inheritance{s}",
     "faith": "{n} faith stirring{s}",
     "other": "{n} minor event{s}",
@@ -683,7 +756,10 @@ def aggregate_minor(lines: list[str]) -> str | None:
         noun = "agent's" if n == 1 else "agents'"     # possessive: singular 's, plural s'
         clauses.append((n, f"{n} {noun} trust in {tgt} {verb}"))
     for cat, n in cats.items():
-        clauses.append((n, _CAT_PHRASE[cat].format(n=n, s="s" if n != 1 else "")))
+        if cat == "levy":                                  # irregular plural: levy -> levies
+            clauses.append((n, f"{n} routine {'levy' if n == 1 else 'levies'}"))
+        else:
+            clauses.append((n, _CAT_PHRASE[cat].format(n=n, s="s" if n != 1 else "")))
     clauses.sort(key=lambda c: (-c[0], c[1]))         # largest group first, then stable by text
     head = "  ·  ".join(text for _, text in clauses[:_AGG_MAX_CLAUSES])
     rest = sum(n for n, _ in clauses[_AGG_MAX_CLAUSES:])
@@ -692,12 +768,24 @@ def aggregate_minor(lines: list[str]) -> str | None:
     return head
 
 
+def _truncate(text: str, cols: int) -> str:
+    """One-row fit: `text` clipped to `cols` chars with a trailing ellipsis when it overflows
+    (pure). Minor-churn summaries are kept to a SINGLE compact row so they never wrap into a
+    stack of grey lines that pushes MAJOR events out of the panel."""
+    cols = max(1, cols)
+    return text if len(text) <= cols else text[:cols - 1].rstrip() + "…"
+
+
 def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
                     max_rows: int) -> list[tuple[str, tuple[int, int, int], bool]]:
-    """Turn the event tail into STORY rows: MAJOR lines in full (flagged bold), plus at most
-    one AGGREGATED minor line per turn. Newest at the bottom. Pure — mirrors wrap_events but
-    tiered. Each row is (text, colour, is_major); majors keep their event colour, the
-    aggregated churn is muted grey."""
+    """Turn the event tail into STORY rows: MAJOR lines in full (flagged bold), with the MINOR
+    churn kept scarce so majors are ALWAYS visible. Newest at the bottom. Pure. Each row is
+    (text, colour, is_major); majors keep their event colour, the aggregated churn is muted grey.
+
+    Minor discipline (V4.7 feed fix): a minor turn NEVER gets its own stack of lines. Consecutive
+    all-minor turns COLLAPSE into ONE aggregated line, and a major turn's own churn folds into a
+    SINGLE compact (ellipsised) line under its majors — so a quiet run can't bury the next battle.
+    """
     scan = events[-_FEED_SCAN:]
     order: list[int] = []
     buckets: dict[int, list[str]] = {}
@@ -711,18 +799,30 @@ def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
             order.append(cur)
         buckets[cur].append(line)
     rows: list[tuple[str, tuple[int, int, int], bool]] = []
+    pending: list[str] = []                    # minors banked across consecutive major-less turns
+
+    def flush() -> None:
+        summary = aggregate_minor(pending)
+        if summary:
+            rows.append((_truncate(summary, cols), _FEED_DEFAULT, False))
+        pending.clear()
+
     for key in order:
         majors, minors = [], []
         for line in buckets[key]:
             (majors if event_tier(line, notable) == "major" else minors).append(line)
+        if not majors:
+            pending.extend(minors)             # a quiet turn just banks its churn — no row yet
+            continue
+        flush()                                # close the quiet run as ONE line before the beat
         for m in majors:
             color = event_color(m)
             for sub in (textwrap.wrap(_strip_prefix(m), width=max(1, cols)) or [""]):
                 rows.append((sub, color, True))
-        summary = aggregate_minor(minors)
+        summary = aggregate_minor(minors)      # this beat's own churn -> one compact line
         if summary:
-            for sub in (textwrap.wrap(summary, width=max(1, cols)) or [""]):
-                rows.append((sub, _FEED_DEFAULT, False))
+            rows.append((_truncate(summary, cols), _FEED_DEFAULT, False))
+    flush()                                     # trailing quiet run
     return rows[-max_rows:] if max_rows > 0 else []
 
 
@@ -965,9 +1065,10 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
     wall_tones = _ERA_WALL_TONES.get(era_style, _WALL_TONES)
     roof_tones = _ERA_ROOF_TONES.get(era_style, _ROOF_TONES)
 
+    hut_z = _ERA_HUT_Z.get(era_style, _ERA_HUT_Z["neolithic"])
     n_buildings = min(_MAX_TOWN_BUILDINGS, max(_MIN_TOWN_BUILDINGS, int(n_members)))
-    base_r = cell * 1.15
-    ring_gap = cell * 1.2
+    base_rc = 1.25                                    # innermost ring radius, in WORLD CELLS
+    ring_gap_c = 1.3                                  # world-cell gap between concentric rings
     buildings: list[dict[str, Any]] = []
     placed, ring = 0, 0
     while placed < n_buildings:
@@ -976,37 +1077,49 @@ def build_town_plan(center: tuple[int, int], n_members: int, central_kind: str |
             if placed >= n_buildings:
                 break
             ang = (k / per_ring) * 2 * math.pi + (nz(placed, 1) - 0.5) * 0.7
-            rad = base_r + ring * ring_gap + (nz(placed, 2) - 0.5) * cell * 0.35
-            w = max(5, int(cell * (0.65 + nz(placed, 3) * 0.5)))
-            h = max(5, int(w * (0.7 + nz(placed, 4) * 0.45)))
+            radc = base_rc + ring * ring_gap_c + (nz(placed, 2) - 0.5) * 0.35
+            foot = _HUT_FOOT * (0.82 + nz(placed, 3) * 0.5)
+            # V4.7: offsets & footprint are WORLD-CELL floats (projected each frame through the iso
+            # transform), and every hut carries its own HEIGHT z — so the cluster tilts with the world
+            # and the town has a low, uneven rooftop line instead of flat stamps on the ground.
             buildings.append({
-                "dx": int(rad * math.cos(ang)), "dy": int(rad * math.sin(ang)),
-                "w": w, "h": h,
+                "wdx": radc * math.cos(ang), "wdy": radc * math.sin(ang),
+                "fw": foot, "fd": foot * (0.82 + nz(placed, 4) * 0.4),
+                "z": hut_z * (0.82 + nz(placed, 9) * 0.55),
                 "wall": _pick(wall_tones, nz(placed, 5)),
                 "roof": _pick(roof_tones, nz(placed, 6)),
-                "hip": nz(placed, 7) > 0.5,           # hip vs gable roof
+                "hip": nz(placed, 7) > 0.5,           # hip (taller pyramid) vs shallow roof
                 "lit": nz(placed, 8) > 0.45,          # lit windows
             })
             placed += 1
         ring += 1
-    cluster_r = int(base_r + ring * ring_gap)
+    cluster_rc = base_rc + ring * ring_gap_c
+    cluster_r = int(cluster_rc * cell)                # pixel radius (plaza ground / forge glow / label)
 
     granary = None
     if n_members >= _GRANARY_MIN_MEMBERS:
         gang = nz(99, 1) * 2 * math.pi
-        granary = {"dx": int(cluster_r * 0.72 * math.cos(gang)),
-                   "dy": int(cluster_r * 0.72 * math.sin(gang)), "scale": cell}
-    fence_r = cluster_r + int(cell * 0.5) if n_members >= _FENCE_MIN_MEMBERS else None
-    off = int(cell * 0.9) if central_kind else 0     # nudge the well aside when a seat owns the centre
+        granary = {"wdx": cluster_rc * 0.72 * math.cos(gang),
+                   "wdy": cluster_rc * 0.72 * math.sin(gang),
+                   "fw": _GRANARY_FOOT, "fd": _GRANARY_FOOT, "z": _GRANARY_Z}
+    fence_rc = cluster_rc + 0.5 if n_members >= _FENCE_MIN_MEMBERS else None
+    fence_r = int(fence_rc * cell) if fence_rc else None
+    off = 0.9 if central_kind else 0.0               # nudge the well aside when a seat owns the centre
+    seat_z = ((_KEEP_Z_EMPEROR if emperor else _KEEP_Z) if central_kind == "castle"
+              else _HALL_Z if central_kind == "hall" else 0.0)
+    seat_foot = (_KEEP_FOOT if central_kind == "castle"
+                 else _HALL_FOOT if central_kind == "hall" else 0.0)
     return {
         "buildings": buildings,
-        "central": {"kind": central_kind, "color": ruler_color, "emperor": emperor, "scale": cell},
+        "central": {"kind": central_kind, "color": ruler_color, "emperor": emperor,
+                    "z": seat_z, "foot": seat_foot},
         "granary": granary,
+        "fence_rc": fence_rc,
         "fence_r": fence_r,
-        "well": {"dx": off, "dy": off, "scale": max(3, int(cell * 0.7))},
+        "well": {"wdx": off, "wdy": off, "z": _WELL_Z, "scale": max(3, int(cell * 0.7))},
+        "cluster_rc": cluster_rc,
         "cluster_r": cluster_r,
-        "plaza_r": max(cell, int(base_r * 0.95)),
-        "path_w": max(1, cell // 6),
+        "plaza_r": max(cell, int(base_rc * 0.95 * cell)),
         # M4.12 ERAS: the visible age of the town — its build style, a Bronze+ forge, and Iron stone walls.
         "era_style": era_style,
         "forge": era_style in ("bronze", "iron"),     # a smithy appears once a town works metal
@@ -1313,17 +1426,21 @@ def season_name(turn: float) -> str:
     return "winter"
 
 
-def ambient_clouds(frame: int, map_px: int) -> list[tuple[float, float, float, float]]:
-    """Drifting clouds (x, y, w, h) based on the frame clock (pure)."""
+def ambient_clouds(frame: int, size: int) -> list[tuple[float, float, float]]:
+    """Drifting clouds in WORLD space: (world_x, world_y, world_radius) per cloud (pure, V4.8).
+
+    Each cloud has a WORLD position that drifts on the wind (+x world) and wraps across the world
+    extent, so the renderer projects both its ground shadow (z=0) and its sky puff (lifted by a
+    cloud height) through the shared iso transform — clouds and their shadows slide over the tilted
+    ground in world space, never in flat screen space. Zero RNG (pure coordinate hash)."""
     out = []
-    # 3 cloud layers moving at different speeds
+    span = size + 2 * _MARGIN_CELLS
     for k in range(3):
-        w = max(40, int(map_px * (0.15 + 0.1 * terrain_noise(k, 1, 81))))
-        h = max(20, int(w * 0.6))
-        speed = 0.1 + 0.05 * k
-        x = (frame * speed + map_px * terrain_noise(k, 2, 82)) % (map_px + w) - w
-        y = map_px * terrain_noise(k, 3, 83)
-        out.append((x, y, w, h))
+        rad = 2.4 + 2.0 * terrain_noise(k, 1, 81)          # world-cell radius (the sky PUFF)
+        speed = 0.045 + 0.022 * k                          # world cells/frame drift (+x wind) — visibly moving
+        wx = (frame * speed + span * terrain_noise(k, 2, 82)) % (span + 2 * rad) - _MARGIN_CELLS - rad
+        wy = -_MARGIN_CELLS + terrain_noise(k, 3, 83) * span
+        out.append((wx, wy, rad))
     return out
 
 
@@ -1590,7 +1707,8 @@ class PygameRenderer:
     sim — a panned/zoomed seeded run logs byte-identical events.
     """
 
-    def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4) -> None:
+    def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4,
+                 showcase: bool = False) -> None:
         # `turn_delay` (seconds/turn) paces the watch; the renderer waits this long
         # between turns itself (responsively), so the sim's own sleep is left at 0.
         self.turn_delay = max(0.0, float(turn_delay))
@@ -1636,6 +1754,25 @@ class PygameRenderer:
         self._dawn_wash: Any = None                        # cached directional sunrise gradient
         self._stars: list[tuple[int, int, int]] = []       # star candidates that landed on water
         self._frame_lights: list[tuple] = []               # this frame's (kind, x, y, size) lights
+        self._light_layer: Any = None                      # V4-fix: offscreen additive-pool accumulator
+        # V4.9 JUICE — all renderer-local, all neutral until an effect fires (byte-identical otherwise).
+        self._shake = (0, 0)                               # this frame's screen-shake offset (px)
+        self._shake_amp = 0.0                              # decaying shake amplitude
+        self._punch = 1.0                                  # this frame's zoom-punch scale (1.0 = none)
+        self._punch_t: float | None = None                 # wall-clock start of the banner zoom-punch
+        self._flash_amp = 0.0                              # decaying decisive-blow impact flash
+        self._puffs: list[tuple] = []                      # (wx, wy, birth_frame, kind) rise/collapse dust
+        self._prev_counts: dict[str, int] = {}             # sid -> last living count (rise/fall detection)
+        self._emitters: list[tuple] = []                   # (sx, sy, kind) coins/embers to draw (close zoom)
+        # V4.10 SHOWCASE — hands-off trailer mode (all gated on _showcase; default off = byte-identical).
+        self._showcase = bool(showcase)
+        self._minimal = bool(showcase)                     # start with the stripped UI; 'U' toggles it
+        self._start_time: float | None = None              # wall clock of live() open (title card / day pace)
+        self._glide = _SHOWCASE_GLIDE if showcase else _CAM_GLIDE   # slow cinematic ease in showcase
+        self._title_font: Any = None                       # the big title-card face (built in live())
+        self._focus_queue: collections.deque = collections.deque()  # per-banner event focus points
+        self._focus_pt: tuple | None = None                # the world point the camera is framing
+        self._focus_until = 0.0                            # wall clock the current event-focus holds until
         # Slice 11: CAMERA — all state renderer-local, like _town_plans. The camera is a
         # world-cell CENTRE plus an effective cell size (the zoom); the *_t fields are the
         # glide TARGETS that input moves, eased toward each drawn frame. `_cell` (the live
@@ -1657,6 +1794,7 @@ class PygameRenderer:
         self._terrain_zoom: dict[int, Any] = {}    # bucket cell -> baked landscape (LRU-capped)
         self._lod = "mid"                  # current detail tier (far/mid/close, hysteresis)
         self._drag: tuple | None = None    # mouse-drag pan anchor (screen px, camera centre)
+        self._framed = False               # V4.10: has the camera snapped onto the inhabited region yet?
 
     # -- lifecycle ---------------------------------------------------------
     @contextlib.contextmanager
@@ -1670,6 +1808,11 @@ class PygameRenderer:
             self._big_font = pygame.font.SysFont("menlo,monospace", 22, bold=True)
         with contextlib.suppress(Exception):
             self._feed_bold = pygame.font.SysFont("menlo,monospace", 14, bold=True)
+        if self._showcase:                        # V4.10: the title-card face + the run clock
+            with contextlib.suppress(Exception):
+                self._title_font = pygame.font.SysFont("georgia,timesnewroman,serif", 44, bold=True)
+            pygame.display.set_caption("AI Civilization — showcase")
+            self._start_time = time.monotonic()
         try:
             yield self
         finally:
@@ -1699,7 +1842,10 @@ class PygameRenderer:
         # margin — the launch view and the zoom-OUT floor — so the world fills the frame instead of
         # sitting small inside the wilderness margin (its 2:1 vertical slack is filled by the void).
         self._cell = self._cell0 = _fit_cell(size, self._map_px)
-        self._screen = pygame.display.set_mode((self._map_px + _PANEL_W, self._map_px + _HUD_H))
+        # V4.10: SHOWCASE opens a clean SQUARE window (just the map — no side panel, no HUD strip),
+        # so a screen recording captures only the world. Normal mode keeps the panel + HUD zones.
+        win = (self._map_px, self._map_px) if self._showcase else (self._map_px + _PANEL_W, self._map_px + _HUD_H)
+        self._screen = pygame.display.set_mode(win)
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
@@ -1714,6 +1860,7 @@ class PygameRenderer:
         self._cam_draw = (self._cam_x, self._cam_y, self._cell)
         self._lod = lod_tier(self._cell0, "mid")
         self._drag = None
+        self._framed = False               # V4.10: re-frame onto the inhabited region on the next drawn frame
         self._terrain_zoom = {}
         # Slice 5/9: bake the procedural landscape ONCE for this grid size (cached, blitted each
         # frame). Pure-hash texture/features — no RNG, so it never desyncs a seeded sim.
@@ -1764,6 +1911,8 @@ class PygameRenderer:
                     raise KeyboardInterrupt
                 if event.key == pygame.K_SPACE:
                     self.paused = not self.paused
+                if event.key == pygame.K_u:              # V4.10: toggle the full UI back on mid-run
+                    self._minimal = not self._minimal
 
     def _pump_cinema_events(self) -> bool:
         """Input during a cinematic: quit/ESC still ends the run; any NON-CAMERA key SKIPS
@@ -1797,9 +1946,9 @@ class PygameRenderer:
             if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self._zoom_step(-1, centre)
                 return True
-            if event.key == pygame.K_HOME:                 # ease back to the fit-whole-world view
-                self._cam_tx = self._cam_ty = self._size / 2.0
-                self._cam_tcell = self._zoom_lo
+            if event.key == pygame.K_HOME:                 # ease back to the inhabited-region view
+                hx, hy, hcell = self._home_view(self._last_state or {})
+                self._cam_tx, self._cam_ty, self._cam_tcell = hx, hy, hcell
                 return True
             return event.key in _CAM_HOLD_KEYS
         if event.type == pygame.MOUSEWHEEL and event.y:
@@ -1856,6 +2005,46 @@ class PygameRenderer:
         v = (wx + wy) - (anchor[1] - view * 0.5) / hh     # = cx + cy
         return (u + v) * 0.5, (v - u) * 0.5
 
+    def _fit_region_cell(self, side_cells: float) -> float:
+        """The cell that CONTAINS a square world box of side `side_cells` (its projected 2:1 diamond)
+        in the square map viewport with a small margin (pure geometry). An axis-aligned box projects
+        to width (dx+dy)*cell and half that in height, so the width binds — the box fills the frame
+        width and centres. Clamped to sane pixels, with headroom left below the zoom-in ceiling."""
+        du = 2.0 * max(1.0, side_cells)                    # projected u/v extent = dx + dy = 2*side
+        usable = self._map_px * (1.0 - 2.0 * _FIT_MARGIN)
+        cell = (usable / du) * _FRAME_FILL                 # width-contain, boosted so land fills the frame
+        return float(max(_CELL_FLOOR, min(_CELL_CEIL, self._zoom_hi * 0.9, cell)))
+
+    def _home_view(self, state: dict[str, Any]) -> tuple[float, float, float]:
+        """V4.10: the launch/HOME view + zoom-out floor — (centre_x, centre_y, cell) framing the
+        INHABITED region: the camera centres on the member-WEIGHTED centroid of settlements and the
+        zoom fits a square box that holds every settlement (padded), so the towns fill the frame
+        instead of floating in empty wilderness. Falls back to the grid centre + whole-world fit when
+        no settlement exists. A pure READ of settlement centres/members."""
+        sett = (state or {}).get("settlements") or {}
+        wx = wy = wsum = 0.0
+        x0 = y0 = float("inf")
+        x1 = y1 = float("-inf")
+        for rec in sett.values():
+            c = rec.get("center") if isinstance(rec, dict) else None
+            if c is None:
+                continue
+            n = float(max(1, len(rec.get("members") or ())))
+            cx, cy = float(c[0]), float(c[1])
+            wx += cx * n
+            wy += cy * n
+            wsum += n
+            x0, y0 = min(x0, cx), min(y0, cy)
+            x1, y1 = max(x1, cx), max(y1, cy)
+        if wsum <= 0:                                       # no towns yet -> the old whole-world fit
+            return (self._size / 2.0, self._size / 2.0, float(self._cell0))
+        cx, cy = wx / wsum, wy / wsum
+        # a square box around the CENTROID that holds every settlement, padded and floored so a lone
+        # town is not over-zoomed; the zoom fits that box (NOT the whole empty map).
+        half = max(_INHABITED_MIN_HALF,
+                   _INHABITED_PAD + max(cx - x0, x1 - cx, cy - y0, y1 - cy))
+        return (cx, cy, self._fit_region_cell(2.0 * half))
+
     def _update_camera(self) -> None:
         """Advance the camera one drawn frame: poll held pan keys, glide toward the targets,
         clamp to the world, and freeze this frame's shared transform + LOD tier.
@@ -1888,7 +2077,7 @@ class PygameRenderer:
         for attr, target in (("_cam_x", self._cam_tx), ("_cam_y", self._cam_ty),
                              ("_cam_cell", self._cam_tcell)):
             cur = getattr(self, attr)
-            nxt = cur + (target - cur) * _CAM_GLIDE
+            nxt = cur + (target - cur) * self._glide
             setattr(self, attr, target if abs(target - nxt) < 0.02 else nxt)
         self._cell = max(_CELL_FLOOR, int(round(self._cam_cell)))
         self._cam_x, self._cam_y = clamp_camera(self._cam_x, self._cam_y,
@@ -1923,12 +2112,24 @@ class PygameRenderer:
             time.sleep(1 / 60)
 
     # -- drawing (pure reads of `state`) -----------------------------------
+    def _fx(self, sx: float, sy: float) -> tuple[float, float]:
+        """V4.9: apply this frame's JUICE screen affine — the zoom-PUNCH (scale about the map centre)
+        and the clash SHAKE (offset) — to a raw projected screen point. A fast identity path keeps
+        every frame BYTE-IDENTICAL when no effect is active (the tests' path)."""
+        if self._punch == 1.0 and self._shake == (0, 0):
+            return sx, sy
+        c = self._map_px * 0.5
+        s = self._punch
+        return c + (sx - c) * s + self._shake[0], c + (sy - c) * s + self._shake[1]
+
     def _to_px(self, x: float, y: float, z: float = 0.0) -> tuple[int, int]:
         """V4.6: the GROUND point of world cell (x, y) (its centre) in SCREEN pixels, through the
         ONE shared ISOMETRIC transform — no draw call does its own projection maths. `z` lifts a
-        point above the ground plane (0 for everything ground-level this slice)."""
+        point above the ground plane (0 for everything ground-level this slice). V4.9 rides the
+        frame's juice affine (punch/shake) so sprites shake/scale in lockstep with the terrain."""
         sx, sy = world_to_screen_iso((x + 0.5, y + 0.5, z), self._cam_draw,
                                      (self._map_px, self._map_px))
+        sx, sy = self._fx(sx, sy)
         return int(round(sx)), int(round(sy))
 
     def _base_to_screen(self, bx: float, by: float) -> tuple[int, int]:
@@ -1937,6 +2138,155 @@ class PygameRenderer:
         (Water shimmer / coast waves are re-seated in V4.8; only the star field uses this now.)"""
         c0 = max(1, self._win_cell)
         return self._to_px(bx / c0 - _MARGIN_CELLS - 0.5, by / c0 - _MARGIN_CELLS - 0.5)
+
+    # -- V4.9: JUICE — per-frame effect bookkeeping + drawers (all frame-clock/hash driven) ----
+    def _update_juice(self) -> None:
+        """Advance the decaying/eased juice effects for THIS frame. Runs first in _draw, so the
+        shake/punch are set before any _to_px. Neutral (byte-identical) whenever nothing fires."""
+        f = self._frame
+        if self._shake_amp > 0.4:                          # a short, sharp clash shake (decays fast)
+            a = self._shake_amp
+            self._shake = (int(round((terrain_noise(f, 1, 301) - 0.5) * 2 * a)),
+                           int(round((terrain_noise(f, 2, 302) - 0.5) * 2 * a)))
+            self._shake_amp *= _SHAKE_DECAY
+        else:
+            self._shake_amp, self._shake = 0.0, (0, 0)
+        if self._punch_t is not None:                      # a gentle banner zoom-punch (ease in/back)
+            el = time.monotonic() - self._punch_t
+            if el >= _PUNCH_DUR:
+                self._punch, self._punch_t = 1.0, None
+            else:
+                self._punch = 1.0 + _PUNCH_MAX * math.sin(math.pi * (el / _PUNCH_DUR))
+        else:
+            self._punch = 1.0
+        self._flash_amp = self._flash_amp * _FLASH_DECAY if self._flash_amp > 0.02 else 0.0
+        if self._puffs:                                    # age out finished rise/collapse puffs
+            self._puffs = [p for p in self._puffs if f - p[2] < _PUFF_LIFE]
+        self._emitters = []                                # refilled by _emit_town at close zoom
+
+    def _note_population(self, sid: str, living: int, center: tuple, rad_cells: float) -> None:
+        """Detect a settlement's building count rising/falling between turns and spawn a DUST burst
+        (rise) or a COLLAPSE puff (fall/decay) — a town that grows or dies now announces it."""
+        prev = self._prev_counts.get(sid)
+        self._prev_counts[sid] = living
+        if prev is None or prev == living or self._lod == "far":
+            return
+        kind = "rise" if living > prev else "fall"
+        f, salt = self._frame, sum(ord(c) for c in sid) & 255      # stable per-settlement salt
+        for j in range(3):
+            ang = terrain_noise(f, j * 7 + salt, 310) * 2 * math.pi
+            rr = rad_cells * (0.35 + 0.55 * terrain_noise(f, j, 311))
+            self._puffs.append((center[0] + rr * math.cos(ang),
+                                center[1] + rr * math.sin(ang), f, kind))
+
+    def _draw_puffs(self) -> None:
+        """Dust wisps rising from a new building / a collapse cloud from a fallen one — projected
+        onto the ground, drifting up and fading over their short life."""
+        if not self._puffs or self._lod == "far":
+            return
+        cell, view = self._cell, self._map_px
+        for wx, wy, birth, kind in self._puffs:
+            p = (self._frame - birth) / _PUFF_LIFE
+            gx, gy = self._to_px(wx, wy)
+            if not visible_on_screen(gx, gy, cell * 2, view, view):
+                continue
+            rise = int(p * cell * 1.1)
+            rad = max(1, int(cell * (0.14 + 0.34 * p)))
+            alpha = int(115 * (1.0 - p))
+            if alpha <= 0:
+                continue
+            col = _DUST if kind == "rise" else (86, 80, 72)
+            stamp = self._soft_stamp(rad, col, alpha)
+            self._screen.blit(stamp, (gx - stamp.get_width() // 2, gy - rise - stamp.get_height() // 2))
+
+    def _draw_emitters(self) -> None:
+        """CLOSE zoom only: coins drifting up over a market (plaza) and embers over a forge — a few
+        per emitter, rising and fading on the frame clock (stable per emitter, so no pan flicker)."""
+        if self._lod != "close" or not self._emitters:
+            return
+        s, f, cell = self._screen, self._frame, self._cell
+        for e, (sx, sy, kind) in enumerate(self._emitters):
+            for j in range(3):
+                ph = (f * 0.035 + terrain_noise(e, j, 320)) % 1.0
+                dx = int((terrain_noise(e * 4 + j, 5, 321) - 0.5) * cell * 0.7
+                         + math.sin(f * 0.09 + e + j) * 2)
+                px, py = sx + dx, sy - int(ph * cell * 1.7)
+                a = 1.0 - ph
+                if a <= 0.05:
+                    continue
+                if kind == "coin":
+                    pygame.draw.circle(s, PALETTE["coin"], (px, py), max(1, cell // 15))
+                    pygame.draw.circle(s, _shade(PALETTE["coin"], -40), (px, py), max(1, cell // 15), 1)
+                else:                                      # ember: a warm mote, brighter at night
+                    col = lerp_color(PALETTE["forge_glow"], PALETTE["forge_core"], 0.4 + 0.4 * self._nf)
+                    pygame.draw.circle(s, col, (px, py), max(1, cell // 18))
+
+    def _draw_flash(self) -> None:
+        """A brief warm impact FLASH over the map on a war cinematic's decisive blow (decays fast)."""
+        if self._flash_amp <= 0.02:
+            return
+        mp = self._map_px
+        ov = pygame.Surface((mp, mp))
+        ov.fill((255, 248, 232))
+        ov.set_alpha(int(150 * min(1.0, self._flash_amp)))
+        self._screen.blit(ov, (0, 0))
+
+    # -- V4.10: SHOWCASE — camera auto-direction, title card, minimal readout ------
+    def _showcase_direct(self, state: dict[str, Any]) -> None:
+        """Drive the camera hands-off: EASE to a firing major event and hold it through its banner,
+        else a slow ambient ORBIT of the realm overview so the frame is never static. Sets only the
+        glide TARGETS (the slow _SHOWCASE_GLIDE eases the rest); pure read of the settlement layout."""
+        now = time.monotonic()
+        ox, oy, ocell = self._home_view(state)             # the realm overview (inhabited region)
+        if self._focus_pt is not None and now < self._focus_until:
+            self._cam_tx, self._cam_ty = self._focus_pt    # frame the event, closer in
+            self._cam_tcell = min(self._zoom_hi * 0.95, ocell * _SHOWCASE_FOCUS_ZOOM)
+        else:
+            self._focus_pt = None
+            th = (now - (self._start_time or now)) * _SHOWCASE_ORBIT_SPEED
+            self._cam_tx = ox + math.cos(th) * _SHOWCASE_ORBIT_R          # a slow idle drift/orbit
+            self._cam_ty = oy + math.sin(th) * _SHOWCASE_ORBIT_R * 0.6
+            self._cam_tcell = ocell * (1.0 + 0.05 * math.sin(th * 0.5))
+
+    def _draw_title_card(self) -> None:
+        """A clean opening title card — project name + subtitle — fading in and back over the first
+        few seconds, then gone for good. Showcase only."""
+        if not self._showcase or self._start_time is None:
+            return
+        el = time.monotonic() - self._start_time
+        if el > _TITLE_DUR:
+            return
+        fade = max(0.0, min(1.0, el / 1.0, (_TITLE_DUR - el) / 1.4))
+        mp = self._map_px
+        ov = pygame.Surface((mp, mp), pygame.SRCALPHA)
+        ov.fill((7, 9, 14, int(165 * fade)))
+        tf, sf = (self._title_font or self._big_font or self._font), (self._font)
+        if tf is not None:
+            name = tf.render(_TITLE_NAME, True, _STORY_FG)
+            name.set_alpha(int(255 * fade))
+            ov.blit(name, ((mp - name.get_width()) // 2, mp // 2 - name.get_height()))
+            pygame.draw.line(ov, (*_STORY_ACCENT, int(220 * fade)),
+                             (mp // 2 - 90, mp // 2 + 6), (mp // 2 + 90, mp // 2 + 6), 2)
+        if sf is not None:
+            sub = sf.render(_TITLE_SUB, True, _STAT_VALUE)
+            sub.set_alpha(int(230 * fade))
+            ov.blit(sub, ((mp - sub.get_width()) // 2, mp // 2 + 16))
+        self._screen.blit(ov, (0, 0))
+
+    def _draw_showcase_readout(self, state: dict[str, Any]) -> None:
+        """The one unobtrusive HUD element left in showcase: a small turn · phase chip, low-corner."""
+        if self._font is None:
+            return
+        txt = f"turn {int(state.get('turn', 0))}  ·  {phase_name(self._phase)}"
+        if not self._minimal:
+            txt += "   ·   [U] hide UI"
+        lab = self._font.render(txt, True, _STAT_VALUE)
+        pad = 6
+        x, y = self._map_px - lab.get_width() - 12, self._map_px - lab.get_height() - 10
+        chip = pygame.Surface((lab.get_width() + 2 * pad, lab.get_height() + pad), pygame.SRCALPHA)
+        chip.fill((*_HUD_BG, 120))
+        self._screen.blit(chip, (x - pad, y - pad // 2))
+        self._screen.blit(lab, (x, y))
 
     # -- V4.2: the story banner (queue + wall-clock playback + drawing) -----
     def _enqueue_banners(self, state: dict[str, Any]) -> None:
@@ -1955,8 +2305,22 @@ class PygameRenderer:
         for line in turn_events(state.get("events") or [], turn):
             if event_tier(line, notable) == "major":
                 self._banner_queue.append(banner_text(line))
+                self._focus_queue.append(self._event_focus(line, state))   # V4.10: where to point the camera
         while len(self._banner_queue) > _BANNER_MAX_QUEUE:
             self._banner_queue.popleft()
+            if self._focus_queue:
+                self._focus_queue.popleft()
+
+    def _event_focus(self, line: str, state: dict[str, Any]) -> tuple | None:
+        """V4.10: the WORLD point a major event happened at, for the showcase camera to frame — the
+        first named settlement's centre, else the first named living agent's cell, else None. READ."""
+        for sid, rec in (state.get("settlements") or {}).items():
+            if sid in line and isinstance(rec, dict) and rec.get("center"):
+                return (float(rec["center"][0]), float(rec["center"][1]))
+        for a in state.get("agents", []):
+            if getattr(a, "alive", True) and getattr(a, "position", None) and a.name in line:
+                return (float(a.position[0]), float(a.position[1]))
+        return None
 
     def _update_banner(self) -> None:
         """Advance the story banner on the wall clock: expire the active one, pop the next."""
@@ -1965,6 +2329,12 @@ class PygameRenderer:
             if self._banner_queue:
                 self._banner_text = self._banner_queue.popleft()
                 self._banner_started = now
+                self._punch_t = now       # V4.9: a gentle zoom-punch as the banner fires
+                foc = self._focus_queue.popleft() if self._focus_queue else None
+                if self._showcase and foc is not None:    # V4.10: the camera eases to & holds the event
+                    hold = _BANNER_SECS_FAST if len(self._banner_queue) >= 2 else _BANNER_SECS
+                    self._focus_pt = foc
+                    self._focus_until = now + hold + _SHOWCASE_FOCUS_LEAD
         else:
             hold = _BANNER_SECS_FAST if len(self._banner_queue) >= 2 else _BANNER_SECS
             if now - self._banner_started >= hold:
@@ -2012,6 +2382,20 @@ class PygameRenderer:
         # Slice 9: the ambient-life clock — one tick per DRAWN frame (renderer-local; the sim
         # never sees it), driving smoke/sway/shimmer/birds/flutter/flicker phases.
         self._frame = (self._frame + 1) % (1 << 20)
+        self._last_state = state
+        self._update_juice()              # V4.9: set this frame's shake/punch BEFORE any projection
+        # V4.10: FRAMING — the zoom-OUT floor tracks the inhabited region every frame (min zoom =
+        # fit the towns, never the whole empty map), and the FIRST inhabited frame SNAPS the camera
+        # onto the settlement centroid so the world opens on the action. HOME re-frames the same way.
+        hx, hy, hcell = self._home_view(state)
+        self._zoom_lo = hcell
+        if not self._framed and state.get("settlements"):
+            self._cam_x = self._cam_tx = hx
+            self._cam_y = self._cam_ty = hy
+            self._cam_cell = self._cam_tcell = hcell
+            self._framed = True
+        if self._showcase and state.get("settlements"):   # V4.10: auto-direct the camera hands-off
+            self._showcase_direct(state)
         # Slice 11: advance the CAMERA first — glide toward its targets, clamp to the world,
         # and freeze this frame's shared transform, effective cell and LOD tier. Everything
         # below draws through them; nothing below does its own camera maths.
@@ -2024,7 +2408,12 @@ class PygameRenderer:
         turn_f = float(state.get("turn", 0))
         if motion is not None:
             turn_f += -1.0 + max(0.0, min(1.0, motion[1]))
-        self._phase = time_of_day(turn_f)
+        if self._showcase and self._start_time is not None:
+            # V4.10: pace the day/night on the WALL CLOCK so a full dusk always arrives inside a
+            # couple of minutes of footage, regardless of how fast the staged turns tick.
+            self._phase = (0.08 + (time.monotonic() - self._start_time) / _SHOWCASE_DAY_SECS) % 1.0
+        else:
+            self._phase = time_of_day(turn_f)
         self._dl = daylight_factor(self._phase)
         self._nf = 1.0 - self._dl
         self._frame_lights = []           # towns register window/torch lights as they draw
@@ -2049,7 +2438,10 @@ class PygameRenderer:
         elif self._void_bg is None:
             grass_color = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
             screen.fill(grass_color, (0, 0, map_px, map_px))
-        # V4.6: water shimmer & coast waves are re-seated onto the iso coast in V4.8 — off here.
+        # V4.8: water shimmer & coast waves RE-SEATED onto the projected water — glints on the
+        # tilted pond/sea tiles and wave crests along the projected coastline (both cull off-screen).
+        self._draw_water_shimmer()
+        self._draw_coast_waves()
 
         # Slice 5: settled land looks CULTIVATED — a translucent tilled-dirt field (now a
         # projected 2:1 ellipse), drawn under the territory + sprites. No-op if no settlements.
@@ -2062,6 +2454,10 @@ class PygameRenderer:
         # render infos for the painter pass below.
         towns = self._draw_territory(state)
 
+        # V4.8: cloud shadows are GROUND DECALS projected onto the diamond, drawn UNDER the sprite
+        # pass so buildings correctly occlude the shadow passing behind them; they slide in world space.
+        self._draw_cloud_shadows()
+
         talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
         self._update_trails(state, motion)
         self._draw_trails()
@@ -2071,8 +2467,19 @@ class PygameRenderer:
         # overlap farther ones. Ground=terrain/farmland/territory (already drawn) -> sprites
         # here -> effects (grade/lights/banner) after. V4.7 hangs taller forms off this order.
         sprites: list[tuple[float, int, str, Any]] = []
+        label_jobs: list[tuple[str, int, int, int]] = []
+        # V4.7: a built-up town (MID/CLOSE) is EXPANDED into its individual iso VOLUMES — each
+        # hut/hall/keep/tower/granary/well/palisade-post becomes its own sprite keyed by its
+        # projected ground depth, so agents interleave with buildings and are correctly occluded
+        # by the ones IN FRONT of them. Its flat ground (plaza/paths/shadows) is painted now, under
+        # everything. FAR/tiny towns stay a single block-and-banner sprite (the strategy read).
         for info in towns:
-            sprites.append((info["cy"], 0, "town", info))
+            if self._lod != "far" and self._cell >= _TOWN_MIN_CELL:
+                structs, top_y = self._emit_town(info, state)
+                sprites.extend(structs)
+                label_jobs.append((info["sid"], info["cx"], top_y, info["count"]))
+            else:
+                sprites.append((info["cy"], 0, "town", info))
         for fx, fy in state.get("food", []):
             px, py = self._to_px(fx, fy)
             if visible_on_screen(px, py, cell, map_px, map_px):
@@ -2084,13 +2491,14 @@ class PygameRenderer:
             r = agent_radius(_wealth(agent), cell)
             if not visible_on_screen(gx, gy, r * 4 + cell, map_px, map_px):
                 continue
-            sprites.append((gy, 2, "agent", (agent, gx, gy, r)))
+            sprites.append((gy, 2, "agent", (agent, gx, gy, r, self._step_squash(agent, motion))))
         sprites.sort(key=lambda s: (s[0], s[1]))
-        label_jobs: list[tuple[str, int, int, int]] = []
         for _depth, _tie, kind, obj in sprites:
             if kind == "town":
                 top_y = self._draw_town_sprite(obj, state)
                 label_jobs.append((obj["sid"], obj["cx"], top_y, obj["count"]))
+            elif kind == "struct":
+                self._draw_structure(obj)
             elif kind == "food":
                 px, py = obj
                 if self._lod == "far":
@@ -2100,6 +2508,7 @@ class PygameRenderer:
             else:
                 self._draw_agent_sprite(obj, talkers, state)
         self._draw_settlement_labels(label_jobs)
+        self._draw_puffs()                # V4.9: rise dust / collapse puffs, over the buildings
 
         # V4.9: the soft edge VIGNETTE over the map zone — depth, and no hard canvas edge where the
         # world meets the void. Under the day/night grade so night lights still pierce cleanly.
@@ -2112,7 +2521,9 @@ class PygameRenderer:
         # tint moves, and blitted over the whole map zone (the HUD/panel stay ungraded).
         if self._dl > 0.35 and self._lod != "far":   # slice 11: no ambience on the strategy map
             self._draw_birds()                        # birds fly in the SKY — fine unprojected
-            # V4.6: ground cloud shadows / drifting clouds re-seat onto the iso plane in V4.8.
+            # V4.8: cloud PUFFS ride the sky above their ground shadows (lifted by _CLOUD_Z), so a
+            # cloud and its shadow slide together across the tilted world.
+            self._draw_clouds()
         if self._grade is not None:
             tint = phase_tint(self._phase)
             if tint != self._grade_tint:
@@ -2127,26 +2538,35 @@ class PygameRenderer:
         # Slice 10: the NIGHT LIGHTS pierce the grade — stars on the water, window glow,
         # torchlight — so towns twinkle in the dark instead of drowning in it.
         self._draw_night_lights()
+        self._draw_emitters()             # V4.9: coins over a market / embers over a forge (close zoom)
 
         # Slice 8: the battle cinematic overlay (soldiers/dust/clash/fallen/banner) — drawn
         # ABOVE the grade since slice 10, so a night battle stays vivid and readable (the
         # clash flashes and the outcome banner never dim with the scene).
         if battle is not None:
             self._draw_battle_overlay(*battle)
-            
+        self._draw_flash()                # V4.9: the decisive-blow impact flash, over the clash
+
         self._draw_weather()
 
         # V4.2: the STORY BANNER rides on top of the map (above weather/cinematics) so a viewer
         # watching ONLY the map follows each major beat in plain words.
         self._draw_story_banner()
 
-        self._draw_hud(state, map_px, paused, in_battle=battle is not None)
-        # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
-        # last so it owns the right zone cleanly; a pure read of state, like everything else.
-        self._draw_panel(state, map_px)
-        
-        self._draw_minimap(state)
-        
+        if self._showcase:
+            # V4.10: MINIMAL UI — just the banner + a small turn/phase chip (the minimap returns only
+            # when the full UI is toggled back on with 'U'); the title card opens the run.
+            if not self._minimal:
+                self._draw_minimap(state)
+            self._draw_showcase_readout(state)
+            self._draw_title_card()
+        else:
+            self._draw_hud(state, map_px, paused, in_battle=battle is not None)
+            # Slice 3: the right sidebar — a state summary above a scrolling event feed. Drawn
+            # last so it owns the right zone cleanly; a pure read of state, like everything else.
+            self._draw_panel(state, map_px)
+            self._draw_minimap(state)
+
         pygame.display.flip()
 
     def _agent_px(self, agent: Any, motion: tuple[dict[str, tuple], float] | None) -> tuple[int, int]:
@@ -2167,7 +2587,49 @@ class PygameRenderer:
         px, py = self._to_px(int(pp[0]), int(pp[1]))
         e = ease(t)
         bob = abs(math.sin(t * math.pi * 3.0)) * max(1.0, self._cell * _WALK_BOB)
+        if t > 0.82:                          # V4.9: a small HOP as the agent lands on its new cell
+            bob = max(bob, math.sin((t - 0.82) / 0.18 * math.pi) * self._cell * 0.14)
         return int(round(px + (cx - px) * e)), int(round(py + (cy - py) * e - bob))
+
+    def _step_squash(self, agent: Any, motion: tuple[dict[str, tuple], float] | None) -> float:
+        """V4.9: a subtle vertical squash-&-stretch factor over the walk cycle (>1 stretched at
+        mid-stride, <1 squashed at the plant); 1.0 for a still agent (so a settled frame is neutral)."""
+        if motion is None:
+            return 1.0
+        prev_pos, t = motion
+        pp = prev_pos.get(agent.name)
+        pos = agent.position
+        if pp is None or (pp[0], pp[1]) == (pos[0], pos[1]) or t >= 1.0:
+            return 1.0
+        return 1.0 + 0.08 * math.sin(t * math.pi * 3.0)
+
+    def _agent_world(self, agent: Any,
+                     motion: tuple[dict[str, tuple], float] | None) -> tuple[float, float]:
+        """The agent's WORLD-cell position, lerped from last turn's cell mid-walk (V4.8). The
+        world-space twin of _agent_px — trails store this and project it each frame, so a path
+        follows the ground under a pan instead of freezing at stale screen pixels."""
+        pos = agent.position
+        if motion is None:
+            return float(pos[0]), float(pos[1])
+        prev_pos, t = motion
+        pp = prev_pos.get(agent.name)
+        if pp is None or (pp[0], pp[1]) == (pos[0], pos[1]) or t >= 1.0:
+            return float(pos[0]), float(pos[1])
+        e = ease(t)
+        return (pp[0] + (pos[0] - pp[0]) * e, pp[1] + (pos[1] - pp[1]) * e)
+
+    def _visible_world_rect(self) -> tuple[float, float, float, float]:
+        """The world-cell AABB currently on screen (V4.8): the four viewport corners un-projected
+        to the ground plane. Weather/fog seed their particles inside this rect so they always fall
+        WHERE the camera looks, at any pan/zoom, and stay tied to world positions as it moves."""
+        view = (self._map_px, self._map_px)
+        mp = self._map_px
+        xs, ys = [], []
+        for c in ((0, 0), (mp, 0), (0, mp), (mp, mp)):
+            wx, wy = screen_to_world_iso(c, self._cam_draw, view)
+            xs.append(wx)
+            ys.append(wy)
+        return (min(xs), min(ys), max(xs), max(ys))
 
     # -- V4.6: iso terrain geometry (base-diamond offsets shared by bake + blit) ------
     def _iso_base_offsets(self, cq: int) -> tuple[int, int, int, int]:
@@ -2225,6 +2687,8 @@ class PygameRenderer:
         ccy = (self._cam_x + self._cam_y) * (c * 0.5)
         x0 = -ox * r - ccx + view * 0.5               # screen pos of base pixel (0, 0)
         y0 = -oy * r - ccy + view * 0.5
+        x0, y0 = self._fx(x0, y0)                      # V4.9: the terrain rides the same punch/shake
+        r *= self._punch                              # ...as the sprites, so nothing desyncs
         vx0, vy0 = max(0, int(x0)), max(0, int(y0))
         vx1, vy1 = min(view, int(x0 + W * r)), min(view, int(y0 + H * r))
         if vx1 <= vx0 or vy1 <= vy0:
@@ -2421,33 +2885,63 @@ class PygameRenderer:
                 continue
             stamp = self._soft_stamp(max(1, int(round(s * k_px))), PALETTE["starlight"], a)
             screen.blit(stamp, (sx - stamp.get_width() // 2, sy - stamp.get_height() // 2))
-        # V4.5: every emitter casts an ADDITIVE radial POOL (cached) so a town reads as a
-        # cluster of warm pools in the blue dark; a small bright core sits at each source.
+        # V4.5: every emitter casts an ADDITIVE radial POOL so a town reads as a cluster of warm
+        # pools in the blue dark; a small bright core sits at each source. V4-fix: the POOLS
+        # accumulate on ONE offscreen layer that is CLAMPED to a warm cap (_LIGHT_ACC_CAP) before it
+        # composites, so overlapping pools brighten a wall face toward AMBER and never blow to white.
+        if not self._frame_lights:
+            return
+        # The pools accumulate at HALF resolution (they are smooth gradients, so the 2x upscale is
+        # invisible) and only over the lights' UNION rect — so the clamp/composite cost tracks the lit
+        # region at a quarter of the pixels, keeping a close-up night town inside the frame budget.
+        ds = _LIGHT_DS
+        hv = (view + ds - 1) // ds
+        layer = self._light_layer
+        if layer is None or layer.get_size() != (hv, hv):
+            layer = self._light_layer = pygame.Surface((hv, hv))
+        _pool_r = {"window": _LIGHT_WINDOW, "hearth": _LIGHT_HEARTH, "forge": _LIGHT_FORGE}
+        dirty = None
         for kind, x, y, s in self._frame_lights:
+            rr = int(max(6, s * _pool_r.get(kind, _LIGHT_TORCH))) + 4
+            rect = pygame.Rect((x - rr) // ds, (y - rr) // ds, 2 * rr // ds + 2, 2 * rr // ds + 2)
+            dirty = rect if dirty is None else dirty.union(rect)
+        dirty = dirty.clip(pygame.Rect(0, 0, hv, hv))
+        if dirty.width <= 0 or dirty.height <= 0:
+            return
+        layer.fill((0, 0, 0), dirty)
+        for kind, x, y, s in self._frame_lights:   # pools -> half-res layer; bright cores -> screen
+            hx, hy = x // ds, y // ds
             if kind == "window":                           # lit windows — the towns twinkle
                 fl = 0.82 + 0.18 * terrain_noise(f // 3, x * 7 + y * 3, 67)
-                self._blit_light(x, y, max(6, s * _LIGHT_WINDOW), PALETTE["window_glow"],
-                                 0.55 * nf * fl)
+                self._blit_light(hx, hy, max(4, s * _LIGHT_WINDOW / ds), PALETTE["window_glow"],
+                                 0.55 * nf * fl, target=layer)
                 core = self._soft_stamp(max(1, (s + 1) // 2), PALETTE["window_lit"],
                                         _q8(170 * nf * fl))
                 screen.blit(core, (x - core.get_width() // 2, y - core.get_height() // 2))
             elif kind == "hearth":                         # a town hearth over the plaza
                 fl = 0.86 + 0.14 * terrain_noise(f // 4, x * 3 + y, 70)
-                self._blit_light(x, y, max(8, int(s * _LIGHT_HEARTH)), PALETTE["hearth_glow"],
-                                 0.5 * nf * fl)
+                self._blit_light(hx, hy, max(5, int(s * _LIGHT_HEARTH / ds)), PALETTE["hearth_glow"],
+                                 0.5 * nf * fl, target=layer)
             elif kind == "forge":                          # a metallurgy town's forge — hot, pulsing
                 fl = 0.62 + 0.38 * terrain_noise(f // 2, x * 5 + y * 2, 78)
-                self._blit_light(x, y, max(7, int(s * _LIGHT_FORGE)), PALETTE["forge_glow"],
-                                 0.7 * nf * fl)
+                self._blit_light(hx, hy, max(4, int(s * _LIGHT_FORGE / ds)), PALETTE["forge_glow"],
+                                 0.7 * nf * fl, target=layer)
                 pygame.draw.circle(screen, PALETTE["forge_core"], (x, y), max(1, s // 4))
             else:                                          # torchlight at the seats of power
                 fl = 0.70 + 0.30 * terrain_noise(f // 2, x * 5 + y, 68)
                 wob = int(round(terrain_noise(f // 2, x, 69) * 2 - 1))
-                self._blit_light(x, y + wob, max(7, int(s * _LIGHT_TORCH)), PALETTE["torch_flame"],
-                                 0.75 * nf * fl)
+                self._blit_light(hx, (y + wob) // ds, max(4, int(s * _LIGHT_TORCH / ds)),
+                                 PALETTE["torch_flame"], 0.75 * nf * fl, target=layer)
                 pygame.draw.circle(screen, PALETTE["torch_core"], (x, y + wob), max(1, s // 4))
                 pygame.draw.circle(screen, PALETTE["torch_flame"], (x, y + wob),
                                    max(2, s // 3), 1)
+        # CLAMP the accumulated pools to a warm cap (per-channel MIN), then upscale the lit rect back
+        # and composite additively — the halo below the cap is untouched, over-bright overlap becomes
+        # amber, and the 2x scale softens the pools (a bonus). One scale + one add over the lit region.
+        layer.fill(_LIGHT_ACC_CAP, dirty, special_flags=pygame.BLEND_RGB_MIN)
+        up = pygame.transform.scale(layer.subsurface(dirty),
+                                    (dirty.width * ds, dirty.height * ds))
+        screen.blit(up, (dirty.x * ds, dirty.y * ds), special_flags=pygame.BLEND_RGB_ADD)
 
     def _build_pond(self, surf: Any, grid_px: int, cell: int, margin: int) -> None:
         """A still pond in a fixed off-centre spot (deterministic; never the central arena).
@@ -2554,47 +3048,42 @@ class PygameRenderer:
             self._stamps[key] = stamp
         return stamp
 
-    def _blit_light(self, x: int, y: int, radius: float, color: tuple, intensity: float) -> None:
-        """Blit one additive light pool centred at (x, y). No-op below the intensity floor."""
+    def _blit_light(self, x: int, y: int, radius: float, color: tuple, intensity: float,
+                    target: Any = None) -> None:
+        """Blit one additive light pool centred at (x, y). No-op below the intensity floor. Town
+        pools accumulate onto a clamped light LAYER (`target`); a lone clash flash may add direct."""
         stamp = self._light_stamp(radius, color, intensity)
         if stamp is not None:
-            self._screen.blit(stamp, (x - stamp.get_width() // 2, y - stamp.get_height() // 2),
-                              special_flags=pygame.BLEND_RGB_ADD)
+            (target if target is not None else self._screen).blit(
+                stamp, (x - stamp.get_width() // 2, y - stamp.get_height() // 2),
+                special_flags=pygame.BLEND_RGB_ADD)
 
     def _draw_water_shimmer(self) -> None:
-        """Ambient ripple glints on the pond and along the coast — a few short light dashes
-        whose positions re-hash every ~⅓s (terrain_noise on a coarse frame index; zero RNG).
-
-        Slice 11: glints are computed in the BASE pixel space the pond/coast are stored in,
-        then ride the shared camera transform to screen; off-screen glints are culled and
-        the dash length scales with the zoom.
-        """
-        f, view = self._frame, self._map_px
-        k_px = self._cell / max(1, self._cell0)
-        if self._pond is not None:
-            pcx, pcy, rx, ry = self._pond
-            for k in range(3):
-                u = terrain_noise(f // 18, k, 71) - 0.5
-                v = terrain_noise(f // 18, k, 72) - 0.5
-                if (u * 1.2) ** 2 + (v * 1.1) ** 2 < 0.18:      # keep the glint inside the water
-                    x, y = self._base_to_screen(pcx + u * rx * 1.2, pcy + v * ry * 1.1)
-                    if not visible_on_screen(x, y, 12, view, view):
-                        continue
-                    w = max(2, int((3 + 3 * terrain_noise(f // 18, k, 73)) * k_px))
+        """V4.8: ripple glints re-seated onto the PROJECTED water tiles — the off-centre pond inside
+        the land and the +x sea margin (the same world tiles _tile_kind classifies as water). Each
+        glint is a world point projected through the shared iso transform (so it lands on the tilted
+        water at any zoom), drawn as a short horizontal light dash re-hashed every ~1/3s (zero RNG)."""
+        if self._lod == "far":
+            return
+        f, view, cell, size = self._frame, self._map_px, self._cell, self._size
+        pcx, pcy = size * 0.28, size * 0.7                # the pond's world centre (see _tile_kind)
+        for k in range(3):                                # glints on the pond
+            u = terrain_noise(f // 18, k, 71) - 0.5
+            v = terrain_noise(f // 18, k, 72) - 0.5
+            if (u * 1.2) ** 2 + (v * 1.1) ** 2 < 0.20:
+                x, y = self._to_px(pcx + u * size * 0.20, pcy + v * size * 0.16)
+                if visible_on_screen(x, y, 12, view, view):
+                    w = max(2, int(cell * (0.25 + 0.25 * terrain_noise(f // 18, k, 73))))
                     pygame.draw.line(self._screen, _WATER_HI, (x - w, y), (x + w, y), 1)
-        if self._margin_px > 0:
-            for k in range(4):
-                by = int(terrain_noise(f // 22, k, 74) * (self._map_px - 3)) + 1
-                x0 = self._coast_x(by)
-                bx = x0 + 3 + terrain_noise(f // 22, k, 75) * max(0, self._map_px - x0 - 8)
-                if bx >= self._map_px - 3:
+        if self._margin_px > 0:                           # glints on the open +x sea
+            for k in range(5):
+                wy = terrain_noise(f // 22, k, 74) * size
+                wx = size + 0.5 + terrain_noise(f // 22, k, 75) * max(0.5, _MARGIN_CELLS - 0.8)
+                x, y = self._to_px(wx, wy)
+                if not visible_on_screen(x, y, 12, view, view):
                     continue
-                bw = 3 + int(3 * terrain_noise(f // 22, k, 76))
-                x1, y1 = self._base_to_screen(bx, by)
-                x2, _y2 = self._base_to_screen(min(bx + bw, self._map_px - 3), by)
-                if not visible_on_screen(x1, y1, 12, view, view):
-                    continue
-                pygame.draw.line(self._screen, _WATER_HI, (x1, y1), (max(x1 + 1, x2), y1), 1)
+                w = max(2, int(cell * (0.25 + 0.25 * terrain_noise(f // 22, k, 76))))
+                pygame.draw.line(self._screen, _WATER_HI, (x - w, y), (x + w, y), 1)
 
     def _draw_birds(self) -> None:
         """The occasional bird crossing the sky: tiny v-shapes, flapping — pure frame+hash."""
@@ -2622,7 +3111,44 @@ class PygameRenderer:
         for i in range(steps, 0, -1):
             t = i / steps                              # 1 at the rim, ->0 at the centre
             pygame.draw.circle(surf, lerp_color(_VOID_OCEAN, _VOID_EDGE, t), (cx, cy), int(maxr * t))
+        self._dress_void(surf, mp)                     # V4.10: distant sea texture + corner haze
         return surf
+
+    def _dress_void(self, surf: Any, mp: int) -> None:
+        """V4.10: make the open water around the coast read INTENTIONAL, not empty background.
+
+        Baked ONCE into the cached void (deterministic terrain_noise, zero RNG): distant WAVE crests
+        (short lighter dashes on a jittered grid), a sparse scatter of FOAM flecks, and a faint far-
+        SHORELINE haze hugging the extreme corners (a hint of distant land in the mist). Only the ring
+        the diamond does not cover is dressed — the inner disc (where the world sits) is skipped, so
+        the cost is a handful of thin lines over the corners and nothing shows through the land."""
+        inner = (mp * 0.30) ** 2                        # the central disc the world diamond covers
+        step = max(16, mp // 24)
+        for gy in range(step // 2, mp, step):
+            for gx in range(step // 2, mp, step):
+                dx, dy = gx - mp / 2.0, gy - mp / 2.0
+                if dx * dx + dy * dy < inner:
+                    continue                            # skip where the land diamond will sit
+                if terrain_noise(gx, gy, 401) < 0.40:
+                    continue                            # sparse — open water, not a striped pool
+                jx = int((terrain_noise(gx, gy, 402) - 0.5) * step)
+                jy = int((terrain_noise(gx, gy, 403) - 0.5) * step)
+                x = max(2, min(mp - 3, gx + jx))
+                y = max(2, min(mp - 3, gy + jy))
+                base = surf.get_at((x, y))[:3]          # shade RELATIVE to the local sea depth
+                ln = max(3, int(step * (0.30 + 0.40 * terrain_noise(gx, gy, 404))))
+                pygame.draw.line(surf, _shade(base, 15), (x - ln, y + 1), (x + ln, y), 1)
+                pygame.draw.line(surf, _shade(base, 7), (x - ln + 2, y + 3), (x + ln - 2, y + 2), 1)
+                if terrain_noise(gx, gy, 405) > 0.88:   # an occasional foam fleck on a crest
+                    pygame.draw.circle(surf, _shade(PALETTE["foam"], -70), (x + ln // 2, y), 1)
+        # far-shoreline haze: a faint warm-grey bloom in each extreme corner (distant land in mist).
+        haze = pygame.Surface((mp, mp), pygame.SRCALPHA)
+        hr = int(mp * 0.22)
+        for cxh, cyh in ((0, 0), (mp, 0), (0, mp), (mp, mp)):
+            for i in range(hr, 0, -max(1, hr // 12)):
+                a = int(22 * (1 - i / hr))              # faint at radius hr, strongest at the corner
+                pygame.draw.circle(haze, (*PALETTE["fog"], a), (cxh, cyh), i)
+        surf.blit(haze, (0, 0))
 
     def _build_vignette_overlay(self) -> Any:
         """V4.9: the cached soft edge VIGNETTE for the map zone (SRCALPHA) — transparent in the
@@ -2700,23 +3226,27 @@ class PygameRenderer:
         self._screen.blit(overlay, (0, 0))
 
     # -- Slice 4: procedural map glyphs (all primitive shapes; pure drawing) -----
-    def _draw_agent_figure(self, cx: int, cy: int, r: int, color: tuple[int, int, int]) -> int:
+    def _draw_agent_figure(self, cx: int, cy: int, r: int, color: tuple[int, int, int],
+                           squash: float = 1.0) -> int:
         """Draw a little person (head circle + trapezoid body) centred on (cx, cy).
 
         Colour is the personality colour and the whole figure scales with `r` (wealth), so
         slice-1's two encodings survive the upgrade. Returns the y of the figure's TOP (where
         a crown/star/bubble is stacked). A tiny cell (r below _FIGURE_MIN_R) falls back to the
-        slice-1 dot so it never collapses into noise.
-        """
+        slice-1 dot so it never collapses into noise. V4.9: `squash` (>1 stretch, <1 squash) scales
+        the figure's HEIGHT about its feet with an inverse width — a 1px step spring. squash==1.0 is
+        byte-identical to the pre-juice figure."""
         if r < _FIGURE_MIN_R:
             pygame.draw.circle(self._screen, _OUTLINE, (cx, cy), r + 1)
             pygame.draw.circle(self._screen, color, (cx, cy), r)
             return cy - r
         screen = self._screen
+        base = cy + r                                # the feet — the squash pivots here
+        vy = lambda y: int(round(base - (base - y) * squash))
         head_r = max(2, round(r * 0.6))
-        hx, hy = cx, cy - head_r                     # head sits in the upper half of the cell
-        bw = max(2, round(r * 0.95))                 # body half-width at the base
-        top, bot = hy + head_r - 1, cy + r           # body spans from under the head to the base
+        hx, hy = cx, vy(cy - head_r)                 # head sits in the upper half of the cell
+        bw = max(2, round(r * 0.95 / max(0.6, squash)))   # inverse width keeps the volume ~constant
+        top, bot = vy(cy - 1), base                  # body spans from under the head to the base
         body = [(cx - round(bw * 0.5), top), (cx + round(bw * 0.5), top),
                 (cx + bw, bot), (cx - bw, bot)]
         pygame.draw.polygon(screen, color, body)
@@ -2835,7 +3365,9 @@ class PygameRenderer:
                 continue
             members = rec.get("members") or ()
             member_positions = [pos_by_name[n] for n in members if n in pos_by_name]
+            living = len(member_positions)               # V4-fix: only LIVING members size the town
             rad_cells = settlement_radius_cells(center, member_positions)
+            self._note_population(sid, living, center, rad_cells)   # V4.9: rise dust / collapse puff
             rx = max(cell, int(round(rad_cells * cell * _ISO_RX)))   # projected ellipse radii
             ry = max(2, rx // 2)
             cx, cy = self._to_px(int(center[0]), int(center[1]))
@@ -2860,7 +3392,7 @@ class PygameRenderer:
                 edge_w = 2
             regions.append((cx, cy, rx, ry, fill, fill_a, edge, edge_a, edge_w))
             towns.append({"sid": sid, "center": center, "cx": cx, "cy": cy,
-                          "count": len(members), "rx": rx, "owner": owner})
+                          "count": living, "rx": rx, "owner": owner})
         for cx, cy, rx, ry, fill, fill_a, _e, _ea, _ew in regions:        # V4.3: fills first
             pygame.draw.ellipse(overlay, (*fill, fill_a), (cx - rx, cy - ry, 2 * rx, 2 * ry))
         for cx, cy, rx, ry, _f, _fa, edge, edge_a, edge_w in regions:     # ...then all edges
@@ -2871,45 +3403,162 @@ class PygameRenderer:
         return towns
 
     def _draw_town_sprite(self, info: dict[str, Any], state: dict[str, Any]) -> int:
-        """Draw ONE settlement's built place at its projected centre (painter pass); return the
-        screen-y of the top of its cluster (where the label stacks). V4.6 keeps the slice-6 town
-        plan as a cluster ANCHORED on the iso ground point — V4.7 re-models the buildings as 3D
-        forms; here they simply stand on the correct tile in back-to-front order with the agents.
+        """Draw a settlement in the SINGLE-SPRITE modes (painter pass); return the label top-y.
+
+        Only the FAR strategy view (a block cluster + banner) and the tiny-cell view (a ring of
+        slice-4 houses) reach here — a built-up MID/CLOSE town is expanded into its individual iso
+        VOLUMES by `_emit_town` instead, so its buildings interleave with the agents in the sort.
         """
         sid, center, cx, cy = info["sid"], info["center"], info["cx"], info["cy"]
         count, owner, cell = info["count"], info["owner"], self._cell
         if self._lod == "far":
             self._draw_far_settlement(sid, cx, cy, count, owner, state)
             return cy - cell * 3
-        if cell >= _TOWN_MIN_CELL:
-            monarchs, leaders = state.get("monarchs", {}), state.get("leaders", {})
-            empires = state.get("empires", {})
-            mon = monarchs.get(sid, {}).get("monarch")
-            led = leaders.get(sid, {}).get("leader")
-            if mon is not None:
-                kind, ruler, is_emp = "castle", mon, (mon in empires)
-            elif led is not None:
-                kind, ruler, is_emp = "hall", led, False
-            else:
-                kind, ruler, is_emp = None, None, False
-            pers = ""
-            if ruler is not None:
-                for a in state.get("agents", []):
-                    if getattr(a, "name", None) == ruler:
-                        pers = getattr(a, "personality", "")
-                        break
-            color = agent_color(pers, vivid=True) if ruler else _DEFAULT_RULER
-            era_style = _ERA_STYLE.get(state.get("eras", {}).get(sid), "neolithic")
-            key = (count, kind, ruler, is_emp, cell, era_style)
-            cached = self._town_plans.get(sid)
-            if cached is None or cached[0] != key:
-                cached = (key, build_town_plan(center, count, kind, color, is_emp, cell, era_style))
-                self._town_plans[sid] = cached
-            self._draw_town(cx, cy, cached[1])
-            return cy - cached[1]["cluster_r"]
         rx = max(cell, int(round(settlement_radius_cells(center, []) * cell * _ISO_RX)))
         self._draw_settlement_houses(cx, cy, rx, count, cell)
         return cy
+
+    def _resolve_plan(self, info: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """The cached town PLAN for this settlement, rebuilt only when its membership / ruler /
+        era / zoom-bucket cell changes (the slice-6 cache key). A pure read of the institutions."""
+        sid, center, count, cell = info["sid"], info["center"], info["count"], self._cell
+        monarchs, leaders = state.get("monarchs", {}), state.get("leaders", {})
+        empires = state.get("empires", {})
+        mon = monarchs.get(sid, {}).get("monarch")
+        led = leaders.get(sid, {}).get("leader")
+        if mon is not None:
+            kind, ruler, is_emp = "castle", mon, (mon in empires)
+        elif led is not None:
+            kind, ruler, is_emp = "hall", led, False
+        else:
+            kind, ruler, is_emp = None, None, False
+        pers = ""
+        if ruler is not None:
+            for a in state.get("agents", []):
+                if getattr(a, "name", None) == ruler:
+                    pers = getattr(a, "personality", "")
+                    break
+        color = agent_color(pers, vivid=True) if ruler else _DEFAULT_RULER
+        era_style = _ERA_STYLE.get(state.get("eras", {}).get(sid), "neolithic")
+        key = (count, kind, ruler, is_emp, cell, era_style)
+        cached = self._town_plans.get(sid)
+        if cached is None or cached[0] != key:
+            cached = (key, build_town_plan(center, count, kind, color, is_emp, cell, era_style))
+            self._town_plans[sid] = cached
+        return cached[1]
+
+    def _emit_town(self, info: dict[str, Any],
+                   state: dict[str, Any]) -> tuple[list[tuple], int]:
+        """V4.7: paint a built-up town's flat GROUND now and hand its VOLUMES back as depth-sorted
+        sprites for the shared painter pass. Returns (structure_sprites, label_top_y).
+
+        Ground (drawn immediately, under every sprite): the packed-earth plaza, dirt paths out to
+        each dwelling, and one soft shadow per structure. Each building/granary/well/seat and every
+        palisade post is then emitted as a `('struct', ...)` sprite keyed by its projected ground-y,
+        so agents standing IN FRONT of a hut occlude it and those behind are occluded by it. Night
+        hearth/forge/torch pools are registered here (plan-derived, stable per town).
+        """
+        plan, cx, cy, cell = self._resolve_plan(info, state), info["cx"], info["cy"], self._cell
+        screen = self._screen
+        hw, hh, zh = cell, cell * 0.5, cell * _ISO_ZH
+
+        def off(wdx: float, wdy: float) -> tuple[int, int]:      # world offset -> screen (from centre)
+            return int(round(cx + (wdx - wdy) * hw)), int(round(cy + (wdx + wdy) * hh))
+
+        # -- GROUND: plaza disc (2:1 ellipse), paths, and every structure's shadow ---------
+        pr = plan["plaza_r"]
+        pygame.draw.ellipse(screen, _PLAZA, (cx - pr, cy - pr // 2, 2 * pr, pr))
+        for b in plan["buildings"]:
+            bx, by = off(b["wdx"], b["wdy"])
+            pygame.draw.line(screen, _PATH, (cx, cy), (bx, by), max(1, cell // 7))
+        # shadows (back-to-front doesn't matter for the flat ground layer)
+        for b in plan["buildings"]:
+            bx, by = off(b["wdx"], b["wdy"])
+            self._blit_shadow(bx, by + 1, b["fw"] * cell * 1.5, max(3, int(b["fd"] * cell * 0.6)))
+        if plan["granary"]:
+            gx, gy = off(plan["granary"]["wdx"], plan["granary"]["wdy"])
+            self._blit_shadow(gx, gy + 1, _GRANARY_FOOT * cell * 1.5, max(3, int(_GRANARY_FOOT * cell * 0.6)))
+        if plan["central"]["kind"]:
+            foot = plan["central"]["foot"]
+            self._blit_shadow(cx, cy + 2, foot * cell * 2.0, max(4, int(foot * cell * 0.8)))
+        wl = plan["well"]
+        wx, wy = off(wl["wdx"], wl["wdy"])
+        self._blit_shadow(wx, wy + 1, cell * 0.9, max(2, cell // 3))
+
+        # -- VOLUMES: one depth-keyed sprite per structure --------------------------------
+        structs: list[tuple] = []
+        tallest_top = cy
+        for b in plan["buildings"]:
+            bx, by = off(b["wdx"], b["wdy"])
+            structs.append((by, 0, "struct", ("hut", bx, by, b)))
+            tallest_top = min(tallest_top, by - int((b["z"] + 0.7) * zh))
+        if plan["granary"]:
+            gx, gy = off(plan["granary"]["wdx"], plan["granary"]["wdy"])
+            structs.append((gy, 0, "struct", ("granary", gx, gy, plan["granary"])))
+        # the palisade — a defensive WALL: a RING of thicker posts joined by rails, era-toned
+        # (timber brown / dressed stone, never near-white). Each segment is one depth-sorted sprite.
+        if plan["fence_rc"]:
+            rc = plan["fence_rc"]
+            pal = _PAL_STONE if plan["stone_wall"] else _PAL_WOOD
+            n = max(10, min(18, int(round(2 * math.pi * rc / 1.15))))
+            ring = [off(rc * math.cos(i / n * 2 * math.pi), rc * math.sin(i / n * 2 * math.pi))
+                    for i in range(n)]
+            for i in range(n):
+                p0, p1 = ring[i], ring[(i + 1) % n]
+                mmy = (p0[1] + p1[1]) // 2
+                lit = ((p0[0] + p1[0]) // 2 - cx) < 0          # west-facing panels catch the sun
+                panel = _shade(pal, _FACE_LIT if lit else _FACE_DARK)
+                structs.append((mmy, 0, "struct", ("wall", p0, p1, pal, panel)))
+        structs.append((wy, 0, "struct", ("well", wx, wy, wl)))
+        if plan["central"]["kind"]:
+            structs.append((cy, 1, "struct", ("seat", cx, cy, plan["central"])))
+            tallest_top = min(tallest_top, cy - int((plan["central"]["z"] + 1.4) * zh))
+
+        # -- NIGHT POOLS: hearth over the plaza, a forge for a metal-working town, seat torches ---
+        if self._nf > _NIGHT_EPS:
+            self._frame_lights.append(("hearth", cx, cy, max(5, pr // 2)))
+            if plan.get("forge"):
+                fx, fy = off(-plan["cluster_rc"] * 0.5, plan["cluster_rc"] * 0.4)
+                self._frame_lights.append(("forge", fx, fy, max(4, cell // 2)))
+            if plan["central"]["kind"] == "castle":
+                th = int(plan["central"]["z"] * 0.5 * zh)
+                self._frame_lights.append(("torch", cx - int(cell * 1.1), cy - th, cell))
+                self._frame_lights.append(("torch", cx + int(cell * 1.1), cy - th, cell))
+            elif plan["fence_rc"]:
+                self._frame_lights.append(("torch", wx, wy - int(_WELL_Z * zh) - 2, max(4, cell // 2)))
+
+        # V4.9: CLOSE-zoom life — coins drift up over the market (the plaza's front edge, clear of
+        # the seat), embers over a forge. Both in front of the seat so they read over the buildings.
+        if self._lod == "close":
+            self._emitters.append(off(plan["cluster_rc"] * 0.28, plan["cluster_rc"] * 0.28) + ("coin",))
+            if plan.get("forge"):
+                self._emitters.append(off(-plan["cluster_rc"] * 0.5, plan["cluster_rc"] * 0.4) + ("ember",))
+
+        return structs, tallest_top - 2
+
+    def _draw_structure(self, obj: tuple) -> None:
+        """Draw ONE town volume (painter pass): dispatch by kind to its iso-volume drawer."""
+        kind = obj[0]
+        if kind == "hut":
+            _k, bx, by, b = obj
+            self._draw_iso_box(bx, by, b["fw"], b["fd"], b["z"], b["wall"], b["roof"],
+                               roof_h=(0.85 if b["hip"] else 0.5), lit=b["lit"],
+                               door=True, windows=2)
+        elif kind == "granary":
+            _k, gx, gy, g = obj
+            self._draw_granary(gx, gy, g)
+        elif kind == "wall":
+            _k, p0, p1, pal, panel = obj
+            self._draw_wall_segment(p0, p1, pal, panel)
+        elif kind == "well":
+            _k, wx, wy, wl = obj
+            self._draw_well(wx, wy, wl)
+        else:                                          # the ruler's seat
+            _k, cx, cy, c = obj
+            if c["kind"] == "castle":
+                self._draw_castle(cx, cy, c["z"], c["foot"], c["color"], c["emperor"])
+            else:
+                self._draw_hall(cx, cy, c["z"], c["foot"], c["color"])
 
     def _draw_settlement_labels(self, jobs: list[tuple[str, int, int, int]]) -> None:
         """Draw the settlement name·size labels LAST, on a translucent chip above each cluster,
@@ -2938,7 +3587,7 @@ class PygameRenderer:
         so the figure rises above it and its shadow anchors at the feet. A ruler wears the vivid
         robe + crown; talkers get an emotion icon + speech bubble; CLOSE zoom adds a name tag.
         """
-        agent, gx, gy, r = obj
+        agent, gx, gy, r, squash = obj
         role = agent_role(agent.name, state)
         color = night_mute(agent_color(getattr(agent, "personality", ""),
                                        vivid=role in ("monarch", "emperor")), self._nf)
@@ -2948,7 +3597,7 @@ class PygameRenderer:
             pygame.draw.circle(self._screen, color, (gx, gy), dot)
             return
         self._blit_shadow(gx, gy, r * 2.1, max(2, int(r * 0.8)))     # shadow at the feet
-        figure_top = self._draw_agent_figure(gx, gy - r, r, color)   # feet land on the ground point
+        figure_top = self._draw_agent_figure(gx, gy - r, r, color, squash)   # feet on the ground point
         self._draw_role_marker(gx, figure_top, r, role)
         if agent.name in talkers:
             pers = getattr(agent, "personality", "")
@@ -3017,258 +3666,196 @@ class PygameRenderer:
         self._screen.blit(lab, (cx - lab.get_width() // 2, top_y))
 
     # -- Slice 6: detailed settlement rendering from a cached plan (pure drawing) ---
-    def _draw_town(self, cx: int, cy: int, plan: dict[str, Any]) -> None:
-        """Render a settlement from its cached `plan`: plaza, fence, paths, buildings, seat, well.
+    # -- V4.7: iso BUILDING VOLUMES (3D forms on the tilted ground; pure drawing) --
+    def _iso_box_corners(self, bx: float, by: float, fw: float, fd: float, z: float):
+        """The four GROUND corners and four TOP corners (lifted by z) of a world-footprint box
+        centred on screen point (bx, by), plus the height rise in px. All in screen space through
+        the same 2:1 iso geometry the shared transform uses (hw=cell, hh=cell/2)."""
+        cell = self._cell
+        hw, hh = cell, cell * 0.5
+        a, b = fw / 2.0, fd / 2.0
+        def g(ox, oy):
+            return (bx + (ox - oy) * hw, by + (ox + oy) * hh)
+        gN, gE, gS, gW = g(-a, -b), g(a, -b), g(a, b), g(-a, b)
+        zpx = z * cell * _ISO_ZH
+        up = lambda p: (p[0], p[1] - zpx)
+        return (gN, gE, gS, gW), (up(gN), up(gE), up(gS), up(gW)), zpx
 
-        Drawables are painted back-to-front (a packed-earth plaza and palisade behind, dirt paths,
-        then every building/granary/seat sorted by ground-y so southern structures overlap northern
-        ones), giving a clustered village real depth. All offsets are pixel deltas from (cx, cy).
-        """
-        screen = self._screen
-        pygame.draw.circle(screen, _PLAZA, (cx, cy), plan["plaza_r"])          # market square ground
-        if plan["fence_r"]:
-            self._draw_fence_ring(cx, cy, plan["fence_r"])
-        for b in plan["buildings"]:                                            # dirt roads to each house
-            pygame.draw.line(screen, _PATH, (cx, cy), (cx + b["dx"], cy + b["dy"]), plan["path_w"])
+    def _ipoly(self, pts, color, width: int = 0) -> None:
+        pygame.draw.polygon(self._screen, color,
+                            [(int(round(x)), int(round(y))) for x, y in pts], width)
 
-        # Slice 9: GROUND SHADOWS first (one top-left sun) so every structure sits on the earth
-        # rather than floating; cached alpha-stamp blits, drawn under all the buildings.
-        for b in plan["buildings"]:
-            self._blit_shadow(cx + b["dx"], cy + b["dy"] + 1, b["w"] * 1.35, max(3, int(b["h"] * 0.36)))
-        if plan["granary"]:
-            g = plan["granary"]
-            self._blit_shadow(cx + g["dx"], cy + g["dy"] + 1, g["scale"] * 1.4, max(3, int(g["scale"] * 0.4)))
-        if plan["central"]["kind"]:
-            sc = plan["central"]["scale"]
-            self._blit_shadow(cx, cy + 2, sc * (3.4 if plan["central"]["kind"] == "castle" else 2.4),
-                              max(4, int(sc * 0.5)))
-        wl = plan["well"]
-        self._blit_shadow(cx + wl["dx"], cy + wl["dy"] + 1, wl["scale"] * 1.3, max(2, wl["scale"] // 2))
+    @staticmethod
+    def _face_pt(face, u: float, v: float):
+        """A point on a wall FACE [bottomLeft, bottomRight, topRight, topLeft] at fractional
+        (u across, v up) — used to seat doors/windows onto the parallelogram face (pure)."""
+        g0, g1, t1, t0 = face
+        bx = g0[0] + (g1[0] - g0[0]) * u
+        by = g0[1] + (g1[1] - g0[1]) * u
+        tx = t0[0] + (t1[0] - t0[0]) * u
+        ty = t0[1] + (t1[1] - t0[1]) * u
+        return (bx + (tx - bx) * v, by + (ty - by) * v)
 
-        ops: list[tuple[int, str, dict]] = [(b["dy"], "house", b) for b in plan["buildings"]]
-        if plan["granary"]:
-            ops.append((plan["granary"]["dy"], "granary", plan["granary"]))
-        if plan["central"]["kind"]:
-            ops.append((0, "central", plan["central"]))
-        for _dy, kind, d in sorted(ops, key=lambda o: o[0]):                   # painter's order by ground-y
-            if kind == "house":
-                self._draw_building(cx + d["dx"], cy + d["dy"], d["w"], d["h"],
-                                    d["wall"], d["roof"], d["hip"], d["lit"])
-            elif kind == "granary":
-                self._draw_granary(cx + d["dx"], cy + d["dy"], d["scale"])
-            elif d["kind"] == "castle":
-                self._draw_castle(cx, cy, d["scale"], d["color"], d["emperor"])
-            else:
-                self._draw_hall(cx, cy, d["scale"], d["color"])
-        w = plan["well"]
-        self._draw_well(cx + w["dx"], cy + w["dy"], w["scale"])
+    def _iso_hip_roof(self, top, apex, roof) -> None:
+        """A hip roof: four triangles from the top diamond's edges up to a single apex, the
+        west-facing planes catching the sun and the east-facing planes in shade, painted back
+        (north) to front so the near slopes overlap the far ones."""
+        tN, tE, tS, tW = top
+        lit_r, dark_r = _shade(roof, _ROOF_LIT), _shade(roof, _ROOF_DARK)
+        edges = ((tN, tE, dark_r), (tE, tS, dark_r), (tS, tW, lit_r), (tW, tN, lit_r))
+        for p, q, col in sorted(edges, key=lambda e: e[0][1] + e[1][1]):
+            self._ipoly([p, q, apex], col)
+            self._ipoly([p, q, apex], _OUTLINE, 1)
 
-        # Slice 9: CHIMNEY SMOKE — the lit (occupied) dwellings breathe; a hash picks which
-        # hearths are burning, and smoke_puffs (pure) drives the rise/drift/fade per frame.
-        # Slice 10: at night the smoke catches the MOONLIGHT — a paler, cooler tint (the
-        # night factor is quantized so the soft-stamp cache stays bounded).
-        smoke_c = lerp_color(_SMOKE, PALETTE["moon_smoke"], 0.7 * (round(self._nf * 8) / 8.0))
-        for b in plan["buildings"]:
-            if not b["lit"] or b["h"] < 7 or b["w"] < 9:
-                continue
-            if terrain_noise(b["dx"], b["dy"], 61) < 0.45:
-                continue
-            gx, gy = cx + b["dx"], cy + b["dy"]
-            half = max(2, b["w"] // 2)
-            roof_h = max(3, int(b["h"] * 0.7))
-            cw = max(1, b["w"] // 6)
-            chx = gx + half - cw - 1 + cw // 2                  # matches the drawn chimney
-            chy = gy - b["h"] - roof_h // 2 - 1
-            for dx, dy, r, alpha in smoke_puffs(self._frame, gx, gy):
-                if alpha > 0:
-                    stamp = self._soft_stamp(r, smoke_c, alpha)
-                    screen.blit(stamp, (chx + dx - stamp.get_width() // 2,
-                                        chy + dy - stamp.get_height() // 2))
+    def _draw_iso_box(self, bx: float, by: float, fw: float, fd: float, z: float,
+                      wall, roof, *, roof_h: float = 0.0, lit: bool = False,
+                      door: bool = False, windows: int = 0, top=None) -> float:
+        """The core VOLUME: a box of world footprint (fw, fd) and height z on the ground point
+        (bx, by), with a sun-lit south-west wall, a shaded south-east wall and either a hip roof
+        (roof_h>0) or a flat top. Optional door/windows seat onto the front faces; a lit window at
+        night registers a point-light that spills onto the face it sits in. Returns the height px."""
+        cell = self._cell
+        (gN, gE, gS, gW), (tN, tE, tS, tW), zpx = self._iso_box_corners(bx, by, fw, fd, z)
+        left = [gW, gS, tS, tW]      # south-west face — sun-lit
+        right = [gS, gE, tE, tS]     # south-east face — shaded
+        self._ipoly(left, _shade(wall, _FACE_LIT))
+        self._ipoly(right, _shade(wall, _FACE_DARK))
+        if door and cell >= 9:
+            self._ipoly([self._face_pt(left, 0.34, 0.0), self._face_pt(left, 0.66, 0.0),
+                         self._face_pt(left, 0.66, min(0.55, 1.4 / max(0.6, z))),
+                         self._face_pt(left, 0.34, min(0.55, 1.4 / max(0.6, z)))], _DOOR)
+        if windows and cell >= 12 and z > 0.5:
+            night = lit and self._nf > _NIGHT_EPS
+            wc = (lerp_color(_WINDOW_LIT, (255, 238, 168), 0.8 * self._nf) if night
+                  else _WINDOW_LIT if lit else _WINDOW_DARK)
+            for u in ([0.32, 0.68][:windows]):
+                for face, col in ((left, wc), (right, _shade(wc, -22))):
+                    c = self._face_pt(face, u, 0.62)
+                    hu = 0.10 * cell
+                    self._ipoly([(c[0] - hu, c[1] - hu * 0.9), (c[0] + hu, c[1] - hu * 0.9),
+                                 (c[0] + hu, c[1] + hu * 0.9), (c[0] - hu, c[1] + hu * 0.9)], col)
+                if night:
+                    wx, wy = self._face_pt(left, u, 0.62)
+                    self._frame_lights.append(("window", int(wx), int(wy), max(3, cell // 3)))
+        self._ipoly(left, _OUTLINE, 1)
+        self._ipoly(right, _OUTLINE, 1)
+        if roof_h > 0:
+            apex = (bx, by - zpx - roof_h * cell * _ISO_ZH)
+            self._iso_hip_roof((tN, tE, tS, tW), apex, roof)
+        else:
+            self._ipoly([tN, tE, tS, tW], top if top is not None else roof)
+            self._ipoly([tN, tE, tS, tW], _OUTLINE, 1)
+        return zpx
 
-        # Slice 10: TORCHLIGHT — a castle raises two gate torches, a large (palisaded) town
-        # one by its well. Positions are plan-derived (stable per settlement); the flame and
-        # halo are drawn later, over the grade, so they burn through the night.
-        if self._nf > _NIGHT_EPS:
-            central = plan["central"]
-            if central["kind"] == "castle":
-                off = max(4, int(central["scale"] * 1.15))
-                self._frame_lights.append(("torch", cx - off, cy - 3, central["scale"]))
-                self._frame_lights.append(("torch", cx + off, cy - 3, central["scale"]))
-            elif plan["fence_r"]:
-                self._frame_lights.append(("torch", cx + wl["dx"],
-                                           cy + wl["dy"] - wl["scale"] - 2,
-                                           max(4, wl["scale"])))
-            # V4.5: every town has a HEARTH glow over its plaza; a metallurgy town (Bronze+)
-            # adds a hotter FORGE pool — both plan-derived, so positions are stable per town.
-            self._frame_lights.append(("hearth", cx, cy, max(5, plan["plaza_r"] // 2)))
-            if plan.get("forge"):
-                fx = cx - int(plan["cluster_r"] * 0.5)
-                fy = cy + int(plan["cluster_r"] * 0.4)
-                self._frame_lights.append(("forge", fx, fy, max(4, self._cell // 2)))
+    def _iso_cone(self, bx: float, by: float, foot: float, z: float, roof_h: float, color) -> None:
+        """A conical/pyramidal cap (a tower roof) in a flat colour, sat on a box's top diamond."""
+        _g, top, zpx = self._iso_box_corners(bx, by, foot, foot, z)
+        apex = (bx, by - zpx - roof_h * self._cell * _ISO_ZH)
+        for p, q in ((top[0], top[1]), (top[1], top[2]), (top[2], top[3]), (top[3], top[0])):
+            self._ipoly([p, q, apex], color)
+            self._ipoly([p, q, apex], _OUTLINE, 1)
 
-    def _draw_building(self, gx: int, gy: int, w: int, h: int, wall: tuple, roof: tuple,
-                       hip: bool, lit: bool) -> None:
-        """A detailed house at ground-centre (gx, gy): walls, gabled/hip roof + shading, door,
-        windows and a chimney — a recognisable dwelling rather than a plain square."""
-        s = self._screen
-        half = max(2, w // 2)
-        wall_rect = pygame.Rect(gx - half, gy - h, 2 * half, h)
-        pygame.draw.rect(s, wall, wall_rect)
-        # Slice 9: one consistent top-left sun — the right face falls into shade, the left
-        # edge catches light (the roof's sun-away slope was already darkened; now unified).
-        face_w = max(1, wall_rect.width // 3)
-        pygame.draw.rect(s, _shade(wall, _FACE_SHADE),
-                         (wall_rect.right - face_w, wall_rect.top, face_w, wall_rect.height))
-        pygame.draw.line(s, _shade(wall, _FACE_LIGHT),
-                         (wall_rect.left + 1, wall_rect.top + 1),
-                         (wall_rect.left + 1, wall_rect.bottom - 2), 1)
-        pygame.draw.rect(s, _OUTLINE, wall_rect, 1)
-        roof_h = max(3, int(h * 0.7))
-        rtop = wall_rect.top
-        if hip:                                                               # hip roof (trapezoid)
-            pk = max(1, half // 2)
-            roof_pts = [(gx - half - 1, rtop), (gx + half + 1, rtop),
-                        (gx + pk, rtop - roof_h), (gx - pk, rtop - roof_h)]
-            ridge = [(gx - pk, rtop - roof_h), (gx + pk, rtop - roof_h), (gx + half + 1, rtop)]
-        else:                                                                 # gabled roof (peak)
-            roof_pts = [(gx - half - 1, rtop), (gx + half + 1, rtop), (gx, rtop - roof_h)]
-            ridge = [(gx, rtop - roof_h), (gx + half + 1, rtop), (gx, rtop)]
-        pygame.draw.polygon(s, roof, roof_pts)
-        pygame.draw.polygon(s, _shade(roof, -24), ridge)                      # shaded sunless slope
-        pygame.draw.polygon(s, _OUTLINE, roof_pts, 1)
-        dw, dh = max(2, w // 4), max(3, h // 2)                               # door
-        pygame.draw.rect(s, _DOOR, (gx - dw // 2, gy - dh, dw, dh))
-        if w >= 9:                                                            # windows
-            # Slice 9: a lit window FLICKERS — a subtle hearth-light brightness oscillation.
-            win = (_shade(_WINDOW_LIT, int(5 * math.sin(self._frame * 0.35 + gx * 0.7)))
-                   if lit else _WINDOW_DARK)
-            wsz = max(2, w // 5)
-            if lit and self._nf > _NIGHT_EPS:
-                # Slice 10: at night the pane itself burns brighter, and each lit window
-                # registers a GLOW light drawn later over the grade — towns twinkle.
-                win = lerp_color(win, (255, 238, 168), 0.8 * self._nf)
-                wy = gy - h + 2 + wsz // 2
-                self._frame_lights.append(("window", gx - half + 2 + wsz // 2, wy, wsz))
-                self._frame_lights.append(("window", gx + half - 2 - wsz + wsz // 2, wy, wsz))
-            pygame.draw.rect(s, win, (gx - half + 2, gy - h + 2, wsz, wsz))
-            pygame.draw.rect(s, win, (gx + half - 2 - wsz, gy - h + 2, wsz, wsz))
-        if h >= 7:                                                            # chimney
-            cw = max(1, w // 6)
-            pygame.draw.rect(s, _CHIMNEY, (gx + half - cw - 1, rtop - roof_h // 2, cw, roof_h // 2 + 2))
+    def _iso_crenel(self, bx: float, by: float, foot: float, z: float) -> None:
+        """A row of merlons along a keep/tower's two FRONT top edges (battlement silhouette)."""
+        _g, (tN, tE, tS, tW), _z = self._iso_box_corners(bx, by, foot, foot, z)
+        m = max(2, self._cell // 5)
+        for a, b in ((tW, tS), (tS, tE)):
+            for i in range(4):
+                u = i / 3.0
+                x = a[0] + (b[0] - a[0]) * u
+                y = a[1] + (b[1] - a[1]) * u
+                pygame.draw.rect(self._screen, _CASTLE_STONE_DK, (int(x) - 1, int(y) - m, 2, m))
 
-    def _crenellate(self, x: int, top_y: int, width: int, color: tuple) -> None:
-        """A row of merlons (battlement notches) along a tower/keep top edge."""
-        m = max(2, width // 7)
-        n = max(2, width // (2 * m))
-        for i in range(n):
-            mx = x + i * 2 * m
-            if mx + m <= x + width:
-                pygame.draw.rect(self._screen, color, (mx, top_y - m, m, m))
+    def _pennant(self, cx: int, cy: int, ztop: float, color, *, double: bool = False) -> None:
+        """A pennant on a pole rising to world-height `ztop` above the seat (royalty/leader colour).
+        V4.9: the cloth RIPPLES in the wind — a wavy trailing edge on the frame clock; an emperor
+        flies a second flag below."""
+        s, cell = self._screen, self._cell
+        base = cy - int(ztop * cell * _ISO_ZH)
+        top = base - max(5, int(cell * 0.9))
+        pygame.draw.line(s, _OUTLINE, (cx, base), (cx, top), 1)
+        self._draw_flag(cx, top, cell, color)
+        if double:
+            self._draw_flag(cx, top + max(5, int(cell * 0.5)), int(cell * 0.78), _shade(color, 30))
 
-    def _draw_castle(self, cx: int, cy: int, scale: int, color: tuple, emperor: bool) -> None:
-        """A monarch's CASTLE: a tall stone keep with battlements + flanking towers (with conical
-        roofs in the RULER's colour), a gate, and a banner — unmistakably grander than a village.
-        An emperor's seat is taller with a second banner."""
-        s = self._screen
-        color = night_mute(color, self._nf)  # slice 10: banners mute in the dark
-        kw = max(8, int(scale * 1.7))
-        kh = max(12, int(scale * (2.8 if emperor else 2.3)))
-        tw = max(5, int(scale * 0.95))
-        th = int(kh * 0.82)
-        # Slice 9: the top-left sun — the WEST tower stands lit, the EAST tower in shade.
-        towers = ((cx - kw // 2 - tw // 2 + 1, _CASTLE_STONE),
-                  (cx + kw // 2 + tw // 2 - 1, _CASTLE_STONE_DK))
-        for sx, tone in towers:
-            trect = pygame.Rect(sx - tw // 2, cy - th, tw, th)
-            pygame.draw.rect(s, tone, trect)
-            pygame.draw.rect(s, _OUTLINE, trect, 1)
-            self._crenellate(trect.left, trect.top, tw, _shade(tone, 20))
-            pygame.draw.polygon(s, color, [(trect.left - 1, trect.top - 2),  # conical roof in ruler colour
-                                           (trect.right + 1, trect.top - 2),
-                                           (sx, trect.top - tw)])
-        keep = pygame.Rect(cx - kw // 2, cy - kh, kw, kh)                     # the central keep
-        pygame.draw.rect(s, _CASTLE_STONE, keep)
-        face_w = max(1, kw // 3)                                              # sun-away facet
-        pygame.draw.rect(s, _shade(_CASTLE_STONE, _FACE_SHADE), (keep.right - face_w, keep.top, face_w, kh))
-        pygame.draw.line(s, _shade(_CASTLE_STONE, _FACE_LIGHT),
-                         (keep.left + 1, keep.top + 1), (keep.left + 1, keep.bottom - 2), 1)
-        pygame.draw.rect(s, _OUTLINE, keep, 1)
-        self._crenellate(keep.left, keep.top, kw, _CASTLE_STONE_DK)
-        gw, gh = max(3, kw // 3), max(4, kh // 3)                             # gate
-        pygame.draw.rect(s, _GATE, (cx - gw // 2, cy - gh, gw, gh))
-        pygame.draw.arc(s, _GATE, (cx - gw // 2, cy - gh - gw // 2, gw, gw), 0, math.pi, 2)
-        for wy in (cy - kh + kh // 3, cy - kh + 2 * kh // 3):                 # arrow-slit windows
-            pygame.draw.rect(s, _WINDOW_DARK, (cx - 1, wy, 2, max(2, kh // 6)))
-        pole_top = keep.top - max(4, scale)                                   # banner pole + pennant
-        pygame.draw.line(s, _OUTLINE, (cx, keep.top), (cx, pole_top), 1)
-        # Slice 9: the pennant FLUTTERS (tip riding a gentle frame-clock sine) and its upper
-        # edge carries a highlight rim — royalty catches the light.
-        fl = int(round(math.sin(self._frame * 0.3 + cx * 0.2) * 1.5))
-        tip = (cx + scale, pole_top + 2 + fl)
-        pygame.draw.polygon(s, color, [(cx, pole_top), tip, (cx, pole_top + 5)])
-        pygame.draw.line(s, _shade(color, 55), (cx, pole_top), tip, 1)
-        if emperor:
-            tip2 = (cx + scale - 2, pole_top + 7 - fl)
-            pygame.draw.polygon(s, _shade(color, 30), [(cx, pole_top + 5), tip2, (cx, pole_top + 10)])
+    def _draw_flag(self, cx: int, top: int, cell: int, color) -> None:
+        """A rippling pennant: a triangle whose windward TOP edge waves on the frame clock (the
+        ripple deepens toward the free-flying fly end), with a lit top edge catching the wind."""
+        s, f = self._screen, self._frame
+        L = max(6, int(cell * 0.9))
+        H = max(3, int(cell * 0.32))
+        seg = 4
+        top_edge = [(cx + int(L * (i / seg)),
+                     top + int(math.sin(f * 0.28 - (i / seg) * 3.2 + cx * 0.25) * (1.0 + (i / seg) * 2.0)))
+                    for i in range(seg + 1)]
+        poly = top_edge + [(cx + int(L * 0.82), top + H), (cx, top + H)]
+        self._ipoly(poly, color)
+        self._ipoly(poly, _shade(color, -34), 1)
+        pygame.draw.lines(s, _shade(color, 55), False, top_edge, 1)   # the lit windward edge
 
-    def _draw_hall(self, cx: int, cy: int, scale: int, color: tuple) -> None:
-        """A trust-leader's HALL: a longhouse larger than a hut, with a big gabled roof, a double
-        door and a small pennant in the leader's colour — between a common house and a castle."""
-        s = self._screen
-        color = night_mute(color, self._nf)  # slice 10: pennants mute in the dark
-        w, h = max(10, int(scale * 1.9)), max(8, int(scale * 1.4))
-        self._draw_building(cx, cy, w, h, _WALL_TONES[1], _ROOF_TONES[3], hip=False, lit=True)
-        dw = max(3, w // 4)                                                   # a grander double door
-        pygame.draw.rect(s, _DOOR, (cx - dw // 2, cy - max(4, h // 2), dw, max(4, h // 2)))
-        pygame.draw.line(s, _shade(_DOOR, 30), (cx, cy - max(4, h // 2)), (cx, cy), 1)
-        peak = cy - h - max(3, int(h * 0.7))
-        pygame.draw.line(s, _OUTLINE, (cx, peak), (cx, peak - max(4, scale)), 1)  # pennant pole
-        # Slice 9: the leader's pennant flutters gently too, with a lit upper edge.
-        fl = int(round(math.sin(self._frame * 0.3 + cx * 0.2) * 1.5))
-        top = peak - max(4, scale)
-        tip = (cx + max(4, scale - 1), top + 2 + fl)
-        pygame.draw.polygon(s, color, [(cx, top), tip, (cx, top + 5)])
-        pygame.draw.line(s, _shade(color, 55), (cx, top), tip, 1)
+    def _draw_hall(self, cx: int, cy: int, z: float, foot: float, color) -> None:
+        """A trust-leader's HALL: a longhouse volume well above the huts, a big hip roof and a
+        pennant in the leader's colour — between a common hut and a monarch's keep."""
+        color = night_mute(color, self._nf)
+        self._draw_iso_box(cx, cy, foot, foot * 0.8, z, _WALL_TONES[1], _ROOF_TONES[3],
+                           roof_h=1.05, lit=True, door=True, windows=2)
+        self._pennant(cx, cy, z + 0.7, color)
 
-    def _draw_granary(self, gx: int, gy: int, scale: int) -> None:
-        """A granary: a stout light-walled store with a tall conical roof, set near the fields."""
-        s = self._screen
-        w, h = max(6, int(scale * 0.95)), max(8, int(scale * 1.5))
-        rect = pygame.Rect(gx - w // 2, gy - h, w, h)
-        pygame.draw.rect(s, _GRANARY_WALL, rect)
-        pygame.draw.rect(s, _OUTLINE, rect, 1)
-        for ly in range(rect.top + 2, rect.bottom, max(2, h // 4)):           # plank lines
-            pygame.draw.line(s, _shade(_GRANARY_WALL, -22), (rect.left, ly), (rect.right, ly), 1)
-        pygame.draw.polygon(s, _ROOF_TONES[2], [(rect.left - 2, rect.top), (rect.right + 2, rect.top),
-                                                (gx, rect.top - int(scale * 1.1))])
-        pygame.draw.polygon(s, _OUTLINE, [(rect.left - 2, rect.top), (rect.right + 2, rect.top),
-                                          (gx, rect.top - int(scale * 1.1))], 1)
+    def _draw_castle(self, cx: int, cy: int, z: float, foot: float, color, emperor: bool) -> None:
+        """A monarch's CASTLE: a tall crenellated stone KEEP that genuinely TOWERS, flanked by two
+        towers with conical roofs in the ruler's colour, a gate on the lit face and a banner — a
+        capital readable as a capital from across the map by silhouette alone."""
+        color = night_mute(color, self._nf)
+        cell = self._cell
+        # flanking towers seated just OUTSIDE the keep's footprint (at its west/east corners) and a
+        # touch behind it, so the keep sits between them and each tower reads distinctly at close zoom.
+        tx_off = int(round((foot + _TOWER_FOOT) * cell))
+        ty = cy - int(round(cell * 0.15))
+        for sgn, tone in ((-1, _CASTLE_STONE), (1, _CASTLE_STONE_DK)):
+            tx = cx + sgn * tx_off
+            self._draw_iso_box(tx, ty, _TOWER_FOOT, _TOWER_FOOT, _TOWER_Z, tone, _CASTLE_STONE_DK)
+            self._iso_cone(tx, ty, _TOWER_FOOT, _TOWER_Z, 0.9, color)
+        self._draw_iso_box(cx, cy, foot, foot, z, _CASTLE_STONE, _CASTLE_STONE)   # the keep
+        # a dark gate arch on the lit (south-west) face
+        (gN, gE, gS, gW), (tN, tE, tS, tW), _z = self._iso_box_corners(cx, cy, foot, foot, z)
+        lf = [gW, gS, tS, tW]
+        self._ipoly([self._face_pt(lf, 0.40, 0.0), self._face_pt(lf, 0.60, 0.0),
+                     self._face_pt(lf, 0.60, 0.34), self._face_pt(lf, 0.40, 0.34)], _GATE)
+        self._iso_crenel(cx, cy, foot, z)
+        self._pennant(cx, cy, z, color, double=emperor)
 
-    def _draw_well(self, gx: int, gy: int, scale: int) -> None:
-        """A stone well with water and a little gabled roof on two posts (the village centre)."""
-        s = self._screen
-        r = max(3, scale // 2)
-        pygame.draw.circle(s, _WELL_STONE, (gx, gy), r)
-        pygame.draw.circle(s, _WELL_WATER, (gx, gy), max(1, r - 2))
-        pygame.draw.circle(s, _OUTLINE, (gx, gy), r, 1)
-        ph = max(4, scale)
-        pygame.draw.line(s, _TREE_TRUNK, (gx - r, gy), (gx - r, gy - ph), 1)
-        pygame.draw.line(s, _TREE_TRUNK, (gx + r, gy), (gx + r, gy - ph), 1)
-        pygame.draw.polygon(s, _ROOF_TONES[0], [(gx - r - 1, gy - ph), (gx + r + 1, gy - ph),
-                                                (gx, gy - ph - r)])
+    def _draw_granary(self, gx: int, gy: int, g: dict) -> None:
+        """A granary: a stout light-walled store as its own tall narrow volume with a high conical
+        roof, distinct from the dwellings around it."""
+        self._draw_iso_box(gx, gy, g["fw"], g["fd"], g["z"], _GRANARY_WALL, _ROOF_TONES[2],
+                           roof_h=1.35, door=True)
 
-    def _draw_fence_ring(self, cx: int, cy: int, radius: int) -> None:
-        """A palisade: posts joined by rails ringing a large settlement (deterministic spacing)."""
-        s = self._screen
-        n = max(10, int(radius / max(3, self._cell * 0.6)))
-        prev = None
-        for i in range(n + 1):
-            ang = (i / n) * 2 * math.pi
-            x, y = int(cx + radius * math.cos(ang)), int(cy + radius * math.sin(ang))
-            if prev is not None:
-                pygame.draw.line(s, _FENCE, prev, (x, y), 1)
-            pygame.draw.circle(s, _shade(_FENCE, 18), (x, y), 1)
-            prev = (x, y)
+    def _draw_well(self, wx: int, wy: int, wl: dict) -> None:
+        """A stone well: a low ring volume with dark water on top and a little gabled roof on two
+        posts — a distinct civic mark at the village centre."""
+        s, cell = self._screen, self._cell
+        z = wl["z"]
+        self._draw_iso_box(wx, wy, 0.5, 0.5, z, _WELL_STONE, _WELL_WATER, top=_WELL_WATER)
+        topy = wy - int(z * cell * _ISO_ZH)
+        ph = max(4, int(cell * 0.85))
+        for dxp in (-int(cell * 0.32), int(cell * 0.32)):
+            pygame.draw.line(s, _TREE_TRUNK, (wx + dxp, topy), (wx + dxp, topy - ph), 1)
+        pygame.draw.polygon(s, _ROOF_TONES[0],
+                            [(wx - int(cell * 0.45), topy - ph), (wx + int(cell * 0.45), topy - ph),
+                             (wx, topy - ph - int(cell * 0.4))])
+
+    def _draw_wall_segment(self, p0: tuple, p1: tuple, pal: tuple, panel: tuple) -> None:
+        """One span of PALISADE: a rail/wall panel rising between two ring points, plus a thicker
+        POST standing at p0 — so the perimeter reads as a continuous defensive WALL, not a scatter
+        of pale shards. `panel` is the era wall tone pre-shaded for this span's sun facing."""
+        s, zh = self._screen, self._cell * _ISO_ZH
+        wz = _PAL_WALL_Z * zh
+        top0, top1 = (p0[0], p0[1] - wz), (p1[0], p1[1] - wz)
+        self._ipoly([p0, p1, top1, top0], panel)                 # the rail panel body
+        pygame.draw.line(s, _shade(pal, 24), top0, top1, 1)      # a lit cap rail along the top
+        self._ipoly([p0, p1, top1, top0], _OUTLINE, 1)           # a defined edge
+        self._draw_iso_box(p0[0], p0[1], _PAL_POST_FOOT, _PAL_POST_FOOT, _PAL_POST_Z,
+                           pal, _shade(pal, -14), roof_h=0.16)    # a stout post at the junction
 
     def _draw_hud(self, state: dict[str, Any], map_px: int, paused: bool,
                   in_battle: bool = False) -> None:
@@ -3480,18 +4067,35 @@ class PygameRenderer:
         self._cam_tx, self._cam_ty = clamp_camera((ax + bx) / 2.0, (ay + by) / 2.0,
                                                   self._cam_tcell, self._size,
                                                   (self._map_px, self._map_px))
-        start = time.monotonic()
+        # V4.9: the beat time is an ACCUMULATED clock (not wall time), so a brief SLOW-MOTION dip
+        # around the decisive blow really slows the picture. A short sharp SHAKE hits when the clash
+        # joins (scaled to casualties), and the decisive blow adds a stronger shake + an impact FLASH.
+        n_cas = len(scene.get("att_dead") or ()) + len(scene.get("def_dead") or ())
+        t2 = _CIN_MUSTER + _CIN_MARCH                      # clash joins here
+        blow = t2 + _CIN_CLASH - 0.16                      # the decisive blow, late in the clash
         after_start = _CIN_TOTAL - _CIN_AFTER
+        clock, last = 0.0, time.monotonic()
+        clash_shook = blow_fired = False
         try:
             while True:
                 if self._pump_cinema_events():
                     return                        # skipped -> next frame is the settled end-state
-                el = time.monotonic() - start
-                if el >= _CIN_TOTAL:
+                now = time.monotonic()
+                dt, last = now - last, now
+                ts = 0.35 if blow - 0.10 <= clock <= blow + 0.22 else 1.0   # slow-mo around the blow
+                clock += dt * ts
+                if clock >= _CIN_TOTAL:
                     return
-                frac = 0.0 if el < after_start else (el - after_start) / _CIN_AFTER
+                if not clash_shook and clock >= t2:                         # the clash joins
+                    clash_shook = True
+                    self._shake_amp = min(_SHAKE_MAX, 2.5 + 1.2 * n_cas)
+                if not blow_fired and clock >= blow:                        # the decisive blow lands
+                    blow_fired = True
+                    self._shake_amp = min(_SHAKE_MAX, 4.0 + 1.4 * n_cas)
+                    self._flash_amp = 0.42
+                frac = 0.0 if clock < after_start else (clock - after_start) / _CIN_AFTER
                 self._territory_lerp = self._territory_colors(scene, frac, state)
-                self._draw(state, battle=(scene, el))
+                self._draw(state, battle=(scene, clock))
                 time.sleep(1 / 60)
         finally:
             self._territory_lerp = {}
@@ -3511,19 +4115,20 @@ class PygameRenderer:
             out[sid] = lerp_color(from_c, to_c, ease(frac))
         return out
 
-    def _formation(self, n: int, ux: float, uy: float, salt: int) -> list[tuple[float, float]]:
-        """Rank-and-file pixel offsets for `n` soldiers facing (ux, uy) — deterministic ranks of
-        four with a small per-soldier hash jitter (terrain_noise), so a host reads as a host."""
-        px_, py_ = -uy, ux                        # the across-the-line direction
-        cell = self._cell
+    def _formation(self, n: int, uwx: float, uwy: float, salt: int) -> list[tuple[float, float]]:
+        """Rank-and-file WORLD-cell offsets for `n` soldiers facing world direction (uwx, uwy) —
+        deterministic ranks of four with a small per-soldier hash jitter (V4.8). Offsets are in
+        world cells and projected per soldier, so a host's ranks recede ALONG the tilted ground
+        toward the enemy, not down flat screen space."""
+        pwx, pwy = -uwy, uwx                      # the across-the-line direction, in world cells
         out = []
         for i in range(n):
             row, col = divmod(i, 4)
-            across = (col - 1.5) * cell * 0.62
-            back = row * cell * 0.55
-            jx = (terrain_noise(i, salt, 11) - 0.5) * cell * 0.25
-            jy = (terrain_noise(i, salt, 12) - 0.5) * cell * 0.25
-            out.append((across * px_ - back * ux + jx, across * py_ - back * uy + jy))
+            across = (col - 1.5) * 0.62
+            back = row * 0.55
+            jx = (terrain_noise(i, salt, 11) - 0.5) * 0.25
+            jy = (terrain_noise(i, salt, 12) - 0.5) * 0.25
+            out.append((across * pwx - back * uwx + jx, across * pwy - back * uwy + jy))
         return out
 
     def _draw_soldier(self, x: float, y: float, color: tuple, facing_right: bool) -> None:
@@ -3587,43 +4192,48 @@ class PygameRenderer:
         """
         cell = self._cell
         screen = self._screen
-        ax, ay = self._to_px(*scene["att_pos"])
-        bx, by = self._to_px(*scene["def_pos"])
-        dist = math.hypot(bx - ax, by - ay) or 1.0
-        ux, uy = (bx - ax) / dist, (by - ay) / dist
-        # The clash line sits at the DEFENDER settlement's edge, pulled toward the attacker.
-        m = (bx - ux * min(dist * 0.5, cell * 2.4), by - uy * min(dist * 0.5, cell * 2.4))
-        meet_a = (m[0] - ux * cell * 0.55, m[1] - uy * cell * 0.55)
-        meet_d = (m[0] + ux * cell * 0.55, m[1] + uy * cell * 0.55)
+        # V4.8: the whole scene is laid out in WORLD cells and projected per element, so musters,
+        # marches, formations and clashes follow the tilted ground plane (soldiers stand ON it with
+        # foot shadows; clash flashes register as point lights at their PROJECTED position).
+        awx, awy = float(scene["att_pos"][0]), float(scene["att_pos"][1])
+        dwx, dwy = float(scene["def_pos"][0]), float(scene["def_pos"][1])
+        ddx, ddy = dwx - awx, dwy - awy
+        dist = math.hypot(ddx, ddy) or 1.0
+        uwx, uwy = ddx / dist, ddy / dist                 # world march direction, attacker -> defender
+        pull = min(dist * 0.5, 2.4)                        # the clash line at the defender's edge (world)
+        m_wx, m_wy = dwx - uwx * pull, dwy - uwy * pull
+        meet_a = (m_wx - uwx * 0.55, m_wy - uwy * 0.55)
+        meet_d = (m_wx + uwx * 0.55, m_wy + uwy * 0.55)
+        facing_a = (uwx - uwy) >= 0                        # sign of the direction's SCREEN-x (iso)
         n_a = max(1, min(_MAX_SOLDIER_GLYPHS, int(scene.get("n_att") or 1)))
         n_d = max(0, min(_MAX_SOLDIER_GLYPHS, int(scene.get("n_def") or 0)))
-        form_a = self._formation(n_a, ux, uy, salt=1)
-        form_d = self._formation(n_d, -ux, -uy, salt=2)
+        form_a = self._formation(n_a, uwx, uwy, salt=1)
+        form_d = self._formation(n_d, -uwx, -uwy, salt=2)
         frame = int(el * 30)
         t1, t2, t3 = _CIN_MUSTER, _CIN_MUSTER + _CIN_MARCH, _CIN_MUSTER + _CIN_MARCH + _CIN_CLASH
         t4 = t3 + _CIN_FALL
 
-        # Beat state: where each host stands, how many have mustered, and the melee jitter.
+        # Beat state: each host's WORLD centre, how many have mustered, and the melee jitter (cells).
         if el < t1:                                       # MUSTER at the attacker's capital
-            a_c, d_c = (float(ax), float(ay)), meet_d
+            a_c, d_c = (awx, awy), meet_d
             vis_a = max(1, int(math.ceil(n_a * (el / t1))))
             vis_d = int(math.ceil(n_d * (el / t1)))
             jit = 0.0
         elif el < t2:                                     # MARCH on the defender's settlement
             p = ease((el - t1) / _CIN_MARCH)
-            a_c = (ax + (meet_a[0] - ax) * p, ay + (meet_a[1] - ay) * p)
+            a_c = (awx + (meet_a[0] - awx) * p, awy + (meet_a[1] - awy) * p)
             d_c, vis_a, vis_d, jit = meet_d, n_a, n_d, 0.0
-            for k in range(5):                            # dust puffs behind the moving host
+            for k in range(5):                            # dust puffs behind the moving host (world)
                 if terrain_noise(frame, k, 31) > 0.35:
-                    back = cell * (0.8 + terrain_noise(frame, k, 32) * 1.6)
-                    side = (terrain_noise(frame, k, 33) - 0.5) * cell * 1.5
-                    pygame.draw.circle(
-                        screen, _DUST,
-                        (int(a_c[0] - ux * back - uy * side), int(a_c[1] - uy * back + ux * side)),
-                        max(1, int(terrain_noise(frame, k, 34) * cell * 0.22)))
+                    back = 0.8 + terrain_noise(frame, k, 32) * 1.6
+                    side = (terrain_noise(frame, k, 33) - 0.5) * 1.5
+                    dsx, dsy = self._to_px(a_c[0] - uwx * back - uwy * side,
+                                           a_c[1] - uwy * back + uwx * side)
+                    pygame.draw.circle(screen, _DUST, (dsx, dsy),
+                                       max(1, int(terrain_noise(frame, k, 34) * cell * 0.22)))
         else:                                             # CLASH / FALL / AFTERMATH at the line
             a_c, d_c, vis_a, vis_d = meet_a, meet_d, n_a, n_d
-            jit = cell * 0.30 if el < t3 else 0.0
+            jit = 0.30 if el < t3 else 0.0                # melee shake in world cells
 
         # The named dead hold the FIRST slots of their side; each falls at its own moment.
         dead = [(nm, True) for nm, _p in scene.get("att_dead") or ()] + \
@@ -3633,15 +4243,16 @@ class PygameRenderer:
             fall_at[(att_side, nm)] = t3 + _CIN_FALL * (j + 0.4) / max(1, len(dead))
 
         for side_dead, center, form, vis, color, facing in (
-                ([nm for nm, s in dead if s], a_c, form_a, vis_a, scene["att_color"], ux >= 0),
-                ([nm for nm, s in dead if not s], d_c, form_d, vis_d, scene["def_color"], ux < 0)):
+                ([nm for nm, s in dead if s], a_c, form_a, vis_a, scene["att_color"], facing_a),
+                ([nm for nm, s in dead if not s], d_c, form_d, vis_d, scene["def_color"], not facing_a)):
             att_side = form is form_a
             for i in range(vis):
                 ox, oy = form[i]
-                x, y = center[0] + ox, center[1] + oy
-                if jit > 0:                       # melee: position shake + brief lunges
-                    x += (terrain_noise(frame, i, 41 if att_side else 43) - 0.5) * jit * 2
-                    y += (terrain_noise(frame, i, 42 if att_side else 44) - 0.5) * jit * 2
+                wx, wy = center[0] + ox, center[1] + oy
+                if jit > 0:                       # melee: world-cell position shake + brief lunges
+                    wx += (terrain_noise(frame, i, 41 if att_side else 43) - 0.5) * jit * 2
+                    wy += (terrain_noise(frame, i, 42 if att_side else 44) - 0.5) * jit * 2
+                x, y = self._to_px(wx, wy)        # project onto the ground plane (feet stand here)
                 if i < len(side_dead):
                     nm = side_dead[i]
                     at = fall_at[(att_side, nm)]
@@ -3653,128 +4264,189 @@ class PygameRenderer:
         if t2 <= el < t3:                                 # white clash-flash bursts at the line
             for k in range(3):
                 if terrain_noise(frame, k, 21) > 0.45:
-                    fx = m[0] + (terrain_noise(frame, k, 22) - 0.5) * cell * 1.8
-                    fy = m[1] + (terrain_noise(frame, k, 23) - 0.5) * cell * 1.2
+                    fx, fy = self._to_px(m_wx + (terrain_noise(frame, k, 22) - 0.5) * 1.8,
+                                         m_wy + (terrain_noise(frame, k, 23) - 0.5) * 1.2)
                     fr = 2 + int(terrain_noise(frame, k, 24) * cell * 0.4)
-                    # V4.5: each clash casts a bright additive POOL — so a NIGHT battle is lit by
-                    # its own fighting (stronger in the dark, present but subtle by day).
-                    self._blit_light(int(fx), int(fy), max(10, fr * 4), PALETTE["clash_light"],
+                    # V4.5: each clash casts a bright additive POOL at its PROJECTED position — so a
+                    # NIGHT battle is lit by its own fighting (stronger in the dark, subtle by day).
+                    self._blit_light(fx, fy, max(10, fr * 4), PALETTE["clash_light"],
                                      0.45 + 0.55 * self._nf)
-                    pygame.draw.circle(screen, _FLASH, (int(fx), int(fy)), fr)
-                    pygame.draw.circle(screen, _shade(_FLASH, -70), (int(fx), int(fy)), fr, 1)
+                    pygame.draw.circle(screen, _FLASH, (fx, fy), fr)
+                    pygame.draw.circle(screen, _shade(_FLASH, -70), (fx, fy), fr, 1)
 
-        if el >= t4:                                      # AFTERMATH: the verdict, prominently
+        if el >= t4:                                      # AFTERMATH: the verdict, prominently (UI)
             self._draw_banner(scene["banner"], fade=(el - t4) / 0.25)
 
     # -- Slice 12: Visual Enhancements --------------------------------------
     def _draw_coast_waves(self) -> None:
-        """Draw animated waves and foam along the eastern coast."""
-        if self._pond is None:
+        """V4.8: wave crests along the PROJECTED coastline. The shoreline runs down the world column
+        cx~=size (the +x sea margin); each world row projects through the iso transform, so the crest
+        is the tilted diagonal shore, not a vertical screen line. A slow sine sways the surf; foam
+        flecks ride the same swell."""
+        if self._margin_px <= 0 or self._lod == "far":
             return
-        grid_px = self._cell * max(1, self._size)
-        coast_x = self._margin_px + int(grid_px * 0.96)
-        y_start, y_end = self._margin_px, self._margin_px + grid_px
-        
-        # Draw a sine wave line for the wave crest
-        points = []
-        for y in range(y_start, y_end, max(2, self._cell // 2)):
-            offset = math.sin(self._frame * 0.05 + y * 0.05) * (self._cell * 0.4)
-            points.append((coast_x + int(offset), y))
-        
-        if len(points) > 1:
-            pygame.draw.lines(self._screen, PALETTE["water_hi"], False, points, max(1, self._cell // 8))
-        
-        # Occasional foam bubbles
-        for k in range(10):
-            if terrain_noise(self._frame // 30, k, 91) > 0.6:
-                fy = y_start + (terrain_noise(0, k, 92) * grid_px)
-                fx = coast_x + math.sin(self._frame * 0.05 + fy * 0.05) * (self._cell * 0.4)
-                fx += (terrain_noise(self._frame // 15, k, 93) - 0.5) * self._cell
-                r = max(1, int(terrain_noise(0, k, 94) * (self._cell * 0.2)))
-                pygame.draw.circle(self._screen, PALETTE["foam"], (int(fx), int(fy)), r)
+        cell, view, size, f = self._cell, self._map_px, self._size, self._frame
+        pts = []
+        for cy in range(0, size + 1):
+            wave = math.sin(f * 0.05 + cy * 0.5) * 0.35
+            pts.append(self._to_px(size + 0.15 + wave, cy))
+        if len(pts) > 1 and any(visible_on_screen(x, y, cell * 2, view, view) for x, y in pts):
+            pygame.draw.lines(self._screen, PALETTE["water_hi"], False, pts, max(1, cell // 10))
+        for k in range(8):                                # foam flecks along the surf line
+            if terrain_noise(f // 25, k, 92) > 0.62:
+                cy = terrain_noise(0, k, 93) * size
+                wave = math.sin(f * 0.05 + cy * 0.5) * 0.35
+                x, y = self._to_px(size + 0.15 + wave + terrain_noise(f // 12, k, 94) * 0.5, cy)
+                if visible_on_screen(x, y, 12, view, view):
+                    pygame.draw.circle(self._screen, PALETTE["foam"], (x, y), max(1, int(cell * 0.15)))
 
     def _draw_cloud_shadows(self) -> None:
-        """Draw dark translucent ellipses on the ground representing cloud shadows."""
-        clouds = ambient_clouds(self._frame, self._map_px)
-        for cx, cy, cw, ch in clouds:
-            # Offset shadow slightly down and right
-            rect = pygame.Rect(int(cx + cw * 0.2), int(cy + ch * 0.5), cw, ch)
-            if rect.right > 0 and rect.bottom > 0 and rect.left < self._map_px and rect.top < self._map_px:
-                stamp = pygame.Surface((cw, ch), pygame.SRCALPHA)
-                pygame.draw.ellipse(stamp, (*PALETTE["cloud_shadow"], 30), (0, 0, cw, ch))
-                self._screen.blit(stamp, rect.topleft)
+        """V4.8: cloud shadows as GROUND DECALS on the diamond. Each drifting cloud's WORLD point
+        projects to the ground (z=0) as an axis-aligned 2:1 ellipse (a projected circle) and slides
+        across the tilt in world space. Drawn UNDER the sprite pass, so buildings correctly occlude
+        the shadow that passes behind them. V4-fix: SMALLER and FAINTER with a DEFINED edge (so it
+        reads as a moving shadow, not a fog blob), and it slides faster (see ambient_clouds)."""
+        if self._lod == "far" or self._dl <= 0.05:
+            return
+        cell, view = self._cell, self._map_px
+        a = int(22 * self._dl)                             # fainter than before (was 34)
+        if a <= 0:
+            return
+        for wx, wy, rad in ambient_clouds(self._frame, self._size):
+            gx, gy = self._to_px(wx, wy)
+            rx = max(cell, int(rad * cell * _ISO_RX * 0.48))   # a tight shadow (was the full puff)
+            ry = max(2, rx // 2)
+            if not visible_on_screen(gx, gy, rx + cell, view, view):
+                continue
+            stamp = pygame.Surface((2 * rx + 2, 2 * ry + 2), pygame.SRCALPHA)
+            pygame.draw.ellipse(stamp, (*PALETTE["cloud_shadow"], a), (0, 0, 2 * rx, 2 * ry))
+            pygame.draw.ellipse(stamp, (*PALETTE["cloud_shadow"], a + 34), (0, 0, 2 * rx, 2 * ry), 2)
+            self._screen.blit(stamp, (gx - rx, gy - ry))
 
     def _draw_clouds(self) -> None:
-        """Draw translucent white ellipses moving across the map."""
-        clouds = ambient_clouds(self._frame, self._map_px)
-        for cx, cy, cw, ch in clouds:
-            rect = pygame.Rect(int(cx), int(cy), cw, ch)
-            if rect.right > 0 and rect.bottom > 0 and rect.left < self._map_px and rect.top < self._map_px:
-                stamp = pygame.Surface((cw, ch), pygame.SRCALPHA)
-                alpha = int(90 * self._dl) # fade out at night
-                pygame.draw.ellipse(stamp, (*PALETTE["cloud"], alpha), (0, 0, cw, ch))
-                self._screen.blit(stamp, rect.topleft)
+        """V4.8: the cloud PUFFS themselves, lifted high above the ground (z=_CLOUD_Z) so each rides
+        the sky directly ABOVE its ground shadow and both slide together in world space. Drawn over
+        the sprites (they are overhead); faded out at night."""
+        if self._lod == "far":
+            return
+        cell, view = self._cell, self._map_px
+        a = int(85 * self._dl)
+        if a <= 0:
+            return
+        for wx, wy, rad in ambient_clouds(self._frame, self._size):
+            sx, sy = self._to_px(wx, wy, _CLOUD_Z)
+            rx = max(cell, int(rad * cell * _ISO_RX))
+            ry = max(3, int(rx * 0.55))
+            if not visible_on_screen(sx, sy, rx + cell, view, view):
+                continue
+            stamp = pygame.Surface((2 * rx + 4, 2 * ry + 4), pygame.SRCALPHA)
+            pygame.draw.ellipse(stamp, (*PALETTE["cloud"], a), (0, ry // 2, 2 * rx, ry + ry // 2))
+            pygame.draw.ellipse(stamp, (*PALETTE["cloud"], a), (rx // 2, 0, rx, ry + 3))
+            self._screen.blit(stamp, (sx - rx, sy - ry))
 
     def _draw_weather(self) -> None:
-        """Draw particles for rain, snow, or fog based on the current weather type."""
-        weather = weather_type(self._phase)
-        if weather == "clear":
-            return
+        """V4.8: rain/snow FALL toward the ground plane and LAND on it; fog HUGS the terrain.
 
-        screen = self._screen
-        map_px = self._map_px
-        # V4.3: weather reads as ATMOSPHERE, not static — fewer particles, and drawn onto a
-        # translucent layer so their alpha actually applies (drawing straight to the opaque
-        # screen ignored it before, making rain/snow solid). Lower density + lower opacity.
-        layer = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
+        Each drop is seeded at a WORLD (x, y) inside the visible ground rect and given a HEIGHT z
+        that descends each frame; it projects through the iso transform so it is tied to the world
+        (tracks a pan) and its ground-contact point is the true tile beneath it. The streak leans
+        with the iso wind (down-right), and the drop FADES as z->0 with a small splash on the tile.
+        Fog is low translucent banks seated just above the ground (z small) that drift with the wind.
+        """
+        weather = weather_type(self._phase)
+        if weather == "clear" or self._lod == "far":
+            return
+        screen, view, cell, f = self._screen, self._map_px, self._cell, self._frame
+        zh = cell * _ISO_ZH
+        wx0, wy0, wx1, wy1 = self._visible_world_rect()
+        dw, dh = max(1e-3, wx1 - wx0), max(1e-3, wy1 - wy0)
+        layer = pygame.Surface((view, view), pygame.SRCALPHA)
 
         if weather == "rain":
-            for k in range(22):                       # was 50
-                x = (terrain_noise(0, k, 101) * map_px + self._frame * 10) % map_px
-                y = (terrain_noise(0, k, 102) * map_px + self._frame * 20) % map_px
-                pygame.draw.line(layer, (*PALETTE["rain"], 70),
-                                 (int(x), int(y)), (int(x - 3), int(y + 8)), 1)
+            ztop = 6.0
+            sx_lean, sy_len = int(cell * 0.28), max(4, int(cell * 0.7))   # iso wind lean + streak
+            for k in range(46):
+                wx = wx0 + terrain_noise(k, 0, 101) * dw
+                wy = wy0 + terrain_noise(k, 1, 102) * dh
+                fall = 0.30 + 0.16 * terrain_noise(k, 2, 106)
+                z = ztop - ((f * fall + terrain_noise(k, 3, 107) * ztop) % ztop)   # descends ztop->0
+                gx, gy = self._to_px(wx, wy)
+                if not visible_on_screen(gx, gy, cell * 2, view, view):
+                    continue
+                py = int(gy - z * zh)
+                if z < 0.5:                              # ground contact: streak fades, splash rings out
+                    pygame.draw.line(layer, (*PALETTE["rain"], int(70 * z / 0.5)),
+                                     (gx - sx_lean, py - sy_len), (gx, py), 1)
+                    sa = int(55 * (1 - z / 0.5))
+                    pygame.draw.ellipse(layer, (*PALETTE["rain"], sa), (gx - 3, gy - 1, 6, 3), 1)
+                else:
+                    pygame.draw.line(layer, (*PALETTE["rain"], 72),
+                                     (gx - sx_lean, py - sy_len), (gx, py), 1)
 
         elif weather == "snow":
-            for k in range(18):                       # was 40
-                x = (terrain_noise(0, k, 103) * map_px + math.sin(self._frame * 0.05 + k) * 10) % map_px
-                y = (terrain_noise(0, k, 104) * map_px + self._frame * 3) % map_px
-                r = 1 if terrain_noise(0, k, 105) > 0.6 else 2
-                pygame.draw.circle(layer, (*PALETTE["snow"], 95), (int(x), int(y)), r)
+            ztop = 5.0
+            for k in range(30):
+                wx = wx0 + terrain_noise(k, 0, 103) * dw
+                wy = wy0 + terrain_noise(k, 1, 104) * dh
+                fall = 0.06 + 0.04 * terrain_noise(k, 2, 108)
+                z = ztop - ((f * fall + terrain_noise(k, 3, 109) * ztop) % ztop)
+                gx, gy = self._to_px(wx, wy)
+                if not visible_on_screen(gx, gy, cell * 2, view, view):
+                    continue
+                wob = int(math.sin(f * 0.05 + k) * cell * 0.15)
+                px, py = gx + wob, int(gy - z * zh)
+                r = 1 if terrain_noise(k, 4, 105) > 0.6 else 2
+                pygame.draw.circle(layer, (*PALETTE["snow"], int(95 * min(1.0, z / 0.4))), (px, py), r)
+                if z < 0.35:                             # a flake settling on the tile
+                    pygame.draw.circle(layer, (*PALETTE["snow"], 60), (gx, gy), 1)
 
         elif weather == "fog":
-            for k in range(3):
-                y = map_px * 0.2 + (k * map_px * 0.3) + math.sin(self._frame * 0.02 + k) * 20
-                h = max(20, int(map_px * 0.15))
-                alpha = int(16 + 8 * math.sin(self._frame * 0.03 + k * 2))   # was 40 + 20
-                for i in range(0, h, 2):              # step 2 — half the lines, thinner haze
-                    a = int(alpha * math.sin(math.pi * (i / h)))
-                    pygame.draw.line(layer, (*PALETTE["fog"], a),
-                                     (0, int(y) + i), (map_px, int(y) + i))
+            for k in range(5):
+                drift = ((f * 0.012 + terrain_noise(k, 0, 110)) % 1.0)
+                wx = wx0 + drift * dw
+                wy = wy0 + terrain_noise(k, 1, 111) * dh
+                gx, gy = self._to_px(wx, wy, 0.3)        # a bank hugging the ground
+                rx = max(cell, int(cell * (2.4 + 2.0 * terrain_noise(k, 2, 112)) * _ISO_RX))
+                ry = max(3, int(rx * 0.5))
+                if not visible_on_screen(gx, gy, rx + cell, view, view):
+                    continue
+                a = int(18 + 9 * math.sin(f * 0.03 + k * 2))
+                stamp = pygame.Surface((2 * rx + 2, 2 * ry + 2), pygame.SRCALPHA)
+                pygame.draw.ellipse(stamp, (*PALETTE["fog"], max(0, a)), (0, 0, 2 * rx, 2 * ry))
+                layer.blit(stamp, (gx - rx, gy - ry))
 
         screen.blit(layer, (0, 0))
 
     def _update_trails(self, state: dict[str, Any], motion: tuple[dict[str, tuple], float] | None) -> None:
-        """Record the current position of moving agents to form a trail."""
+        """Record moving agents' WORLD positions to form a footprint trail (V4.8).
+
+        The trail stores world cells (not screen pixels), so it follows the ground under a pan/zoom
+        and never freezes at stale screen coordinates — a new point is banked only once the agent has
+        moved ~half a cell in WORLD space."""
         if motion is None or self._lod == "far":
             return
-        
         for agent in state.get("agents", []):
             if not getattr(agent, "alive", True) or not getattr(agent, "position", None):
                 continue
-            cx, cy = self._agent_px(agent, motion)
-            # Only record if moved significantly
-            if not self._trails[agent.name] or math.hypot(self._trails[agent.name][-1][0] - cx, self._trails[agent.name][-1][1] - cy) > self._cell * 0.5:
-                self._trails[agent.name].append((cx, cy))
+            wx, wy = self._agent_world(agent, motion)
+            dq = self._trails[agent.name]
+            if not dq or math.hypot(dq[-1][0] - wx, dq[-1][1] - wy) > 0.4:
+                dq.append((wx, wy))
 
     def _draw_trails(self) -> None:
-        """Draw fading footprint paths behind agents."""
+        """Draw fading footprint paths along the PROJECTED ground (V4.8): each stored world point is
+        transformed through the shared iso transform this frame, so the path lies on the diamond."""
         if self._lod == "far":
             return
+        view = self._map_px
         for name, path in self._trails.items():
-            for i, (tx, ty) in enumerate(path):
-                alpha = int(120 * (i + 1) / len(path))
-                if alpha > 0 and visible_on_screen(tx, ty, self._cell, self._map_px, self._map_px):
+            n = len(path)
+            for i, (wx, wy) in enumerate(path):
+                alpha = int(120 * (i + 1) / n)
+                if alpha <= 0:
+                    continue
+                tx, ty = self._to_px(wx, wy)
+                if visible_on_screen(tx, ty, self._cell, view, view):
                     stamp = pygame.Surface((4, 4), pygame.SRCALPHA)
                     pygame.draw.circle(stamp, (*PALETTE["trail"], alpha), (2, 2), max(1, self._cell // 8))
                     self._screen.blit(stamp, (int(tx - 2), int(ty - 2)))

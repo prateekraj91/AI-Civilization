@@ -1377,6 +1377,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "--seed, institution flags). Optional dependency: if Pygame is not installed "
              "the run exits with a 'pip install pygame' message. (Settlements, rulers, "
              "kingdoms and war are later slices — this slice draws only terrain + agents.)")
+    p.add_argument(
+        "--showcase", action="store_true",
+        help="SHOWCASE MODE (V4.10): a hands-off, trailer-grade recording. Implies --pygame and, "
+             "unless overridden, stages the cinematic two-realm WAR with an empire forming "
+             "(--stage war --eras) at sensible turns/speed. The camera AUTO-DIRECTS — it eases to "
+             "each major event (battle, coronation, uprising, secession, conquest), holds through "
+             "its banner, then drifts back over a slow ambient orbit — a clean title card opens, and "
+             "the UI is stripped to the story banner + a small turn/phase readout (press U for the "
+             "full UI, SPACE pauses, ESC quits). Press record, walk away, get 2-3 minutes of footage.")
     return p.parse_args(argv)
 
 
@@ -1993,7 +2002,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     print_events_log()
 
 
-def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0):
+def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
+                   showcase: bool = False):
     """Build the optional renderer for the chosen mode (None for plain mode).
 
     Imported lazily so a plain run never imports `rich`/`pygame` (or the renderer
@@ -2009,12 +2019,27 @@ def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0):
         # SLICE 1 visual renderer. Same .live()/.update()/.sink interface the sim drives;
         # it paces itself (turn_delay), so the sim's own per-turn sleep stays at 0.
         from renderer.pygame_renderer import PygameRenderer
-        return PygameRenderer(sink=sink, turn_delay=turn_delay)
+        return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase)
     return None
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    # V4.10 SHOWCASE MODE: a hands-off, trailer-grade recording. It implies the VISUAL renderer and,
+    # unless the user overrode them, stages the cinematic two-realm war with an empire forming
+    # (--stage war --eras) at a calm cinematic pace. The renderer itself (showcase=True below) does
+    # the camera auto-direction, title card, minimal UI and wall-clock day/night. Nothing here touches
+    # the sim's determinism — it only fills in default flags the user didn't set.
+    if args.showcase:
+        args.pygame = True
+        if args.stage is None:
+            args.stage = "war"
+        args.eras = True                       # era-styled towns (huts -> timber -> stone) for variety
+        if args.turns is None:
+            args.turns = 55
+        if args.speed == _SPEED_PRESETS["normal"]:
+            args.speed = 1.3                   # ~1.3s/turn — smooth, watchable, gives time to breathe
 
     # Day 18: importing `rich` consumes some of the global `random` stream at import
     # time. Since the offline provider AND world/food placement draw from that same
@@ -2206,7 +2231,8 @@ def main(argv: list[str] | None = None) -> None:
         # shows only its view; the summary prints to the terminal after the run. The
         # pygame renderer paces itself (turn_delay below is 0 for it), so closing the
         # window raises KeyboardInterrupt and ends the run cleanly via the suppress.
-        renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed)
+        renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
+                                  showcase=args.showcase)
         sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
