@@ -544,7 +544,11 @@ _HOLD_MAJOR = 2.5             # a MAJOR beat holds this long under its caption
 _HOLD_LEGENDARY = 4.0         # a LEGENDARY beat holds longer, and framed tighter
 _HOLD_QUEUED = 1.8            # ...but when several fire on one turn the camera CUTS between them
 _ZOOM_MAJOR = 1.7             # how much closer than the overview a major beat is framed
-_ZOOM_LEGENDARY = 2.3         # ...and a legendary one, tighter still
+# A legendary beat is framed CLOSE — near the interactive zoom ceiling, a few streets rather than a
+# region. The wash alone was carrying the tier; at 2.3 the frame barely read as tighter than a
+# major one. It also has to earn its keep for the rank/allegiance/crown detail, which is drawn at
+# sprite scale and is simply invisible from the overview.
+_ZOOM_LEGENDARY = 3.6
 _CAPTION_FADE = 0.3           # caption cards fade in and out over this long
 _CAPTION_BAND = 0.72          # the caption card sits at this fraction down the map (bottom third)
 _CAPTION_BG = (10, 10, 14)    # the card's backing plate
@@ -2739,27 +2743,25 @@ class PygameRenderer:
                 pygame.draw.circle(ov, (*_LEGEND_WASH, a), (fx, fy), r)
         self._screen.blit(ov, (0, 0))
 
-    def _draw_caption_card(self) -> None:
-        """The caption card: a title line and at most one subtitle, across the bottom third.
+    def _caption_layout(self) -> "tuple[Any, Any, Any, tuple[int, int, int, int], int] | None":
+        """Where the caption card sits and what it is made of, or None if there is nothing to draw.
 
-        Not the raw log line — the director's dramatised rendering of it ('THE RISING OF S0B2' /
-        'Lord B falls. 2 risers fell. The hoard is theirs.'). Fades in and out with the hold, sits
-        on a translucent plate so it stays legible over bright grass and over night alike, and a
-        legendary card is larger with a warm rule above it. UI overlay: never transformed.
+        Split out from the drawing so the geometry is inspectable: (title surface, subtitle surface
+        or None, the title face, the plate rect, the pad). Pure apart from font rendering.
         """
         if self._caption is None:
-            return
-        alpha = self._caption_alpha()
-        if alpha <= 0.01:
-            return
+            return None
         title, sub = self._caption
         legendary = self._caption_sev == _director.LEGENDARY
         big = self._title_font if legendary else self._big_font
         big = big or self._big_font or self._font
         small = self._font
         if big is None:
-            return
-        w = self._view[0] if self._view else self._map_px
+            return None
+        # Centre on the FULL painted zone, not `_view`. The viewport is narrowed to keep the feed
+        # column clear of the action, but the feed is floating text with no plate — the card has
+        # nothing to dodge, and centring on the narrowed view visibly parked it left of centre.
+        w = self._paint[0] or self._map_px
         t_surf = big.render(title, True, _CAPTION_FG)
         s_surf = small.render(sub, True, _CAPTION_SUB) if (sub and small) else None
         pad = max(10, int(self._map_h * 0.018))
@@ -2769,6 +2771,24 @@ class PygameRenderer:
         bx = max(0, (w - bw) // 2)
         by = int(self._map_h * _CAPTION_BAND)
         by = min(by, max(0, self._map_h - bh - pad))
+        return t_surf, s_surf, big, (bx, by, bw, bh), pad
+
+    def _draw_caption_card(self) -> None:
+        """The caption card: a title line and at most one subtitle, across the bottom third.
+
+        Not the raw log line — the director's dramatised rendering of it ('THE RISING OF S0B2' /
+        'Lord B falls. 2 risers fell. The hoard is theirs.'). Fades in and out with the hold, sits
+        on a translucent plate so it stays legible over bright grass and over night alike, and a
+        legendary card is larger with a warm rule above it. UI overlay: never transformed.
+        """
+        alpha = self._caption_alpha()
+        if alpha <= 0.01:
+            return
+        layout = self._caption_layout()
+        if layout is None:
+            return
+        t_surf, s_surf, _big, (bx, by, bw, bh), pad = layout
+        legendary = self._caption_sev == _director.LEGENDARY
         plate = pygame.Surface((bw, bh), pygame.SRCALPHA)
         plate.fill((*_CAPTION_BG, int((205 if legendary else 175) * alpha)))
         self._screen.blit(plate, (bx, by))
@@ -2795,9 +2815,20 @@ class PygameRenderer:
         turn = int((self._last_state or {}).get("turn", 0))
         surf = self._font.render(f"…years pass…   turn {turn}", True, _TICKER_FG)
         surf.set_alpha(150)
-        w = self._view[0] if self._view else self._map_px
+        w = self._paint[0] or self._map_px          # centred on the window, like the caption card
         self._screen.blit(surf, ((w - surf.get_width()) // 2,
                                  int(self._map_h * _CAPTION_BAND)))
+
+    def _feed_lines(self) -> list:
+        """The feed entries actually shown this frame, oldest first (pure read).
+
+        The feed is what has ALREADY happened, so the beat currently under the caption card is
+        held back — it was on screen twice in the same words — and rejoins the column the moment
+        its hold ends. Filtered BEFORE the _OVERLAY_MAX slice, so holding one line back promotes an
+        older beat into the column rather than leaving a gap where the captioned one would have sat.
+        """
+        live = self._caption[0] if self._caption is not None else None
+        return [e for e in self._overlay_feed if e[0] != live][-_OVERLAY_MAX:]
 
     def _draw_feed_overlay(self) -> None:
         """V4.14: the showcase event feed — text floating straight over the world, no panel.
@@ -2806,6 +2837,10 @@ class PygameRenderer:
         the action never sits under it): MAJOR beats only, newest at the BOTTOM, each line fading
         out as it ages so the column reads as a living feed rather than a log. Every glyph is drawn
         with a dark outline, which is what keeps it legible over bright grass AND over night.
+
+        The feed is what has ALREADY happened, so the beat currently under the caption card is
+        held back — it was appearing twice on screen in the same words — and joins the column the
+        moment its hold ends.
         """
         now = time.monotonic()
         while self._overlay_feed and now - self._overlay_feed[0][1] > _OVERLAY_LIFE:
@@ -2819,7 +2854,7 @@ class PygameRenderer:
         cols = max(12, int(col_w / max(1, font.size("n")[0])))
         big = self._big_font or font
         y = self._map_h - pad                              # stack UPWARD from the bottom edge
-        shown = list(self._overlay_feed)[-_OVERLAY_MAX:]
+        shown = self._feed_lines()
         for text, born, color, war in reversed(shown):
             age = (now - born) / _OVERLAY_LIFE
             alpha = 1.0 if age <= _OVERLAY_FULL else max(0.0, (1.0 - age) / (1.0 - _OVERLAY_FULL))

@@ -9456,7 +9456,10 @@ def test_showcase_caption_cards_and_severity_camera() -> None:
             r._focus_pt, r._focus_until = (6.0, 6.0), _time.monotonic() + 5
             r._showcase_direct(state)
             zooms[sev] = r._cam_tcell
-        assert zooms[d.LEGENDARY] > zooms[d.MAJOR], f"legendary frames tighter: {zooms}"
+        # Not merely tighter — DECISIVELY tighter. The wash was carrying the tier on its own, and
+        # the close frame is also what makes the rank/allegiance/crown detail legible at all.
+        assert zooms[d.LEGENDARY] >= zooms[d.MAJOR] * 2.0, \
+            f"legendary must frame decisively tighter, not marginally: {zooms}"
         assert zooms[d.MAJOR] == min(r._zoom_hi * 0.95, ocell * _ZOOM_MAJOR)
         assert zooms[d.LEGENDARY] == min(r._zoom_hi * 0.95, ocell * _ZOOM_LEGENDARY)
         # Two beats on one turn: the first is held, then the SECOND is cut to — never dropped.
@@ -9477,6 +9480,12 @@ def test_showcase_caption_cards_and_severity_camera() -> None:
         r2._update_caption()
         assert r2._caption is None and r2._legend_t is None, "the queue drains cleanly"
         # A card renders without touching world_state, and the draw path is exercised end to end.
+        # The faces are built by `live()`, which a headless test never enters — without them every
+        # text path below returns early and asserts nothing. Build them the way `live()` does.
+        r._font = pygame.font.SysFont("menlo,monospace", 14)
+        r._big_font = pygame.font.SysFont("menlo,monospace", 22, bold=True)
+        r._feed_bold = pygame.font.SysFont("menlo,monospace", 14, bold=True)
+        r._title_font = pygame.font.SysFont("georgia,timesnewroman,serif", 44, bold=True)
         r._caption = ("THE LINE OF ALDRIC ENDS", "The crown lies vacant.")
         r._caption_started = _time.monotonic()
         r._caption_sev = d.LEGENDARY
@@ -9488,6 +9497,25 @@ def test_showcase_caption_cards_and_severity_camera() -> None:
         r._last_state = state
         r._draw_quiet_ticker()
         assert repr(state) == before, "drawing a caption mutated the state it read"
+        # The card is centred on the WINDOW, not on the feed-narrowed viewport. `_view` is pulled
+        # in to keep the action clear of the floating feed column, but the card has no plate to
+        # dodge, and centring on `_view` visibly parked every card left of centre.
+        assert r._view[0] < r._paint[0], "the viewport IS narrowed — otherwise this proves nothing"
+        bx, _by, bw, _bh = r._caption_layout()[3]
+        centre = bx + bw / 2
+        assert abs(centre - r._paint[0] / 2) <= 1, \
+            f"the caption card must be centred on the window ({centre} vs {r._paint[0] / 2})"
+        # The feed shows what has ALREADY happened: the beat under the card is held back, and
+        # rejoins the column the moment its hold ends.
+        r._overlay_feed.clear()
+        now = _time.monotonic()
+        for t in ("ALDRIC DEFEATS CYRUS", "THE LINE OF ALDRIC ENDS"):
+            r._overlay_feed.append((t, now, (255, 255, 255), False))
+        assert [e[0] for e in r._feed_lines()] == ["ALDRIC DEFEATS CYRUS"], \
+            "the captioned beat must not also be in the feed — it was on screen twice"
+        r._caption = None
+        assert [e[0] for e in r._feed_lines()] == ["ALDRIC DEFEATS CYRUS", "THE LINE OF ALDRIC ENDS"], \
+            "...and joins the feed once its hold ends"
     finally:
         pygame.quit()
     print("PASS test_showcase_caption_cards_and_severity_camera")
