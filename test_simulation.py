@@ -9880,6 +9880,90 @@ def test_showcase_caption_cards_and_severity_camera() -> None:
     print("PASS test_showcase_caption_cards_and_severity_camera")
 
 
+def test_a_legendary_hold_desaturates_slows_and_pulses() -> None:
+    """V4.17 (5.6): the LEGENDARY hold's full treatment, all off ONE envelope, and MAJOR untouched.
+
+    Three effects share `_legend_env` so they arrive and leave together: the world outside the focal
+    settlement is truly DESATURATED, the ambient clock drops to _LEGEND_SLOWMO, and the focal
+    settlement's lighting pulses once. The contract that keeps every other frame byte-identical: the
+    envelope is ZERO whenever no legendary wash is live (a MAJOR beat sets no `_legend_t`), so the
+    frame clock steps by exactly 1.0 and the wash draws nothing. Headless SDL-dummy."""
+    import os as _os, time as _time
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import (PygameRenderer, _LEGEND_WASH_EASE, _LEGEND_SLOWMO,
+                                              _HOLD_LEGENDARY)
+    except ImportError:
+        print("PASS test_a_legendary_hold_desaturates_slows_and_pulses (skipped: no pygame)")
+        return
+    from renderer import director as d
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.4, showcase=True, window=(900, 900))
+        r._ensure_screen(24)
+        step = lambda env: 1.0 - (1.0 - _LEGEND_SLOWMO) * env      # the frame-clock step this env buys
+
+        # 1) The envelope: zero with no wash; eases in over _LEGEND_WASH_EASE; full through the hold;
+        #    eases out over the same at the end.
+        r._legend_t = None
+        assert r._legend_env() == 0.0, "no legendary wash live -> a dead-flat zero envelope"
+        r._caption_hold = _HOLD_LEGENDARY
+        r._legend_t = _time.monotonic()                            # just began
+        assert r._legend_env() < 0.35, "the wash eases IN, it does not snap on"
+        r._legend_t = _time.monotonic() - _HOLD_LEGENDARY / 2      # mid-hold
+        assert r._legend_env() == 1.0, "...sits at full through the hold..."
+        r._legend_t = _time.monotonic() - (_HOLD_LEGENDARY - _LEGEND_WASH_EASE / 2)   # near the end
+        assert 0.0 < r._legend_env() < 0.75, "...and eases OUT at the end"
+
+        # 2) The slow-mo rides that envelope: 1.0 (real time) at rest, _LEGEND_SLOWMO at the bottom.
+        assert step(0.0) == 1.0 and abs(step(1.0) - _LEGEND_SLOWMO) < 1e-9
+
+        # 3) Outside showcase the envelope is ALWAYS zero, whatever the wash fields say — the guard is
+        #    the showcase flag, so the default renderer can never slow or desaturate (byte-identical).
+        r._showcase = False
+        r._legend_t = _time.monotonic() - _HOLD_LEGENDARY / 2      # would be full IF it were showcase
+        assert r._legend_env() == 0.0, "outside showcase the envelope is dead zero"
+        r._showcase = True
+
+        # 4) The frame clock is byte-safe: with no wash live, N draws advance `_frame` by exactly N
+        #    (the float accumulator stays integral) — the slow-mo only ever bites during a legendary hold.
+        state = {"size": 24, "turn": 5, "food": [], "agents": [],
+                 "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(), "founded": 0}},
+                 "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {}, "events": []}
+        r._legend_t = None
+        r._beats.clear()
+        r._caption = None
+        f0 = r._frame
+        for _ in range(5):
+            r._draw(state)
+        assert r._frame == f0 + 5 and float(r._frame) == r._frame_f, \
+            "no legendary hold -> the ambient clock steps by exactly 1.0 (byte-identical)"
+
+        # 5) A MAJOR beat sets no legendary wash — the whole treatment is legendary-only.
+        r._beats.clear()
+        r._caption = None
+        r._opened = True
+        r._turn_majors = 1
+        r._beats.append((d.MAJOR, "THE RISING OF S001", None, (6.0, 6.0)))
+        r._update_caption()
+        assert r._legend_t is None and r._legend_env() == 0.0, \
+            "a MAJOR hold neither desaturates, slows, nor pulses"
+
+        # 6) The desaturation/pulse draw is a pure read even with the wash live and a focal set.
+        r._focus_pt = (6.0, 6.0)
+        r._caption_sev = d.LEGENDARY
+        r._legend_t = _time.monotonic() - _HOLD_LEGENDARY / 2
+        before = repr(state)
+        r._last_state = state
+        r._draw_legendary_wash()
+        assert repr(state) == before, "drawing the legendary wash mutated the state it read"
+    finally:
+        pygame.quit()
+    print("PASS test_a_legendary_hold_desaturates_slows_and_pulses")
+
+
 def test_director_drives_the_showcase_turn_plan() -> None:
     """V4.15: one turn in -> a cut plan out (severity, beats, quiet-run) — and only in showcase.
 
@@ -10261,6 +10345,7 @@ def main_runner() -> None:
         test_an_empire_keeps_the_borders_it_conquered,
         test_debug_war_observes_without_touching_the_run,
         test_showcase_caption_cards_and_severity_camera,
+        test_a_legendary_hold_desaturates_slows_and_pulses,
         test_director_drives_the_showcase_turn_plan,
     ]
     for t in tests:

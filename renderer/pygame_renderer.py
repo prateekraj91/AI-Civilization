@@ -651,9 +651,20 @@ _CAPTION_BG = (10, 10, 14)    # the card's backing plate
 _CAPTION_FG = (247, 240, 224) # title text — warm off-white
 _CAPTION_SUB = (198, 188, 170)  # subtitle text — a step quieter than the title
 _CAPTION_RULE = (196, 150, 78)  # the thin accent rule above the title
-_LEGEND_WASH = (16, 14, 20)   # the desaturating wash laid over the world on a legendary hold
-_LEGEND_WASH_A = 110          # ...at this alpha, eased in and out over _LEGEND_WASH_EASE
-_LEGEND_WASH_EASE = 0.5       # the wash takes this long to arrive, and the same to leave
+# V4.17 (5.6): the LEGENDARY hold's full treatment — three effects off ONE envelope (_legend_env):
+# the world OUTSIDE the focal settlement is truly DESATURATED (a grey copy of the frame, not the old
+# flat dark overlay — see _draw_legendary_wash for why the two could not coexist), the world's ambient
+# MOTION drops to _LEGEND_SLOWMO, and the focal settlement's lighting PULSES once. All ease in over
+# _LEGEND_WASH_EASE and out over the same — half a second each way.
+_LEGEND_WASH_EASE = 0.5       # the wash arrives over this long, and leaves over the same (half a second)
+_LEGEND_DESAT_A = 200         # peak alpha of the grey copy laid over the OUTER world at full envelope
+_LEGEND_DESAT_DIM = 0.70      # ...and the grey is pulled DOWN in value by this (the old wash's darkening,
+                              #    folded into the ONE desaturating pass so the two never fight)
+_LEGEND_HOLE = 0.22           # the kept (still-coloured) focal disc, as a fraction of the frame's long axis
+_LEGEND_SLOWMO = 0.3          # the ambient world clock runs at this rate at the bottom of a legendary hold
+_LEGEND_PULSE_COLOR = (255, 214, 150)   # the warm swell of light that breathes over the focal settlement...
+_LEGEND_PULSE_RADIUS = 0.26   # ...its reach, as a fraction of the frame's long axis...
+_LEGEND_PULSE_MAX = 0.55      # ...and its peak intensity, reached ONCE at the middle of the hold
 _TICKER_FG = (150, 146, 158)  # the '…years pass…' ticker during a long quiet stretch
 # --showcase-pace tight: the whole run is squeezed toward this many seconds by scaling the
 # fast-forward rate to the quiet turns REMAINING, so the beats keep their full holds either way.
@@ -2095,6 +2106,9 @@ class PygameRenderer:
         self._win_flags: "int | None" = None               # the flags the display was last created with
         self._mode_sets = 0                                # set_mode call count (must stay flat while steady)
         self._frame = 0                                    # ambient-life clock (per drawn frame)
+        self._frame_f = 0.0                                # ...its FLOAT accumulator: a legendary hold
+                                                           # advances it at <1 (slow-mo); default +1.0 keeps
+                                                           # _frame the identical 0,1,2,… sequence (byte-safe)
         self._stamps: dict[tuple, Any] = {}                # cached shadow/smoke alpha stamps
         self._pond: tuple | None = None                    # baked pond geometry, for the shimmer
         self._grade: Any = None                            # cached full-scene grade overlay
@@ -2921,35 +2935,73 @@ class PygameRenderer:
             return max(0.0, left / _CAPTION_FADE)
         return 1.0
 
-    def _draw_legendary_wash(self) -> None:
-        """Drain the world's colour for a LEGENDARY hold — the punctuation mark of the run.
+    def _legend_env(self) -> float:
+        """The LEGENDARY hold's fade envelope in [0,1] — in over _LEGEND_WASH_EASE, out over the same.
 
-        A dark, desaturating wash over the whole map with a soft hole punched around the focal
-        settlement, so the eye is left with the one place that matters. Eased in and out over
-        _LEGEND_WASH_EASE, so it arrives as a mood rather than a cut to black. UI overlay: drawn
-        under the caption card, over the world.
+        Zero whenever no legendary wash is live. The desaturation, the slow-motion and the light
+        pulse all read THIS one clock, so the three effects arrive and leave together and can never
+        drift apart. Pure (wall-clock read only).
         """
-        if self._legend_t is None:
-            return
+        if not self._showcase or self._legend_t is None:
+            return 0.0
         el = time.monotonic() - self._legend_t
         env = min(1.0, el / _LEGEND_WASH_EASE)
         left = self._caption_hold - el
         if left < _LEGEND_WASH_EASE:
             env = min(env, max(0.0, left / _LEGEND_WASH_EASE))
+        return max(0.0, env)
+
+    def _draw_legendary_wash(self) -> None:
+        """Drain the world's colour for a LEGENDARY hold — the punctuation mark of the run.
+
+        V4.17 (5.6): the wash is now a TRUE desaturation. A grey copy of the rendered frame (pulled
+        down in value by _LEGEND_DESAT_DIM) is laid over the world with a soft hole punched around the
+        focal settlement, so the one place that matters keeps its colour and the rest of the world
+        falls to grey. The old flat dark overlay is GONE: a real chroma-drain and a dark alpha fill
+        muddied each other (the fill just darkened the grey toward black), so — per the brief — the
+        two could not coexist and the desaturation is the one kept. Its former darkening survives only
+        as the value pull-down folded into the grey, so the wash still recedes in value as well as
+        chroma. A single warm PULSE of light then breathes over the focal settlement, peaking once at
+        mid-hold. Eased in/out over _LEGEND_WASH_EASE. UI overlay: under the caption card, over the
+        world. Pure read — snapshots the screen, builds surfaces, blits; touches no sim state.
+        """
+        env = self._legend_env()
         if env <= 0.01:
             return
-        ov = pygame.Surface(self._paint, pygame.SRCALPHA)
-        ov.fill((*_LEGEND_WASH, int(_LEGEND_WASH_A * env)))
+        mp, mh = self._paint
+        # 1) DESATURATE the outer world. Grey the just-rendered frame, dim its value, and lay it back
+        #    with a radial alpha that is full at the frame's edges and falls to nothing over the focal
+        #    settlement — the kept, still-coloured disc.
+        snap = self._screen.subsurface((0, 0, mp, mh)).copy()
+        grey = pygame.transform.grayscale(snap)
+        dim = max(0, min(255, int(255 * _LEGEND_DESAT_DIM)))
+        grey.fill((dim, dim, dim), special_flags=pygame.BLEND_RGB_MULT)   # pull the value down
+        out = pygame.Surface(self._paint, pygame.SRCALPHA)
+        out.blit(grey, (0, 0))                                            # opaque grey, alpha 255
+        full = int(_LEGEND_DESAT_A * env)
+        mask = pygame.Surface(self._paint, pygame.SRCALPHA)               # RGB=255 (identity), A=profile
+        mask.fill((255, 255, 255, full))
         if self._focus_pt is not None:
-            # Punch a soft hole over the focal settlement: concentric transparent discs, so the
-            # centre of the frame keeps its colour and the edges of the world fall away.
             fx, fy = self._to_px(*self._focus_pt)
-            r0 = int(max(self._map_px, self._map_h) * 0.22)
-            for i in range(10):
-                r = int(r0 * (1.0 + i * 0.09))
-                a = int(_LEGEND_WASH_A * env * (i / 10.0))
-                pygame.draw.circle(ov, (*_LEGEND_WASH, a), (fx, fy), r)
-        self._screen.blit(ov, (0, 0))
+            r0 = max(4, int(max(mp, mh) * _LEGEND_HOLE))
+            # Discs LARGEST-first, alpha high->0: each smaller disc overwrites the alpha channel, so
+            # the profile falls from `full` at the rim to 0 at the centre — a genuine soft hole.
+            for i in range(10, -1, -1):
+                r = int(r0 * (0.4 + 0.09 * i))
+                a = int(full * (i / 10.0))
+                pygame.draw.circle(mask, (255, 255, 255, a), (fx, fy), r)
+        out.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)      # A *= profile; RGB untouched
+        self._screen.blit(out, (0, 0))
+        # 2) PULSE the focal settlement's lighting ONCE — a single warm swell peaking at mid-hold,
+        #    added over the still-coloured focal disc (so it lifts the one place the eye is held on).
+        if self._focus_pt is not None and self._caption_hold > 0:
+            el = time.monotonic() - self._legend_t
+            ph = max(0.0, min(1.0, el / self._caption_hold))
+            pulse = math.sin(math.pi * ph)                               # 0 -> 1 -> 0 across the hold
+            if pulse > 0.01:
+                fx, fy = self._to_px(*self._focus_pt)
+                pr = _LEGEND_PULSE_RADIUS * max(mp, mh)
+                self._blit_light(fx, fy, pr, _LEGEND_PULSE_COLOR, _LEGEND_PULSE_MAX * pulse)
 
     def _caption_layout(self) -> "tuple[Any, Any, Any, tuple[int, int, int, int], int] | None":
         """Where the caption card sits and what it is made of, or None if there is nothing to draw.
@@ -3285,7 +3337,12 @@ class PygameRenderer:
         map_px = self._map_px
         # Slice 9: the ambient-life clock — one tick per DRAWN frame (renderer-local; the sim
         # never sees it), driving smoke/sway/shimmer/birds/flutter/flicker phases.
-        self._frame = (self._frame + 1) % (1 << 20)
+        # V4.17 (5.6): a legendary hold slows this clock to _LEGEND_SLOWMO on the SAME envelope as
+        # the desaturation, so the whole world eases into slow-motion under the wash. Outside a
+        # legendary hold the step is exactly 1.0 -> _frame stays the identical 0,1,2,… (byte-safe).
+        self._frame_f = (self._frame_f
+                         + (1.0 - (1.0 - _LEGEND_SLOWMO) * self._legend_env())) % (1 << 20)
+        self._frame = int(self._frame_f)
         self._last_state = state
         self._update_juice()              # V4.9: set this frame's shake/punch BEFORE any projection
         # V4.10: FRAMING — the zoom-OUT floor tracks the inhabited region every frame (min zoom =
