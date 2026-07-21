@@ -1325,8 +1325,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "Zero LLM. Off by default -> byte-identical.")
     p.add_argument(
         "--chronicle-out", default=None, metavar="FILE",
-        help="With --chronicle, write the run's exported saga (markdown) to this file (default: print a "
-             "SAGA section at the end of the summary).")
+        help="With --chronicle, write the run's history to this file. By DEFAULT this is now the HISTORY "
+             "BOOK — continuous past-tense prose in chapters, written as by one chronicler looking back: "
+             "settlements and coded figures given real names (deterministic from --seed), time told in "
+             "years and reigns, no turn numbers or agent codes or mechanic names, each chapter following "
+             "the causal chain (surplus -> lords -> tribute -> rage -> revolt). With --minds the pivot "
+             "motives give figures their stated reasons. Pass --chronicle-digest for the older structured "
+             "listing instead. Zero LLM; deterministic (same seed -> same book).")
+    p.add_argument(
+        "--chronicle-digest", action="store_true",
+        help="Make --chronicle-out write the older structured DIGEST (Great Figures / Houses / a "
+             "turn-stamped Saga) instead of the history book. The book is the default.")
     p.add_argument(
         "--narrate", action="store_true",
         help="V2 M4.16 GARNISH (OFF by default): render the structured chronicle as LLM PROSE (the ONE "
@@ -2055,7 +2064,7 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
 def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
                    showcase: bool = False, showcase_motion: bool = False,
                    pace: str = "normal", total_turns: int = 0,
-                   window: "Any" = None):
+                   window: "Any" = None, place_namer: "Any" = None):
     """Build the optional renderer for the chosen mode (None for plain mode).
 
     Imported lazily so a plain run never imports `rich`/`pygame` (or the renderer
@@ -2073,7 +2082,7 @@ def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
         from renderer.pygame_renderer import PygameRenderer
         return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase,
                               showcase_motion=showcase_motion, window=window,
-                              pace=pace, total_turns=total_turns)
+                              pace=pace, total_turns=total_turns, place_namer=place_namer)
     return None
 
 
@@ -2314,10 +2323,18 @@ def main(argv: list[str] | None = None) -> None:
         # pinned a size with --window (F11/F toggles fullscreen; ESC/Q always quit immediately).
         win_target = ("fullscreen" if (args.fullscreen or (args.showcase and not args.window))
                       else args.window if args.window else "desktop")
+        # The renderer labels its towns with the SAME place-names the history book uses, from the SAME
+        # seed — so the footage says Blackmere and Faircrest, not S0B2 and S0A2, and names one world with
+        # the chronicle. Passed as a CLOSURE so the renderer imports no project logic (its boundary holds).
+        place_namer = None
+        if render_mode == "pygame":
+            import chronicle_book
+            place_namer = lambda sids: chronicle_book.place_name_map(sids, seed)   # noqa: E731
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
                                   showcase=args.showcase,
                                   showcase_motion=args.showcase_motion, window=win_target,
-                                  pace=args.showcase_pace, total_turns=num_turns)
+                                  pace=args.showcase_pace, total_turns=num_turns,
+                                  place_namer=place_namer)
         sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,
@@ -2340,17 +2357,21 @@ def main(argv: list[str] | None = None) -> None:
                            coalitions_on=coalitions_on, chronicle_on=args.chronicle,
                            minds_on=args.minds, debug_war=args.debug_war)
 
-    # M4.16: export the run's saga. The structured markdown is deterministic; --narrate wraps it in LLM
-    # prose (the only place a model touches output — it reads the same structured record, changing nothing).
+    # M4.16 / history book: export the run's history. Default is the narrative BOOK (chronicle_book,
+    # deterministic from the seed); --chronicle-digest keeps the older structured listing; --narrate wraps
+    # the digest in LLM prose. All three READ the same structured record and change nothing in the sim.
     if args.chronicle and args.chronicle_out:
         if args.narrate:
             import narrator
-            text = narrator.narrate_saga(world_state)
+            text, kind = narrator.narrate_saga(world_state), "narrated saga"
+        elif args.chronicle_digest:
+            text, kind = chronicle.export_markdown(world_state), "digest"
         else:
-            text = chronicle.export_markdown(world_state)
+            import chronicle_book
+            text, kind = chronicle_book.export_book(world_state, seed), "history book"
         with open(args.chronicle_out, "w") as f:
             f.write(text)
-        print(f"[chronicle] saga written to {args.chronicle_out}")
+        print(f"[chronicle] {kind} written to {args.chronicle_out}")
 
 
 if __name__ == "__main__":

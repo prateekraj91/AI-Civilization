@@ -8816,6 +8816,87 @@ def test_chronicle_is_read_only_and_off_byte_identical() -> None:
     print("PASS test_chronicle_is_read_only_and_off_byte_identical")
 
 
+def _run_showcase_chronicle(minds: bool) -> None:
+    """Drive the seed-7 showcase run head-less with the chronicle on (the history-book test fixture)."""
+    import knowledge
+    llm.PROVIDER = "random"
+    random.seed(7)
+    with contextlib.redirect_stdout(io.StringIO()):
+        main.run_simulation(
+            45, cognition="heuristic", focal_budget=0, agent_specs=[], grid_size=26,
+            tech_tree=knowledge.TECH_TREE, settlements=True, storage_on=True, leadership_on=True,
+            taxation_on=True, tax_rate=0.45, monarchy_on=True, kingdoms_on=True, empire_on=True,
+            empire_share=0.75, stage="showcase", lineage_on=True, discontent_on=True, uprising_on=True,
+            writing_on=True, metallurgy_on=True, eras_on=True, chronicle_on=True, minds_on=minds)
+
+
+def test_history_book_is_deterministic_named_and_pure() -> None:
+    """The --chronicle-out BOOK reads as history, names one world from the seed, and is a pure read.
+
+    A chronicler's account, not a reworded log: no settlement ids, no agent codes, no turn numbers, no
+    mechanic names leak; settlements and coded figures carry real names; the same seed yields the same
+    book; the renderer labels the SAME world; and the old DIGEST stays available under its own path.
+    """
+    import re as _re
+    import chronicle, chronicle_book
+    saved = llm.PROVIDER
+    try:
+        _run_showcase_chronicle(False)
+        book = chronicle_book.export_book(world_state, 7)
+        # Pure read: exporting again over the same state changes nothing and repeats byte-for-byte.
+        before = len(world_state["events"])
+        assert chronicle_book.export_book(world_state, 7) == book, "the book is deterministic over a state"
+        assert len(world_state["events"]) == before, "exporting the book mutated the run"
+        # End-to-end determinism: a fresh seed-7 run reproduces the identical book.
+        _run_showcase_chronicle(False)
+        assert chronicle_book.export_book(world_state, 7) == book, "same seed -> same book"
+    finally:
+        llm.PROVIDER = saved
+    # Nothing raw leaks — this is the whole difference from the digest.
+    for pat, label in ((r"\bS[0-9A-Z]{3}\b", "a settlement id"), (r"\b[A-C][A-Z]{1,2}\d+\b", "an agent code"),
+                       (r"\bLord[A-C]\b", "a lord code"), (r"\bturn \d+\b", "a turn number")):
+        assert not _re.search(pat, book), f"{label} leaked into the history book"
+    for term in ("discontent", "stockpile", "M3.", "M4.", "gauge"):
+        assert term not in book, f"the mechanic term {term!r} leaked into the book"
+    # A prologue for the lost age, then chapters proper from first literacy.
+    for section in ("Before the Written Word", "The Age of Kings", "The Empire and Its Breaking",
+                    "The Risings"):
+        assert section in book, f"the book is missing its {section!r} section"
+    assert "Blackmere" in book and "Faircrest" in book, "the settlements must be named, not numbered"
+    assert " the Grasping" in book or " the Conqueror" in book, "figures must carry their epithets"
+    # The footage names the SAME world as the book (renderer namer == chronicle namer).
+    N = chronicle_book.Names(world_state, 7)
+    rmap = chronicle_book.place_name_map(list(world_state["settlements"]), 7)
+    assert all(rmap[s] == N.place(s) for s in world_state["settlements"]), \
+        "the renderer's labels must match the book's names"
+    # The older structured digest is still reachable and is a DIFFERENT artifact.
+    digest = chronicle.export_markdown(world_state)
+    assert digest != book and "## The Saga" in digest, "the digest must remain available under its flag"
+    print("PASS test_history_book_is_deterministic_named_and_pure")
+
+
+def test_history_book_motives_vary_and_prefer_silence_to_repetition() -> None:
+    """With --minds, no two figures are given the same stated reason: a generic stand-in motive is
+    re-voiced per figure and NEVER repeated — where a distinct phrasing runs out, the book falls
+    silent rather than echo one. The raw canned templates never reach the page verbatim."""
+    import chronicle_book, mind
+    saved = llm.PROVIDER
+    try:
+        _run_showcase_chronicle(True)
+        book = chronicle_book.export_book(world_state, 7)
+    finally:
+        llm.PROVIDER = saved
+    for raw in mind._REASON.values():
+        assert raw not in book, f"a canned motive reached the page verbatim: {raw!r}"
+    variants = [v for bucket in chronicle_book._MOTIVE_VARIANTS.values()
+                for lst in bucket.values() for v in lst]
+    present = [v for v in variants if v in book]
+    assert len(present) >= 2, "the figures' motives must actually vary, not repeat"
+    for v in present:
+        assert book.count(v) == 1, f"a motive phrasing was used more than once: {v!r}"
+    print("PASS test_history_book_motives_vary_and_prefer_silence_to_repetition")
+
+
 def test_narrator_is_walled_off_from_the_structured_chronicle() -> None:
     """The optional LLM narrator NEVER mutates the structured chronicle: narrating leaves world_state
     and the chronicle record identical (it only returns prose)."""
@@ -10319,6 +10400,8 @@ def main_runner() -> None:
         test_events_and_houses_assembled_from_records,
         test_saga_is_deterministic_under_seed,
         test_chronicle_is_read_only_and_off_byte_identical,
+        test_history_book_is_deterministic_named_and_pure,
+        test_history_book_motives_vary_and_prefer_silence_to_repetition,
         test_narrator_is_walled_off_from_the_structured_chronicle,
         test_the_band_binds_only_close_calls_are_consulted,
         test_character_tilts_a_close_war_offline_standin,

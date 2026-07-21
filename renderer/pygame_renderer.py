@@ -2031,10 +2031,18 @@ class PygameRenderer:
     def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4,
                  showcase: bool = False, showcase_motion: bool = False,
                  window: "tuple[int, int] | str | None" = None,
-                 pace: str = "normal", total_turns: int = 0) -> None:
+                 pace: str = "normal", total_turns: int = 0,
+                 place_namer: "Any" = None) -> None:
         # `turn_delay` (seconds/turn) paces the watch; the renderer waits this long
         # between turns itself (responsively), so the sim's own sleep is left at 0.
         self.turn_delay = max(0.0, float(turn_delay))
+        # Chronicle-book naming: an optional callable {sids} -> {sid: place-name}, passed IN by main so
+        # the renderer imports no decision logic (the import-boundary test holds). None -> labels stay
+        # the raw settlement ids (byte-identical default). Cached, rebuilt only when the town set changes,
+        # so the SAME seed labels the footage with the SAME names the history book uses.
+        self._place_namer = place_namer
+        self._place_names: dict[str, str] = {}
+        self._place_names_key: "frozenset | None" = None
         self._owns_sink = sink is None
         self.sink = sink if sink is not None else open(os.devnull, "w")
         self._screen: Any = None
@@ -5013,15 +5021,32 @@ class PygameRenderer:
             else:
                 self._draw_hall(cx, cy, c["z"], c["foot"], c["color"], c.get("lift", 0.0))
 
+    def _refresh_place_names(self) -> None:
+        """Rebuild the sid -> place-name cache when the town set changes (no-op without a namer).
+
+        Built over the WHOLE settlement set (not the culled-visible jobs), so a name never shifts as
+        the camera pans. The namer is main's closure over chronicle_book, so the footage and the book
+        name one world from the same seed."""
+        if self._place_namer is None:
+            return
+        keys = frozenset((self._last_state or {}).get("settlements", {}))
+        if keys != self._place_names_key:
+            try:
+                self._place_names = dict(self._place_namer(list(keys)))
+            except Exception:
+                self._place_names = {}
+            self._place_names_key = keys
+
     def _draw_settlement_labels(self, jobs: list[tuple[str, int, int, int]]) -> None:
         """Draw the settlement name·size labels LAST, on a translucent chip above each cluster,
         clamped on-map and nudged upward when two collide (so a label never sits on buildings)."""
         cell = self._cell
         if self._font is None or not (cell >= _SETTLEMENT_LABEL_MIN_CELL or self._lod == "far"):
             return
+        self._refresh_place_names()
         screen, placed = self._screen, []
         for sid, cx, top_y, count in jobs:
-            label = self._font.render(f"{sid}·{count}", True, _SETTLEMENT_LABEL)
+            label = self._font.render(f"{self._place_names.get(sid, sid)}·{count}", True, _SETTLEMENT_LABEL)
             rect = label.get_rect(midbottom=(cx, top_y - 4))
             rect.left = max(3, min(rect.left, self._map_px - rect.width - 3))
             rect.top = max(3, rect.top)
