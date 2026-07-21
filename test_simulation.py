@@ -4892,6 +4892,71 @@ def test_pygame_camera_state_renderer_local_and_lod_draw_read_only() -> None:
     print("PASS test_pygame_camera_state_renderer_local_and_lod_draw_read_only")
 
 
+def test_pygame_window_sizing_rect_layout_and_resize() -> None:
+    """V4.11: the window opens at a requested size and the MAP ZONE is the RECTANGLE that remains —
+    map_w + panel == win_w, map_h + hud == win_h at every aspect (16:9 / 16:10 / tall / small); the
+    side panel is a CLAMPED PROPORTION of the width; the caches (grade/void/vignette) match the map
+    zone; the iso fit keeps the world on screen; and a VIDEORESIZE recomputes all of it. window=None
+    keeps the LEGACY square layout byte-identical. Headless SDL-dummy; skips without pygame."""
+    import copy, os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import (PygameRenderer, _panel_width, _PANEL_W, _PANEL_MIN,
+                                              _PANEL_MAX, _HUD_H, _MARGIN_CELLS, _fit_cell)
+    except ImportError:
+        print("PASS test_pygame_window_sizing_rect_layout_and_resize (skipped: no pygame)")
+        return
+    size = 24
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2}},
+        "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {},
+        "events": ["turn 9: a talked to b: \"hi\""], "agents": list(village.values()),
+    }
+    before = copy.deepcopy({k: state[k] for k in state if k != "agents"})
+    pygame.init()
+    try:
+        # window=None -> the LEGACY world-derived SQUARE layout (unchanged by V4.11).
+        legacy = PygameRenderer(turn_delay=0.0)
+        legacy._ensure_screen(size)
+        assert legacy._map_px == legacy._map_h == legacy._win_cell * (size + 2 * _MARGIN_CELLS)
+        assert legacy._panel_w == _PANEL_W and legacy._hud_h == _HUD_H
+        assert legacy._cell0 == _fit_cell(size, legacy._map_px), "legacy fit is unchanged"
+        assert legacy._screen.get_size() == (legacy._map_px + _PANEL_W, legacy._map_px + _HUD_H)
+        # explicit window sizes: the map zone is the rectangle that remains, at every aspect.
+        for win in ((1600, 900), (1440, 900), (760, 1180), (900, 600)):
+            r = PygameRenderer(turn_delay=0.0, window=win)
+            r._ensure_screen(size)
+            w, h = r._screen.get_size()
+            assert (w, h) == win, f"{win}: window must open at the requested size"
+            assert r._map_px + r._panel_w == w, f"{win}: map width + panel must fill the window"
+            assert r._map_h + r._hud_h == h, f"{win}: map height + HUD must fill the window"
+            assert r._panel_w == _panel_width(w) and _PANEL_MIN <= r._panel_w <= _PANEL_MAX, \
+                f"{win}: the panel is a clamped proportion of the width"
+            for cache in (r._grade, r._void_bg, r._vignette):
+                assert cache.get_size() == (r._map_px, r._map_h), f"{win}: cache must match the map zone"
+            cx, cy = r._to_px(size / 2, size / 2)       # the world centre lands inside the map zone
+            assert 0 <= cx <= r._map_px and 0 <= cy <= r._map_h, f"{win}: world centre off the map zone"
+            r._draw(state)                              # a full frame at this aspect must not raise
+        # a VIDEORESIZE recomputes the layout, the caches and the fit.
+        r = PygameRenderer(turn_delay=0.0, window=(1600, 900))
+        r._ensure_screen(size)
+        r._apply_resize(1100, 1000)
+        assert r._screen.get_size() == (1100, 1000)
+        assert r._map_px + r._panel_w == 1100 and r._map_h + r._hud_h == 1000, "resize must relayout"
+        assert r._grade.get_size() == (r._map_px, r._map_h), "resize must rebuild the caches"
+        assert r._panel_w == _panel_width(1100), "resize must re-clamp the panel"
+        r._draw(state)
+    finally:
+        pygame.quit()
+    assert {k: state[k] for k in state if k != "agents"} == before, \
+        "window sizing / resize mutated world_state"
+    print("PASS test_pygame_window_sizing_rect_layout_and_resize")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -8844,6 +8909,7 @@ def main_runner() -> None:
         test_pygame_camera_clamp_buckets_and_culling_pure,
         test_pygame_lod_tiers_have_hysteresis,
         test_pygame_camera_state_renderer_local_and_lod_draw_read_only,
+        test_pygame_window_sizing_rect_layout_and_resize,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

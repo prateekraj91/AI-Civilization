@@ -930,6 +930,18 @@ def parse_speed(value: str) -> float:
     return secs
 
 
+def parse_window(text: str) -> tuple[int, int]:
+    """Parse --window WxH (e.g. '1600x900') into an (int, int) size for the visual renderer."""
+    t = str(text).lower().replace(" ", "")
+    for sep in ("x", "*", ","):
+        if sep in t:
+            a, _, b = t.partition(sep)
+            if a.isdigit() and b.isdigit() and int(a) > 0 and int(b) > 0:
+                return int(a), int(b)
+    raise argparse.ArgumentTypeError(
+        f"--window expects WxH in pixels (e.g. 1600x900), got {text!r}")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """CLI for a reproducible, capturable run (Day 17)."""
     p = argparse.ArgumentParser(
@@ -1377,6 +1389,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "--seed, institution flags). Optional dependency: if Pygame is not installed "
              "the run exits with a 'pip install pygame' message. (Settlements, rulers, "
              "kingdoms and war are later slices — this slice draws only terrain + agents.)")
+    p.add_argument(
+        "--window", type=parse_window, default=None, metavar="WxH",
+        help="visual-renderer window size in pixels, e.g. 1600x900. DEFAULT: the display's own "
+             "resolution. The window is RESIZABLE — the map zone, side panel (a clamped proportion "
+             "of the width), HUD, terrain/void caches and the iso fit all recompute on resize.")
+    p.add_argument(
+        "--fullscreen", action="store_true",
+        help="open the visual renderer BORDERLESS FULLSCREEN at the display resolution. F11 (or F) "
+             "toggles fullscreen at runtime; ESC leaves fullscreen before it quits.")
     p.add_argument(
         "--showcase", action="store_true",
         help="SHOWCASE MODE (V4.10): a hands-off, trailer-grade recording. Implies --pygame and, "
@@ -2003,7 +2024,7 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
 
 
 def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
-                   showcase: bool = False):
+                   showcase: bool = False, window: "Any" = None):
     """Build the optional renderer for the chosen mode (None for plain mode).
 
     Imported lazily so a plain run never imports `rich`/`pygame` (or the renderer
@@ -2019,7 +2040,8 @@ def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
         # SLICE 1 visual renderer. Same .live()/.update()/.sink interface the sim drives;
         # it paces itself (turn_delay), so the sim's own per-turn sleep stays at 0.
         from renderer.pygame_renderer import PygameRenderer
-        return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase)
+        return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase,
+                              window=window)
     return None
 
 
@@ -2231,8 +2253,14 @@ def main(argv: list[str] | None = None) -> None:
         # shows only its view; the summary prints to the terminal after the run. The
         # pygame renderer paces itself (turn_delay below is 0 for it), so closing the
         # window raises KeyboardInterrupt and ends the run cleanly via the suppress.
+        # V4.11: the visual window opens at the DISPLAY resolution by default; --window WxH sizes it
+        # explicitly and --fullscreen goes borderless. All three are resizable/toggleable at runtime.
+        # V4.10: --showcase is a RECORDING mode, so it opens BORDERLESS FULLSCREEN unless the user
+        # pinned a size with --window (F11/F still toggles; ESC leaves fullscreen before quitting).
+        win_target = ("fullscreen" if (args.fullscreen or (args.showcase and not args.window))
+                      else args.window if args.window else "desktop")
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
-                                  showcase=args.showcase)
+                                  showcase=args.showcase, window=win_target)
         sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,

@@ -553,7 +553,20 @@ _WEALTH_CEIL = 60.0            # wealth mapped to the largest radius (sqrt ramp 
 # Slice 3: LEGIBILITY. The window widens into a MAP zone (left, the square grid) and a
 # PANEL zone (right sidebar) holding a state summary above a scrolling EVENT FEED, so the
 # viewer can READ what is happening while watching the map.
-_PANEL_W = 320                 # sidebar width in pixels
+_PANEL_W = 320                 # sidebar width — the LEGACY fixed layout (window=None; the tests' path)
+# V4.11 WINDOW SIZING: the window opens at the display resolution (or --window/--fullscreen), is
+# RESIZABLE, and the map zone becomes a RECTANGLE that fills it. The side panel is a PROPORTION of the
+# window width (clamped), so it never dominates a small screen nor looks lost on a large one.
+_PANEL_FRAC = 0.24             # panel width as a fraction of the window width...
+_PANEL_MIN = 220               # ...clamped to a sane minimum...
+_PANEL_MAX = 380               # ...and maximum (px)
+
+
+def _panel_width(win_w: int) -> int:
+    """The proportional side-panel width for a window `win_w` px wide, clamped (pure)."""
+    return int(max(_PANEL_MIN, min(_PANEL_MAX, win_w * _PANEL_FRAC)))
+
+
 _PANEL_BG = (20, 22, 18)       # panel background — a shade off the terrain so the zones read apart
 _PANEL_DIV = (58, 64, 54)      # thin divider lines inside the panel
 _PANEL_PAD = 10                # inner margin
@@ -918,6 +931,18 @@ def _fit_cell(size: int, map_px: int) -> int:
         return _MAX_CELL
     usable = map_px * (1.0 - 2.0 * _FIT_MARGIN)
     return int(max(_CELL_FLOOR, min(_MAX_CELL, usable / (2.0 * max(1, size)))))
+
+
+def _fit_cell_rect(size: int, map_w: int, map_h: int) -> int:
+    """V4.11: the whole-world fit cell for a RECTANGULAR map viewport (map_w x map_h) — CONTAIN the
+    playable world's 2:1 diamond (width 2*size*cell, height size*cell) so whichever dimension binds
+    keeps the world visible (pure). For a square viewport this equals _fit_cell (width binds)."""
+    if size <= 0 or map_w <= 0 or map_h <= 0:
+        return _MAX_CELL
+    uw = map_w * (1.0 - 2.0 * _FIT_MARGIN)
+    uh = map_h * (1.0 - 2.0 * _FIT_MARGIN)
+    cell = min(uw / (2.0 * max(1, size)), uh / max(1, size))   # width-fit vs height-fit -> contain
+    return int(max(_CELL_FLOOR, min(_MAX_CELL, cell)))
 
 
 def settlement_radius_cells(center: tuple[int, int],
@@ -1708,7 +1733,7 @@ class PygameRenderer:
     """
 
     def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4,
-                 showcase: bool = False) -> None:
+                 showcase: bool = False, window: "tuple[int, int] | str | None" = None) -> None:
         # `turn_delay` (seconds/turn) paces the watch; the renderer waits this long
         # between turns itself (responsively), so the sim's own sleep is left at 0.
         self.turn_delay = max(0.0, float(turn_delay))
@@ -1738,8 +1763,21 @@ class PygameRenderer:
         self._current_season = "summer"                    # tracks season for terrain rebakes
         # Slice 9: full-bleed geometry + light/ambient caches (all renderer-local).
         self._margin_px = 0                                # the wilderness ring, in pixels
-        self._win_cell = _MAX_CELL                         # V4.6: window-sizing cell (map_px basis)
-        self._map_px = 0                                   # full map zone = margin + grid + margin
+        self._win_cell = _MAX_CELL                         # V4.6: base-space cell (world-derived; NOT the window)
+        self._base_map = 0                                 # V4.11: world-derived SQUARE (base-space reads)
+        self._map_px = 0                                   # V4.11: the map zone WIDTH (kept named _map_px)
+        self._map_h = 0                                    # V4.11: the map zone HEIGHT (rectangular now)
+        self._view = (0, 0)                                # (map_w, map_h) — the iso viewport
+        self._cull = 0                                     # max(map_w, map_h) — safe cull bound (never under-cull)
+        self._panel_w = _PANEL_W                           # V4.11: proportional side-panel width (clamped)
+        self._hud_h = _HUD_H
+        self._win_w = self._win_h = 0                      # the actual window size
+        # V4.11: WINDOW target — None = legacy world-derived square (the tests' path); a (w,h) tuple or
+        # "fullscreen" from --window/--fullscreen; _pending_size carries a live VIDEORESIZE.
+        self._window = window
+        self._fullscreen = window == "fullscreen"
+        self._pending_size: "tuple[int, int] | None" = None
+        self._win_dirty = False                            # a resize/fullscreen toggle asks _ensure_screen to rebuild
         self._frame = 0                                    # ambient-life clock (per drawn frame)
         self._stamps: dict[tuple, Any] = {}                # cached shadow/smoke alpha stamps
         self._pond: tuple | None = None                    # baked pond geometry, for the shimmer
@@ -1829,23 +1867,28 @@ class PygameRenderer:
         cell is HALVED (the diamond is twice as wide as tall, so half the cell makes its width
         fill the same window), and terrain bakes into a diamond surface per zoom bucket.
         """
-        if self._screen is not None and size == self._size:
+        if self._screen is not None and size == self._size and not self._win_dirty:
             return
+        self._win_dirty = False
         self._size = size
-        # The window MAP zone keeps the slice-9 sizing (so panel/HUD layout is unchanged)...
+        # BASE SPACE (world-derived, independent of the window): the pixels-per-cell + margin the
+        # pond/coast/star geometry is stored in, so those reads agree at any window size or zoom.
         win_cell = _cell_size(size)
         self._win_cell = win_cell
         grid_px = win_cell * max(1, size)
         self._margin_px = _MARGIN_CELLS * win_cell
-        self._map_px = grid_px + 2 * self._margin_px
-        # V4.9: the FIT cell frames the PLAYABLE world (0..size) across the viewport with a modest
-        # margin — the launch view and the zoom-OUT floor — so the world fills the frame instead of
-        # sitting small inside the wilderness margin (its 2:1 vertical slack is filled by the void).
-        self._cell = self._cell0 = _fit_cell(size, self._map_px)
-        # V4.10: SHOWCASE opens a clean SQUARE window (just the map — no side panel, no HUD strip),
-        # so a screen recording captures only the world. Normal mode keeps the panel + HUD zones.
-        win = (self._map_px, self._map_px) if self._showcase else (self._map_px + _PANEL_W, self._map_px + _HUD_H)
-        self._screen = pygame.display.set_mode(win)
+        self._base_map = grid_px + 2 * self._margin_px
+        # WINDOW: resolve the target size + flags + panel/HUD split (proportional panel, clamped),
+        # then the MAP ZONE is the rectangle that remains. window=None keeps the legacy square.
+        win_w, win_h, flags, self._panel_w, self._hud_h = self._resolve_window()
+        self._map_px = max(64, win_w - self._panel_w)      # map zone WIDTH (kept named _map_px)
+        self._map_h = max(64, win_h - self._hud_h)         # map zone HEIGHT
+        self._view = (self._map_px, self._map_h)
+        self._cull = max(self._map_px, self._map_h)         # safe cull bound (never under-cull the tall axis)
+        self._win_w, self._win_h = win_w, win_h
+        # V4.9/V4.11: the FIT cell frames the PLAYABLE world across the (now RECTANGULAR) viewport.
+        self._cell = self._cell0 = _fit_cell_rect(size, self._map_px, self._map_h)
+        self._screen = pygame.display.set_mode((win_w, win_h), flags)
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
@@ -1873,9 +1916,65 @@ class PygameRenderer:
         # so they are (re)built here with the terrain — pure hash, cached, never per frame.
         self._dawn_wash = self._build_dawn_wash()
         self._stars = self._build_stars()
+        self._light_layer = None            # V4.11: re-sized to the new viewport on the next night frame
         self._stamps = {}
         # Slice 6: town plans hold pixel offsets, so a resize (new cell size) invalidates them.
         self._town_plans = {}
+
+    def _resolve_window(self) -> tuple:
+        """The target (win_w, win_h, flags, panel_w, hud_h) for this frame (V4.11): a live VIDEORESIZE,
+        else fullscreen at the desktop size, else an explicit --window (resizable), else the LEGACY
+        world-derived SQUARE with the FIXED panel (window=None — the tests' byte-identical path)."""
+        showcase = self._showcase
+        if self._pending_size is not None:
+            w, h = self._pending_size
+            self._pending_size = None
+            flags = (pygame.FULLSCREEN | pygame.NOFRAME) if self._fullscreen else pygame.RESIZABLE
+        elif self._fullscreen or self._window == "fullscreen":
+            self._fullscreen = True
+            w, h = self._desktop_size()
+            flags = pygame.FULLSCREEN | pygame.NOFRAME
+        elif self._window == "desktop":                # the DEFAULT for a real run: fill the display
+            w, h = self._desktop_size()
+            flags = pygame.RESIZABLE
+        elif self._window is None:
+            pw = 0 if showcase else _PANEL_W          # legacy fixed layout (non-resizable)
+            hh = 0 if showcase else _HUD_H
+            return self._base_map + pw, self._base_map + hh, 0, pw, hh
+        else:
+            w, h = self._window
+            flags = pygame.RESIZABLE
+        w, h = max(320, int(w)), max(240, int(h))
+        pw = 0 if showcase else _panel_width(w)
+        hh = 0 if showcase else _HUD_H
+        return w, h, flags, pw, hh
+
+    @staticmethod
+    def _desktop_size() -> tuple[int, int]:
+        """The primary display resolution (falls back to a sane default when unavailable)."""
+        with contextlib.suppress(Exception):
+            sizes = pygame.display.get_desktop_sizes()
+            if sizes and sizes[0][0] > 0:
+                return sizes[0]
+        with contextlib.suppress(Exception):
+            info = pygame.display.Info()
+            if info.current_w > 0:
+                return info.current_w, info.current_h
+        return 1280, 800
+
+    def _apply_resize(self, w: int, h: int) -> None:
+        """Handle a VIDEORESIZE: recompute the whole layout + caches for the new window size (V4.11)."""
+        self._pending_size = (w, h)
+        self._win_dirty = True
+        self._ensure_screen(self._size)
+
+    def _toggle_fullscreen(self) -> None:
+        """F11/F: toggle borderless fullscreen at runtime, rebuilding the layout + caches (V4.11)."""
+        self._fullscreen = not self._fullscreen
+        if not self._fullscreen and self._window not in (None, "fullscreen"):
+            self._pending_size = self._window          # restore the windowed size
+        self._win_dirty = True
+        self._ensure_screen(self._size)
 
     # -- the per-turn hook the sim calls -----------------------------------
     def update(self, state: dict[str, Any]) -> None:
@@ -1899,34 +1998,57 @@ class PygameRenderer:
         self._prev_snapshot = take_snapshot(state)
 
     # -- input -------------------------------------------------------------
+    def _window_event(self, event: Any) -> bool:
+        """V4.11: handle a window event (resize / F11-F fullscreen). True when consumed. ESC exits
+        fullscreen before it is allowed to quit — handled by the callers."""
+        if event.type == pygame.VIDEORESIZE:
+            self._apply_resize(event.w, event.h)
+            return True
+        if event.type == pygame.KEYDOWN and event.key in (pygame.K_F11, pygame.K_f):
+            self._toggle_fullscreen()
+            return True
+        return False
+
     def _pump_events(self) -> None:
-        """Drain the OS event queue; camera events first, pause on SPACE, quit/ESC ends."""
+        """Drain the OS event queue; window/camera events first, pause on SPACE, quit/ESC ends
+        (ESC exits fullscreen before it quits)."""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise KeyboardInterrupt
+            if self._window_event(event):
+                continue
             if self._handle_camera_event(event):
                 continue
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    raise KeyboardInterrupt
-                if event.key == pygame.K_SPACE:
+                    if self._fullscreen:
+                        self._toggle_fullscreen()        # ESC leaves fullscreen before quitting
+                    else:
+                        raise KeyboardInterrupt
+                elif event.key == pygame.K_SPACE:
                     self.paused = not self.paused
-                if event.key == pygame.K_u:              # V4.10: toggle the full UI back on mid-run
+                elif event.key == pygame.K_u:            # V4.10: toggle the full UI back on mid-run
                     self._minimal = not self._minimal
 
     def _pump_cinema_events(self) -> bool:
-        """Input during a cinematic: quit/ESC still ends the run; any NON-CAMERA key SKIPS
-        the scene (slice 11: exploring — pan/zoom/home — must never swallow a battle)."""
+        """Input during a cinematic: window resize/fullscreen still apply; quit/ESC still ends the
+        run (ESC exits fullscreen first); any NON-CAMERA key SKIPS the scene."""
         skip = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise KeyboardInterrupt
+            if self._window_event(event):
+                continue
             if self._handle_camera_event(event):
                 continue
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    raise KeyboardInterrupt
-                skip = True
+                    if self._fullscreen:
+                        self._toggle_fullscreen()
+                    else:
+                        raise KeyboardInterrupt
+                else:
+                    skip = True
         return skip
 
     # -- Slice 11: the camera (renderer-local; the sim is never consulted or touched) ------
@@ -1938,7 +2060,7 @@ class PygameRenderer:
         keys (arrows/WASD) return True here so they never skip a cinematic — the actual
         panning is polled per frame in _update_camera for smooth held-key movement.
         """
-        centre = (self._map_px // 2, self._map_px // 2)
+        centre = (self._map_px // 2, self._map_h // 2)
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                 self._zoom_step(1, centre)
@@ -1962,7 +2084,7 @@ class PygameRenderer:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 \
                 and event.pos[0] < self._map_px and event.pos[1] < self._map_px:
             # V4.6: remember the WORLD point grabbed, so the drag keeps it under the cursor.
-            view = (self._map_px, self._map_px)
+            view = self._view
             self._drag = screen_to_world_iso(event.pos,
                                              (self._cam_tx, self._cam_ty, self._cam_tcell), view)
             return True
@@ -1987,7 +2109,7 @@ class PygameRenderer:
         new = max(self._zoom_lo, min(self._zoom_hi, t * factor))
         if abs(new - t) < 1e-6:
             return
-        view = (self._map_px, self._map_px)
+        view = self._view
         # V4.6: keep the world point under `anchor` fixed across the zoom (iso re-anchor).
         wx, wy = screen_to_world_iso(anchor, (self._cam_tx, self._cam_ty, t), view)
         self._cam_tcell = new
@@ -1999,20 +2121,20 @@ class PygameRenderer:
                         cell: float) -> tuple[float, float]:
         """The camera centre that puts world point (wx, wy) under screen `anchor` at `cell`
         zoom (pure iso re-anchor — the inverse used by cursor zoom and drag-pan)."""
-        view = self._map_px
+        vw, vh = self._view
         hw, hh = cell, cell * 0.5
-        u = (wx - wy) - (anchor[0] - view * 0.5) / hw     # = cx - cy
-        v = (wx + wy) - (anchor[1] - view * 0.5) / hh     # = cx + cy
+        u = (wx - wy) - (anchor[0] - vw * 0.5) / hw       # = cx - cy
+        v = (wx + wy) - (anchor[1] - vh * 0.5) / hh       # = cx + cy
         return (u + v) * 0.5, (v - u) * 0.5
 
     def _fit_region_cell(self, side_cells: float) -> float:
-        """The cell that CONTAINS a square world box of side `side_cells` (its projected 2:1 diamond)
-        in the square map viewport with a small margin (pure geometry). An axis-aligned box projects
-        to width (dx+dy)*cell and half that in height, so the width binds — the box fills the frame
-        width and centres. Clamped to sane pixels, with headroom left below the zoom-in ceiling."""
-        du = 2.0 * max(1.0, side_cells)                    # projected u/v extent = dx + dy = 2*side
-        usable = self._map_px * (1.0 - 2.0 * _FIT_MARGIN)
-        cell = (usable / du) * _FRAME_FILL                 # width-contain, boosted so land fills the frame
+        """The cell that frames a square world box of side `side_cells` in the RECTANGULAR map viewport
+        (V4.11). Its 2:1 diamond is width 2*side*cell, height side*cell; CONTAIN by whichever dimension
+        binds, boosted (_FRAME_FILL) so land fills the frame. Clamped, with zoom-in headroom left."""
+        s = max(1.0, side_cells)
+        uw = self._map_px * (1.0 - 2.0 * _FIT_MARGIN)
+        uh = self._map_h * (1.0 - 2.0 * _FIT_MARGIN)
+        cell = min(uw / (2.0 * s), uh / s) * _FRAME_FILL   # width-fit vs height-fit -> contain, boosted
         return float(max(_CELL_FLOOR, min(_CELL_CEIL, self._zoom_hi * 0.9, cell)))
 
     def _home_view(self, state: dict[str, Any]) -> tuple[float, float, float]:
@@ -2053,7 +2175,7 @@ class PygameRenderer:
         reads input and writes ONLY renderer-local camera fields; panning/zooming during a
         seeded run can never change the event log.
         """
-        size, view = self._size, (self._map_px, self._map_px)
+        size, view = self._size, self._view
         if pygame.display.get_init():                 # held-key panning at constant screen speed
             keys = None
             with contextlib.suppress(Exception):
@@ -2118,9 +2240,9 @@ class PygameRenderer:
         every frame BYTE-IDENTICAL when no effect is active (the tests' path)."""
         if self._punch == 1.0 and self._shake == (0, 0):
             return sx, sy
-        c = self._map_px * 0.5
+        cx, cy = self._map_px * 0.5, self._map_h * 0.5
         s = self._punch
-        return c + (sx - c) * s + self._shake[0], c + (sy - c) * s + self._shake[1]
+        return cx + (sx - cx) * s + self._shake[0], cy + (sy - cy) * s + self._shake[1]
 
     def _to_px(self, x: float, y: float, z: float = 0.0) -> tuple[int, int]:
         """V4.6: the GROUND point of world cell (x, y) (its centre) in SCREEN pixels, through the
@@ -2128,7 +2250,7 @@ class PygameRenderer:
         point above the ground plane (0 for everything ground-level this slice). V4.9 rides the
         frame's juice affine (punch/shake) so sprites shake/scale in lockstep with the terrain."""
         sx, sy = world_to_screen_iso((x + 0.5, y + 0.5, z), self._cam_draw,
-                                     (self._map_px, self._map_px))
+                                     self._view)
         sx, sy = self._fx(sx, sy)
         return int(round(sx)), int(round(sy))
 
@@ -2184,7 +2306,7 @@ class PygameRenderer:
         onto the ground, drifting up and fading over their short life."""
         if not self._puffs or self._lod == "far":
             return
-        cell, view = self._cell, self._map_px
+        cell, view = self._cell, self._cull
         for wx, wy, birth, kind in self._puffs:
             p = (self._frame - birth) / _PUFF_LIFE
             gx, gy = self._to_px(wx, wy)
@@ -2225,8 +2347,7 @@ class PygameRenderer:
         """A brief warm impact FLASH over the map on a war cinematic's decisive blow (decays fast)."""
         if self._flash_amp <= 0.02:
             return
-        mp = self._map_px
-        ov = pygame.Surface((mp, mp))
+        ov = pygame.Surface(self._view)
         ov.fill((255, 248, 232))
         ov.set_alpha(int(150 * min(1.0, self._flash_amp)))
         self._screen.blit(ov, (0, 0))
@@ -2244,9 +2365,18 @@ class PygameRenderer:
         else:
             self._focus_pt = None
             th = (now - (self._start_time or now)) * _SHOWCASE_ORBIT_SPEED
-            self._cam_tx = ox + math.cos(th) * _SHOWCASE_ORBIT_R          # a slow idle drift/orbit
-            self._cam_ty = oy + math.sin(th) * _SHOWCASE_ORBIT_R * 0.6
-            self._cam_tcell = ocell * (1.0 + 0.05 * math.sin(th * 0.5))
+            # V4.11: the drift amplitude is capped by the pan ROOM each axis actually has before
+            # clamp_camera pins the view — so on a wide 16:9 (which crops vertically) the orbit
+            # rides the y axis, on a tall window the x axis, and it is never silently clamped flat.
+            span = (self._size + 2 * _MARGIN_CELLS) / 2.0
+            room_x = max(0.0, span - self._map_px / (2.0 * max(1e-6, ocell)))
+            room_y = max(0.0, span - self._map_h / (2.0 * max(1e-6, ocell)))
+            ax = min(_SHOWCASE_ORBIT_R, room_x * 0.8)
+            ay = min(_SHOWCASE_ORBIT_R * 0.7, room_y * 0.8)
+            self._cam_tx = ox + math.cos(th) * ax                          # a slow idle drift/orbit
+            self._cam_ty = oy + math.sin(th) * ay
+            # the zoom BREATH is clamp-immune, so the frame still lives even when both axes are pinned
+            self._cam_tcell = ocell * (1.0 + 0.055 * math.sin(th * 0.45))
 
     def _draw_title_card(self) -> None:
         """A clean opening title card — project name + subtitle — fading in and back over the first
@@ -2257,20 +2387,21 @@ class PygameRenderer:
         if el > _TITLE_DUR:
             return
         fade = max(0.0, min(1.0, el / 1.0, (_TITLE_DUR - el) / 1.4))
-        mp = self._map_px
-        ov = pygame.Surface((mp, mp), pygame.SRCALPHA)
+        w, h = self._view
+        mx, my = w // 2, h // 2
+        ov = pygame.Surface(self._view, pygame.SRCALPHA)
         ov.fill((7, 9, 14, int(165 * fade)))
         tf, sf = (self._title_font or self._big_font or self._font), (self._font)
         if tf is not None:
             name = tf.render(_TITLE_NAME, True, _STORY_FG)
             name.set_alpha(int(255 * fade))
-            ov.blit(name, ((mp - name.get_width()) // 2, mp // 2 - name.get_height()))
+            ov.blit(name, (mx - name.get_width() // 2, my - name.get_height()))
             pygame.draw.line(ov, (*_STORY_ACCENT, int(220 * fade)),
-                             (mp // 2 - 90, mp // 2 + 6), (mp // 2 + 90, mp // 2 + 6), 2)
+                             (mx - 90, my + 6), (mx + 90, my + 6), 2)
         if sf is not None:
             sub = sf.render(_TITLE_SUB, True, _STAT_VALUE)
             sub.set_alpha(int(230 * fade))
-            ov.blit(sub, ((mp - sub.get_width()) // 2, mp // 2 + 16))
+            ov.blit(sub, (mx - sub.get_width() // 2, my + 16))
         self._screen.blit(ov, (0, 0))
 
     def _draw_showcase_readout(self, state: dict[str, Any]) -> None:
@@ -2282,7 +2413,7 @@ class PygameRenderer:
             txt += "   ·   [U] hide UI"
         lab = self._font.render(txt, True, _STAT_VALUE)
         pad = 6
-        x, y = self._map_px - lab.get_width() - 12, self._map_px - lab.get_height() - 10
+        x, y = self._map_px - lab.get_width() - 12, self._map_h - lab.get_height() - 10
         chip = pygame.Surface((lab.get_width() + 2 * pad, lab.get_height() + pad), pygame.SRCALPHA)
         chip.fill((*_HUD_BG, 120))
         self._screen.blit(chip, (x - pad, y - pad // 2))
@@ -2437,7 +2568,7 @@ class PygameRenderer:
             self._blit_terrain()
         elif self._void_bg is None:
             grass_color = PALETTE.get(f"{self._current_season}_grass", _GRASS_BASE)
-            screen.fill(grass_color, (0, 0, map_px, map_px))
+            screen.fill(grass_color, (0, 0, self._map_px, self._map_h))
         # V4.8: water shimmer & coast waves RE-SEATED onto the projected water — glints on the
         # tilted pond/sea tiles and wave crests along the projected coastline (both cull off-screen).
         self._draw_water_shimmer()
@@ -2482,14 +2613,14 @@ class PygameRenderer:
                 sprites.append((info["cy"], 0, "town", info))
         for fx, fy in state.get("food", []):
             px, py = self._to_px(fx, fy)
-            if visible_on_screen(px, py, cell, map_px, map_px):
+            if visible_on_screen(px, py, cell, self._cull, self._cull):
                 sprites.append((py, 1, "food", (px, py)))
         for agent in state.get("agents", []):
             if not getattr(agent, "alive", True) or not getattr(agent, "position", None):
                 continue
             gx, gy = self._agent_px(agent, motion)   # the agent's GROUND point (its feet)
             r = agent_radius(_wealth(agent), cell)
-            if not visible_on_screen(gx, gy, r * 4 + cell, map_px, map_px):
+            if not visible_on_screen(gx, gy, r * 4 + cell, self._cull, self._cull):
                 continue
             sprites.append((gy, 2, "agent", (agent, gx, gy, r, self._step_squash(agent, motion))))
         sprites.sort(key=lambda s: (s[0], s[1]))
@@ -2622,10 +2753,10 @@ class PygameRenderer:
         """The world-cell AABB currently on screen (V4.8): the four viewport corners un-projected
         to the ground plane. Weather/fog seed their particles inside this rect so they always fall
         WHERE the camera looks, at any pan/zoom, and stay tied to world positions as it moves."""
-        view = (self._map_px, self._map_px)
+        view = self._view
         mp = self._map_px
         xs, ys = [], []
-        for c in ((0, 0), (mp, 0), (0, mp), (mp, mp)):
+        for c in ((0, 0), (view[0], 0), (0, view[1]), view):
             wx, wy = screen_to_world_iso(c, self._cam_draw, view)
             xs.append(wx)
             ys.append(wy)
@@ -2675,7 +2806,8 @@ class PygameRenderer:
         so a settled camera (c == its bucket) blits the visible sub-rect 1:1, and only a mid-glide
         residual ratio needs one cheap pygame.transform.scale. The bake is never touched per frame.
         """
-        screen, c, view = self._screen, self._cell, self._map_px
+        screen, c = self._screen, self._cell
+        vw, vh = self._view                          # V4.11: the map zone is a RECTANGLE (w, h)
         buckets = self._zoom_buckets or (self._cell0,)
         cq = min(buckets, key=lambda b: abs(b - c))
         surf = self._terrain_surface(cq)
@@ -2685,12 +2817,12 @@ class PygameRenderer:
         r = c / cq
         ccx = (self._cam_x - self._cam_y) * c
         ccy = (self._cam_x + self._cam_y) * (c * 0.5)
-        x0 = -ox * r - ccx + view * 0.5               # screen pos of base pixel (0, 0)
-        y0 = -oy * r - ccy + view * 0.5
+        x0 = -ox * r - ccx + vw * 0.5                 # screen pos of base pixel (0, 0)
+        y0 = -oy * r - ccy + vh * 0.5
         x0, y0 = self._fx(x0, y0)                      # V4.9: the terrain rides the same punch/shake
         r *= self._punch                              # ...as the sprites, so nothing desyncs
         vx0, vy0 = max(0, int(x0)), max(0, int(y0))
-        vx1, vy1 = min(view, int(x0 + W * r)), min(view, int(y0 + H * r))
+        vx1, vy1 = min(vw, int(x0 + W * r)), min(vh, int(y0 + H * r))
         if vx1 <= vx0 or vy1 <= vy0:
             return
         if c == cq:                                    # resting ON the bucket: plain blit
@@ -2718,7 +2850,7 @@ class PygameRenderer:
         """
         cell = cell if cell is not None else self._cell0
         m = m if m is not None else self._margin_px
-        map_px = map_px if map_px is not None else self._map_px
+        map_px = map_px if map_px is not None else self._base_map   # V4.11: coast is BASE-space
         if m <= 0:
             return map_px
         row, t = divmod(max(0, y), max(1, cell))
@@ -2825,7 +2957,7 @@ class PygameRenderer:
         the interpolated phase tint changes; it starts on the current phase's tint)."""
         if self._map_px <= 0:
             return None
-        grade = pygame.Surface((self._map_px, self._map_px), pygame.SRCALPHA)
+        grade = pygame.Surface(self._view, pygame.SRCALPHA)
         tint = phase_tint(self._phase)
         grade.fill((*tint[0], tint[1]))
         self._grade_tint = tint
@@ -2837,14 +2969,14 @@ class PygameRenderer:
         so dawn pours in gradually and dissolves into plain day with zero rebuild cost."""
         if self._map_px <= 0:
             return None
-        wash = pygame.Surface((self._map_px, self._map_px), pygame.SRCALPHA)
+        wash = pygame.Surface(self._view, pygame.SRCALPHA)
         strips = 28
         sw = max(1, self._map_px // strips + 1)
         gold = PALETTE["dawn_gold"]
         for i in range(strips):
             a = int(_DAWN_WASH_MAX_A * (1.0 - i / strips) ** 1.6)
             if a > 0:
-                wash.fill((*gold, a), (i * sw, 0, sw, self._map_px))
+                wash.fill((*gold, a), (i * sw, 0, sw, self._map_h))
         return wash
 
     def _build_stars(self) -> list[tuple[int, int, int]]:
@@ -2852,8 +2984,8 @@ class PygameRenderer:
         inside the pond): the top-down night sky appears as REFLECTIONS, so the land stays
         readable. Deterministic per map size — the renderer twinkles them per frame."""
         out: list[tuple[int, int, int]] = []
-        for x, y, s in star_field(self._map_px):
-            if self._margin_px > 0 and x > self._coast_x(y) + 5 and x < self._map_px - 2:
+        for x, y, s in star_field(self._base_map):
+            if self._margin_px > 0 and x > self._coast_x(y) + 5 and x < self._base_map - 2:
                 out.append((x, y, s))
             elif self._pond is not None:
                 pcx, pcy, rx, ry = self._pond
@@ -2873,7 +3005,7 @@ class PygameRenderer:
         nf = self._nf
         if nf <= _NIGHT_EPS:
             return
-        screen, f, view = self._screen, self._frame, self._map_px
+        screen, f, view = self._screen, self._frame, self._cull
         k_px = self._cell / max(1, self._cell0)            # slice 11: base px -> live px
         for k, (x, y, s) in enumerate(self._stars):        # stars mirrored on the water
             sx, sy = self._base_to_screen(x, y)            # slice 11: ride the camera
@@ -2895,17 +3027,17 @@ class PygameRenderer:
         # invisible) and only over the lights' UNION rect — so the clamp/composite cost tracks the lit
         # region at a quarter of the pixels, keeping a close-up night town inside the frame budget.
         ds = _LIGHT_DS
-        hv = (view + ds - 1) // ds
+        hvw, hvh = (self._map_px + ds - 1) // ds, (self._map_h + ds - 1) // ds
         layer = self._light_layer
-        if layer is None or layer.get_size() != (hv, hv):
-            layer = self._light_layer = pygame.Surface((hv, hv))
+        if layer is None or layer.get_size() != (hvw, hvh):
+            layer = self._light_layer = pygame.Surface((hvw, hvh))
         _pool_r = {"window": _LIGHT_WINDOW, "hearth": _LIGHT_HEARTH, "forge": _LIGHT_FORGE}
         dirty = None
         for kind, x, y, s in self._frame_lights:
             rr = int(max(6, s * _pool_r.get(kind, _LIGHT_TORCH))) + 4
             rect = pygame.Rect((x - rr) // ds, (y - rr) // ds, 2 * rr // ds + 2, 2 * rr // ds + 2)
             dirty = rect if dirty is None else dirty.union(rect)
-        dirty = dirty.clip(pygame.Rect(0, 0, hv, hv))
+        dirty = dirty.clip(pygame.Rect(0, 0, hvw, hvh))
         if dirty.width <= 0 or dirty.height <= 0:
             return
         layer.fill((0, 0, 0), dirty)
@@ -3065,7 +3197,7 @@ class PygameRenderer:
         water at any zoom), drawn as a short horizontal light dash re-hashed every ~1/3s (zero RNG)."""
         if self._lod == "far":
             return
-        f, view, cell, size = self._frame, self._map_px, self._cell, self._size
+        f, view, cell, size = self._frame, self._cull, self._cell, self._size
         pcx, pcy = size * 0.28, size * 0.7                # the pond's world centre (see _tile_kind)
         for k in range(3):                                # glints on the pond
             u = terrain_noise(f // 18, k, 71) - 0.5
@@ -3100,21 +3232,21 @@ class PygameRenderer:
         diamond world sits in open water that darkens outward — no diamond island on flat ground.
         Concentric filled circles (large/dark first, small/light last) give the smooth falloff.
         """
-        mp = self._map_px
-        if mp <= 0:
+        w, h = self._view                              # V4.11: rectangular map zone
+        if w <= 0 or h <= 0:
             return None
-        surf = pygame.Surface((mp, mp))
+        surf = pygame.Surface((w, h))
         surf.fill(_VOID_EDGE)                          # the far dark past the outermost circle
-        cx = cy = mp // 2
-        maxr = int(mp * 0.72)                          # reach roughly to the corners (0.707*mp)
+        cx, cy = w // 2, h // 2
+        maxr = int(math.hypot(w, h) * 0.5 + 2)         # reach to the corners
         steps = 48
         for i in range(steps, 0, -1):
             t = i / steps                              # 1 at the rim, ->0 at the centre
             pygame.draw.circle(surf, lerp_color(_VOID_OCEAN, _VOID_EDGE, t), (cx, cy), int(maxr * t))
-        self._dress_void(surf, mp)                     # V4.10: distant sea texture + corner haze
+        self._dress_void(surf, w, h)                   # V4.10: distant sea texture + corner haze
         return surf
 
-    def _dress_void(self, surf: Any, mp: int) -> None:
+    def _dress_void(self, surf: Any, w: int, h: int) -> None:
         """V4.10: make the open water around the coast read INTENTIONAL, not empty background.
 
         Baked ONCE into the cached void (deterministic terrain_noise, zero RNG): distant WAVE crests
@@ -3122,19 +3254,20 @@ class PygameRenderer:
         SHORELINE haze hugging the extreme corners (a hint of distant land in the mist). Only the ring
         the diamond does not cover is dressed — the inner disc (where the world sits) is skipped, so
         the cost is a handful of thin lines over the corners and nothing shows through the land."""
-        inner = (mp * 0.30) ** 2                        # the central disc the world diamond covers
-        step = max(16, mp // 24)
-        for gy in range(step // 2, mp, step):
-            for gx in range(step // 2, mp, step):
-                dx, dy = gx - mp / 2.0, gy - mp / 2.0
+        cxc, cyc, rref = w / 2.0, h / 2.0, min(w, h)
+        inner = (rref * 0.30) ** 2                      # the central disc the world diamond covers
+        step = max(16, min(w, h) // 24)
+        for gy in range(step // 2, h, step):
+            for gx in range(step // 2, w, step):
+                dx, dy = gx - cxc, gy - cyc
                 if dx * dx + dy * dy < inner:
                     continue                            # skip where the land diamond will sit
                 if terrain_noise(gx, gy, 401) < 0.40:
                     continue                            # sparse — open water, not a striped pool
                 jx = int((terrain_noise(gx, gy, 402) - 0.5) * step)
                 jy = int((terrain_noise(gx, gy, 403) - 0.5) * step)
-                x = max(2, min(mp - 3, gx + jx))
-                y = max(2, min(mp - 3, gy + jy))
+                x = max(2, min(w - 3, gx + jx))
+                y = max(2, min(h - 3, gy + jy))
                 base = surf.get_at((x, y))[:3]          # shade RELATIVE to the local sea depth
                 ln = max(3, int(step * (0.30 + 0.40 * terrain_noise(gx, gy, 404))))
                 pygame.draw.line(surf, _shade(base, 15), (x - ln, y + 1), (x + ln, y), 1)
@@ -3142,9 +3275,9 @@ class PygameRenderer:
                 if terrain_noise(gx, gy, 405) > 0.88:   # an occasional foam fleck on a crest
                     pygame.draw.circle(surf, _shade(PALETTE["foam"], -70), (x + ln // 2, y), 1)
         # far-shoreline haze: a faint warm-grey bloom in each extreme corner (distant land in mist).
-        haze = pygame.Surface((mp, mp), pygame.SRCALPHA)
-        hr = int(mp * 0.22)
-        for cxh, cyh in ((0, 0), (mp, 0), (0, mp), (mp, mp)):
+        haze = pygame.Surface((w, h), pygame.SRCALPHA)
+        hr = int(min(w, h) * 0.22)
+        for cxh, cyh in ((0, 0), (w, 0), (0, h), (w, h)):
             for i in range(hr, 0, -max(1, hr // 12)):
                 a = int(22 * (1 - i / hr))              # faint at radius hr, strongest at the corner
                 pygame.draw.circle(haze, (*PALETTE["fog"], a), (cxh, cyh), i)
@@ -3156,18 +3289,18 @@ class PygameRenderer:
 
         Nested rectangular rings (each drawn once at its own alpha, so nothing double-darkens)
         keep the whole border soft, not just the corners; blitted over the map each frame."""
-        mp = self._map_px
-        if mp <= 0:
+        w, h = self._view
+        if w <= 0 or h <= 0:
             return None
-        vign = pygame.Surface((mp, mp), pygame.SRCALPHA)
+        vign = pygame.Surface((w, h), pygame.SRCALPHA)
         rings = 30
-        band = max(1, mp // (rings * 2))
+        band = max(1, min(w, h) // (rings * 2))
         for i in range(rings):
             a = int(_VIGNETTE_MAX * (1 - i / rings) ** 2)   # strongest at the outer edge, ->0 inward
             inset = i * band
-            if a > 0 and mp - 2 * inset > 0:
+            if a > 0 and w - 2 * inset > 0 and h - 2 * inset > 0:
                 pygame.draw.rect(vign, (0, 0, 0, a),
-                                 (inset, inset, mp - 2 * inset, mp - 2 * inset), max(1, band))
+                                 (inset, inset, w - 2 * inset, h - 2 * inset), max(1, band))
         return vign
 
     def _draw_settlement_ground(self, state: dict[str, Any]) -> None:
@@ -3187,7 +3320,7 @@ class PygameRenderer:
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        overlay = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
+        overlay = pygame.Surface(self._view, pygame.SRCALPHA)
         # Slice 9: the crops SWAY — a gentle 1px lean whose phase drifts along the row (frame
         # counter + position; zero sim RNG). Recomputed per frame, it costs a sin per tuft.
         f = self._frame
@@ -3202,7 +3335,7 @@ class PygameRenderer:
             # V4.6: a ground circle projects to an axis-aligned 2:1 ellipse (rx horizontal).
             rx = max(cell, int(rad * _ISO_RX))
             ry = max(2, int(rx * 0.5))
-            if not visible_on_screen(cx, cy, rx + cell, map_px, map_px):
+            if not visible_on_screen(cx, cy, rx + cell, self._cull, self._cull):
                 continue                                         # slice 11: cull off-screen fields
             pygame.draw.ellipse(overlay, (*_FARMLAND, _FARMLAND_ALPHA),
                                 (cx - rx, cy - ry, 2 * rx, 2 * ry))
@@ -3355,7 +3488,7 @@ class PygameRenderer:
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        overlay = pygame.Surface((map_px, map_px), pygame.SRCALPHA)
+        overlay = pygame.Surface(self._view, pygame.SRCALPHA)
         towns: list[dict[str, Any]] = []
         regions: list[tuple] = []
         for sid in sorted(settlements):
@@ -3371,7 +3504,7 @@ class PygameRenderer:
             rx = max(cell, int(round(rad_cells * cell * _ISO_RX)))   # projected ellipse radii
             ry = max(2, rx // 2)
             cx, cy = self._to_px(int(center[0]), int(center[1]))
-            if not visible_on_screen(cx, cy, rx + cell * 3, map_px, map_px):
+            if not visible_on_screen(cx, cy, rx + cell * 3, self._cull, self._cull):
                 continue
             owner = settlement_realm(sid, state)
             tint = self._territory_lerp.get(sid) or (realm_color(owner) if owner is not None else None)
@@ -3868,11 +4001,11 @@ class PygameRenderer:
         overprinting. So nothing ever overlaps at any window size or zoom.
         """
         screen = self._screen
-        pygame.draw.rect(screen, _HUD_BG, (0, map_px, map_px, _HUD_H))
+        pygame.draw.rect(screen, _HUD_BG, (0, self._map_h, map_px, self._hud_h))   # strip under the map
         font = self._font
         if font is None:
             return
-        cy = map_px + _HUD_H // 2
+        cy = self._map_h + self._hud_h // 2
 
         def place_left(surf: Any, x: int) -> int:
             screen.blit(surf, (x, cy - surf.get_height() // 2))
@@ -3976,10 +4109,10 @@ class PygameRenderer:
         """
         screen = self._screen
         font = self._font
-        win_h = map_px + _HUD_H
+        win_h, panel_w = self._win_h, self._panel_w       # V4.11: proportional panel, full window height
         x0, pad = map_px, _PANEL_PAD
-        inner_w = _PANEL_W - 2 * pad
-        pygame.draw.rect(screen, _PANEL_BG, (x0, 0, _PANEL_W, win_h))
+        inner_w = panel_w - 2 * pad
+        pygame.draw.rect(screen, _PANEL_BG, (x0, 0, panel_w, win_h))
         if font is None:
             return
         line_h = font.get_height() + 3
@@ -3991,12 +4124,12 @@ class PygameRenderer:
         for label, value in self._stat_lines(state):
             screen.blit(font.render(label, True, _STAT_LABEL), (x0 + pad, y))
             val = font.render(value, True, _STAT_VALUE)
-            screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
+            screen.blit(val, (x0 + panel_w - pad - val.get_width(), y))
             y += line_h
 
         # REALMS Scoreboard
         y += 5
-        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + _PANEL_W - pad, y))
+        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + panel_w - pad, y))
         y += 7
         screen.blit(font.render("REALMS", True, _PANEL_TITLE), (x0 + pad, y))
         y += line_h + 2
@@ -4018,12 +4151,12 @@ class PygameRenderer:
                 disp = f"{name} (empire)" if is_emp else name
                 screen.blit(nm_font.render(disp[:18], True, color), (x0 + pad + sw + 6, y))
                 val = font.render(str(count), True, _STAT_VALUE)
-                screen.blit(val, (x0 + _PANEL_W - pad - val.get_width(), y))
+                screen.blit(val, (x0 + panel_w - pad - val.get_width(), y))
                 y += line_h
 
         # Divider + EVENTS header.
         y += 5
-        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + _PANEL_W - pad, y))
+        pygame.draw.line(screen, _PANEL_DIV, (x0 + pad, y), (x0 + panel_w - pad, y))
         y += 7
         screen.blit(font.render("EVENTS", True, _PANEL_TITLE), (x0 + pad, y))
         y += line_h + 2
@@ -4039,7 +4172,7 @@ class PygameRenderer:
         # subtle colour-tinted background bar; the minor summary stays plain muted grey.
         for text, color, is_major in rows:
             if is_major:
-                hl = pygame.Surface((_PANEL_W - 2 * pad + 4, line_h), pygame.SRCALPHA)
+                hl = pygame.Surface((panel_w - 2 * pad + 4, line_h), pygame.SRCALPHA)
                 hl.fill((*color, _FEED_MAJOR_BG_A))
                 screen.blit(hl, (x0 + pad - 2, feed_top - 1))
                 row_font = self._feed_bold or font
@@ -4066,7 +4199,7 @@ class PygameRenderer:
         (ax, ay), (bx, by) = scene["att_pos"], scene["def_pos"]
         self._cam_tx, self._cam_ty = clamp_camera((ax + bx) / 2.0, (ay + by) / 2.0,
                                                   self._cam_tcell, self._size,
-                                                  (self._map_px, self._map_px))
+                                                  self._view)
         # V4.9: the beat time is an ACCUMULATED clock (not wall time), so a brief SLOW-MOTION dip
         # around the decisive blow really slows the picture. A short sharp SHAKE hits when the clash
         # joins (scaled to casualties), and the decisive blow adds a stronger shake + an impact FLASH.
@@ -4168,7 +4301,7 @@ class PygameRenderer:
         """The aftermath outcome banner: a translucent band across the map with the verdict."""
         map_px = self._map_px
         band_h = max(36, self._cell * 2)
-        y0 = (map_px - band_h) // 2
+        y0 = (self._map_h - band_h) // 2
         band = pygame.Surface((map_px, band_h), pygame.SRCALPHA)
         band.fill((*_BANNER_BG, int(210 * max(0.0, min(1.0, fade)))))
         self._screen.blit(band, (0, y0))
@@ -4285,7 +4418,7 @@ class PygameRenderer:
         flecks ride the same swell."""
         if self._margin_px <= 0 or self._lod == "far":
             return
-        cell, view, size, f = self._cell, self._map_px, self._size, self._frame
+        cell, view, size, f = self._cell, self._cull, self._size, self._frame
         pts = []
         for cy in range(0, size + 1):
             wave = math.sin(f * 0.05 + cy * 0.5) * 0.35
@@ -4308,7 +4441,7 @@ class PygameRenderer:
         reads as a moving shadow, not a fog blob), and it slides faster (see ambient_clouds)."""
         if self._lod == "far" or self._dl <= 0.05:
             return
-        cell, view = self._cell, self._map_px
+        cell, view = self._cell, self._cull
         a = int(22 * self._dl)                             # fainter than before (was 34)
         if a <= 0:
             return
@@ -4329,7 +4462,7 @@ class PygameRenderer:
         the sprites (they are overhead); faded out at night."""
         if self._lod == "far":
             return
-        cell, view = self._cell, self._map_px
+        cell, view = self._cell, self._cull
         a = int(85 * self._dl)
         if a <= 0:
             return
@@ -4360,7 +4493,7 @@ class PygameRenderer:
         zh = cell * _ISO_ZH
         wx0, wy0, wx1, wy1 = self._visible_world_rect()
         dw, dh = max(1e-3, wx1 - wx0), max(1e-3, wy1 - wy0)
-        layer = pygame.Surface((view, view), pygame.SRCALPHA)
+        layer = pygame.Surface(self._view, pygame.SRCALPHA)
 
         if weather == "rain":
             ztop = 6.0
@@ -4438,7 +4571,7 @@ class PygameRenderer:
         transformed through the shared iso transform this frame, so the path lies on the diamond."""
         if self._lod == "far":
             return
-        view = self._map_px
+        view = self._cull
         for name, path in self._trails.items():
             n = len(path)
             for i, (wx, wy) in enumerate(path):
@@ -4478,7 +4611,7 @@ class PygameRenderer:
         mm_size = 120
         margin = 16
         mm_x = margin
-        mm_y = self._map_px - mm_size - margin
+        mm_y = self._map_h - mm_size - margin
         
         # Don't draw if the map is tiny anyway
         if self._size * self._cell < mm_size * 2:
@@ -4522,10 +4655,9 @@ class PygameRenderer:
         # 4. Viewport rectangle. V4.6: the visible region is an iso DIAMOND on the top-down
         # minimap — take the world bbox of the four screen corners (deliberately keeping the
         # minimap a plain plan read; the rect approximates what the tilted view covers).
-        view = (self._map_px, self._map_px)
-        corners = [screen_to_world_iso(c, self._cam_draw, view)
-                   for c in ((0, 0), (self._map_px, 0), (0, self._map_px),
-                             (self._map_px, self._map_px))]
+        w, h = self._view
+        corners = [screen_to_world_iso(c, self._cam_draw, self._view)
+                   for c in ((0, 0), (w, 0), (0, h), (w, h))]
         wxs = [c[0] for c in corners]
         wys = [c[1] for c in corners]
         vx = int((min(wxs) + _MARGIN_CELLS) * scale)
