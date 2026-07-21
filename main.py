@@ -1404,9 +1404,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "unless overridden, stages the cinematic two-realm WAR with an empire forming "
              "(--stage war --eras) at sensible turns/speed. The camera AUTO-DIRECTS — it eases to "
              "each major event (battle, coronation, uprising, secession, conquest), holds through "
-             "its banner, then drifts back over a slow ambient orbit — a clean title card opens, and "
+             "its banner, then eases back to the realm overview — a clean title card opens, and "
              "the UI is stripped to the story banner + a small turn/phase readout (press U for the "
-             "full UI, SPACE pauses, ESC or Q quits instantly). Press record, walk away, get 2-3 min of footage.")
+             "full UI, SPACE pauses, ESC or Q quits instantly). Press record, walk away, get 2-3 min of footage. "
+             "The camera is otherwise DEAD STILL — see --showcase-motion.")
+    p.add_argument(
+        "--showcase-motion", action="store_true",
+        help="V4.13: put the showcase CAMERA MOTION back — the ambient drift/orbit, the zoom breath, "
+             "the story-banner zoom-punch and the clash screen-shake. They are OFF by default in "
+             "--showcase because they read as a jittering frame in a recording; with this flag the "
+             "camera only rests between its deliberate eases to events.")
     return p.parse_args(argv)
 
 
@@ -2024,7 +2031,8 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
 
 
 def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
-                   showcase: bool = False, window: "Any" = None):
+                   showcase: bool = False, showcase_motion: bool = False,
+                   window: "Any" = None):
     """Build the optional renderer for the chosen mode (None for plain mode).
 
     Imported lazily so a plain run never imports `rich`/`pygame` (or the renderer
@@ -2041,7 +2049,7 @@ def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
         # it paces itself (turn_delay), so the sim's own per-turn sleep stays at 0.
         from renderer.pygame_renderer import PygameRenderer
         return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase,
-                              window=window)
+                              showcase_motion=showcase_motion, window=window)
     return None
 
 
@@ -2260,7 +2268,8 @@ def main(argv: list[str] | None = None) -> None:
         win_target = ("fullscreen" if (args.fullscreen or (args.showcase and not args.window))
                       else args.window if args.window else "desktop")
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
-                                  showcase=args.showcase, window=win_target)
+                                  showcase=args.showcase,
+                                  showcase_motion=args.showcase_motion, window=win_target)
         sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,

@@ -1737,7 +1737,8 @@ class PygameRenderer:
     """
 
     def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4,
-                 showcase: bool = False, window: "tuple[int, int] | str | None" = None) -> None:
+                 showcase: bool = False, showcase_motion: bool = False,
+                 window: "tuple[int, int] | str | None" = None) -> None:
         # `turn_delay` (seconds/turn) paces the watch; the renderer waits this long
         # between turns itself (responsively), so the sim's own sleep is left at 0.
         self.turn_delay = max(0.0, float(turn_delay))
@@ -1775,7 +1776,15 @@ class PygameRenderer:
         self._cull = 0                                     # max(map_w, map_h) — safe cull bound (never under-cull)
         self._panel_w = _PANEL_W                           # V4.11: proportional side-panel width (clamped)
         self._hud_h = _HUD_H
-        self._win_w = self._win_h = 0                      # the actual window size
+        self._win_w = self._win_h = 0                      # the DRAWABLE surface size (HiDPI: physical px)
+        # V4.13 HiDPI: on a Retina display SDL hands back a BACKING surface larger than the size we
+        # asked for (points vs physical pixels). _req_* is what we asked the OS for (the point size
+        # resize events and mouse coords speak in); _win_* is what we actually draw into, and every
+        # layout/cache/camera figure derives from THAT. _px_scale converts point -> pixel.
+        self._req_w = self._req_h = 0
+        self._px_scale = 1.0
+        self._font_scale = 1.0                             # the scale the UI faces were built at
+        self._legacy_split = False                         # window=None keeps the FIXED panel/HUD split
         # V4.11: WINDOW target — None = legacy world-derived square (the tests' path); a (w,h) tuple or
         # "fullscreen" from --window/--fullscreen; _pending_size carries a live VIDEORESIZE.
         # V4.12: "fullscreen" is a STARTING MODE, not a permanent preference — it is normalised to
@@ -1813,6 +1822,11 @@ class PygameRenderer:
         self._emitters: list[tuple] = []                   # (sx, sy, kind) coins/embers to draw (close zoom)
         # V4.10 SHOWCASE — hands-off trailer mode (all gated on _showcase; default off = byte-identical).
         self._showcase = bool(showcase)
+        # V4.13: showcase is a RECORDING mode — a jittering frame ruins the take. ALL camera motion
+        # effects (ambient drift, zoom breath, banner zoom-punch, clash screen-shake) are OFF in
+        # showcase by default; the camera then moves ONLY on the deliberate slow eases to events.
+        # --showcase-motion (showcase_motion=True) puts them back. Outside showcase: unchanged.
+        self._cam_motion = (not showcase) or bool(showcase_motion)
         self._minimal = bool(showcase)                     # start with the stripped UI; 'U' toggles it
         self._start_time: float | None = None              # wall clock of live() open (title card / day pace)
         self._glide = _SHOWCASE_GLIDE if showcase else _CAM_GLIDE   # slow cinematic ease in showcase
@@ -1896,14 +1910,28 @@ class PygameRenderer:
         self._base_map = grid_px + 2 * self._margin_px
         # WINDOW: resolve the target size + flags + panel/HUD split (proportional panel, clamped),
         # then the MAP ZONE is the rectangle that remains. window=None keeps the legacy square.
-        win_w, win_h, flags, panel_w, hud_h = self._resolve_window()
+        req_w, req_h, flags = self._resolve_window()
         # V4.12 FLICKER FIX: if NOTHING actually changed, return before touching the display. A
         # set_mode emits its own VIDEORESIZE, which previously re-entered here and called set_mode
         # again — an endless re-creation loop that read as rapid blinking in borderless fullscreen.
         # The display (and every cached layer) is now rebuilt ONLY on a genuine size/mode change.
+        # (The comparison is against the REQUESTED size — what we can ask for again — not the
+        # drawable, which HiDPI may return at a different scale.)
         if (self._screen is not None and size == self._size
-                and (win_w, win_h, flags) == (self._win_w, self._win_h, self._win_flags)):
+                and (req_w, req_h, flags) == (self._req_w, self._req_h, self._win_flags)):
             return
+        self._screen = pygame.display.set_mode((req_w, req_h), flags)
+        self._win_flags = flags
+        self._req_w, self._req_h = req_w, req_h
+        self._mode_sets += 1                               # instrumentation: must stay flat when steady
+        # V4.13 HiDPI: the surface we got may be LARGER than the size we asked for (macOS Retina
+        # hands back a physical-pixel backing store for a point-sized window). Layout, caches and
+        # the camera fit all derive from the TRUE DRAWABLE SIZE — otherwise the world is drawn into
+        # the top-left corner of the backing store and the rest of the screen stays black.
+        win_w, win_h = self._drawable_size(req_w, req_h)
+        self._px_scale = win_w / max(1, req_w)             # point -> pixel (mouse/resize events)
+        self._build_fonts()                                # chrome text follows the backing store
+        panel_w, hud_h = self._splits(win_w)               # re-derived from the REAL width
         self._panel_w, self._hud_h = panel_w, hud_h
         self._map_px = max(64, win_w - self._panel_w)      # map zone WIDTH (kept named _map_px)
         self._map_h = max(64, win_h - self._hud_h)         # map zone HEIGHT
@@ -1912,9 +1940,6 @@ class PygameRenderer:
         self._win_w, self._win_h = win_w, win_h
         # V4.9/V4.11: the FIT cell frames the PLAYABLE world across the (now RECTANGULAR) viewport.
         self._cell = self._cell0 = _fit_cell_rect(size, self._map_px, self._map_h)
-        self._screen = pygame.display.set_mode((win_w, win_h), flags)
-        self._win_flags = flags
-        self._mode_sets += 1                               # instrumentation: must stay flat when steady
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
@@ -1947,11 +1972,14 @@ class PygameRenderer:
         # Slice 6: town plans hold pixel offsets, so a resize (new cell size) invalidates them.
         self._town_plans = {}
 
-    def _resolve_window(self) -> tuple:
-        """The target (win_w, win_h, flags, panel_w, hud_h) for this frame (V4.11): a live VIDEORESIZE,
+    def _resolve_window(self) -> tuple[int, int, int]:
+        """The target (win_w, win_h, flags) to ASK the OS for this frame (V4.11): a live VIDEORESIZE,
         else fullscreen at the desktop size, else an explicit --window (resizable), else the LEGACY
-        world-derived SQUARE with the FIXED panel (window=None — the tests' byte-identical path)."""
-        showcase = self._showcase
+        world-derived SQUARE with the FIXED panel (window=None — the tests' byte-identical path).
+
+        The panel/HUD split is NOT decided here: it comes from _splits(), off the size we actually
+        get back, because HiDPI may hand us a bigger surface than we asked for (V4.13)."""
+        self._legacy_split = False
         if self._pending_size is not None:
             w, h = self._pending_size
             self._pending_size = None
@@ -1963,16 +1991,54 @@ class PygameRenderer:
             w, h = self._desktop_size()
             flags = pygame.RESIZABLE
         elif self._window is None:
-            pw = 0 if showcase else _PANEL_W          # legacy fixed layout (non-resizable)
-            hh = 0 if showcase else _HUD_H
-            return self._base_map + pw, self._base_map + hh, 0, pw, hh
+            self._legacy_split = True                 # legacy fixed layout (non-resizable)
+            pw = 0 if self._showcase else _PANEL_W
+            hh = 0 if self._showcase else _HUD_H
+            return self._base_map + pw, self._base_map + hh, 0
         else:
             w, h = self._window
             flags = pygame.RESIZABLE
-        w, h = max(320, int(w)), max(240, int(h))
-        pw = 0 if showcase else _panel_width(w)
-        hh = 0 if showcase else _HUD_H
-        return w, h, flags, pw, hh
+        return max(320, int(w)), max(240, int(h)), flags
+
+    def _splits(self, win_w: int) -> tuple[int, int]:
+        """The (panel_w, hud_h) split for a window this wide. Showcase strips both to zero; the
+        legacy window=None layout keeps the FIXED panel; otherwise the panel is the clamped
+        proportion. V4.13: the chrome scales with the HiDPI backing store so it stays the same
+        PHYSICAL size on a Retina display instead of shrinking to half."""
+        if self._showcase:
+            return 0, 0
+        if self._legacy_split:
+            return _PANEL_W, _HUD_H
+        return _panel_width(win_w), int(round(_HUD_H * self._ui_scale()))
+
+    def _ui_scale(self) -> float:
+        """The HiDPI chrome/text scale (1.0 on a normal display, ~2.0 on macOS Retina)."""
+        return max(1.0, min(3.0, self._px_scale))
+
+    def _drawable_size(self, req_w: int, req_h: int) -> tuple[int, int]:
+        """The TRUE size of the surface set_mode gave us — the physical backing store, which on a
+        HiDPI display is larger than the point size we requested. Everything downstream (layout,
+        caches, camera fit, culling) is derived from this, never from the request (V4.13)."""
+        with contextlib.suppress(Exception):
+            w, h = self._screen.get_size()
+            if w > 0 and h > 0:
+                return int(w), int(h)
+        return req_w, req_h
+
+    def _build_fonts(self) -> None:
+        """(Re)build the UI faces at the current HiDPI scale. No-op at scale 1.0 — where the faces
+        live() already built are correct — so the default/test path is untouched (V4.13)."""
+        s = self._ui_scale()
+        if s == self._font_scale or self._font is None:
+            return
+        self._font_scale = s
+        with contextlib.suppress(Exception):
+            self._font = pygame.font.SysFont("menlo,monospace", int(round(14 * s)))
+            self._big_font = pygame.font.SysFont("menlo,monospace", int(round(22 * s)), bold=True)
+            self._feed_bold = pygame.font.SysFont("menlo,monospace", int(round(14 * s)), bold=True)
+            if self._showcase:
+                self._title_font = pygame.font.SysFont("georgia,timesnewroman,serif",
+                                                       int(round(44 * s)), bold=True)
 
     @staticmethod
     def _desktop_size() -> tuple[int, int]:
@@ -1993,7 +2059,9 @@ class PygameRenderer:
         V4.12: resize events are IGNORED while fullscreen (the mode owns its size) and when the size
         has not actually changed — set_mode emits its own resize event, and acting on that echo is
         what re-created the display every frame."""
-        if self._fullscreen or (w, h) == (self._win_w, self._win_h):
+        # (compared against the REQUESTED size — resize events speak in points, and on HiDPI the
+        # drawable is bigger, so comparing to _win_* would treat every echo as a real change.)
+        if self._fullscreen or (w, h) in ((self._req_w, self._req_h), (self._win_w, self._win_h)):
             return
         self._pending_size = (w, h)
         self._win_dirty = True
@@ -2094,6 +2162,7 @@ class PygameRenderer:
         panning is polled per frame in _update_camera for smooth held-key movement.
         """
         centre = (self._map_px // 2, self._map_h // 2)
+        pos = self._mouse_px(getattr(event, "pos", None))   # V4.13: points -> drawable pixels
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
                 self._zoom_step(1, centre)
@@ -2109,26 +2178,34 @@ class PygameRenderer:
         if event.type == pygame.MOUSEWHEEL and event.y:
             anchor = centre
             with contextlib.suppress(Exception):
-                mx, my = pygame.mouse.get_pos()
+                mx, my = self._mouse_px(pygame.mouse.get_pos())
                 if mx < self._map_px and my < self._map_px:
                     anchor = (mx, my)
             self._zoom_step(1 if event.y > 0 else -1, anchor)
             return True
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 \
-                and event.pos[0] < self._map_px and event.pos[1] < self._map_px:
+                and pos[0] < self._map_px and pos[1] < self._map_px:
             # V4.6: remember the WORLD point grabbed, so the drag keeps it under the cursor.
             view = self._view
-            self._drag = screen_to_world_iso(event.pos,
+            self._drag = screen_to_world_iso(pos,
                                              (self._cam_tx, self._cam_ty, self._cam_tcell), view)
             return True
         if event.type == pygame.MOUSEMOTION and self._drag is not None:
             self._cam_tx, self._cam_ty = self._cam_for_anchor(
-                event.pos, self._drag[0], self._drag[1], self._cam_tcell)
+                pos, self._drag[0], self._drag[1], self._cam_tcell)
             return True
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             had_drag, self._drag = self._drag is not None, None
             return had_drag
         return False
+
+    def _mouse_px(self, pos: "tuple[int, int] | None") -> tuple[int, int]:
+        """A mouse position (which SDL reports in window POINTS) in DRAWABLE pixels — the space the
+        whole layout lives in. Identity on a non-HiDPI display (V4.13)."""
+        if pos is None:
+            return (0, 0)
+        s = self._px_scale
+        return (int(pos[0] * s), int(pos[1] * s)) if s != 1.0 else (int(pos[0]), int(pos[1]))
 
     def _zoom_step(self, direction: int, anchor: tuple[int, int]) -> None:
         """V4.9: nudge the zoom TARGET by ONE small MULTIPLICATIVE notch (x_ZOOM_STEP in, its
@@ -2299,7 +2376,12 @@ class PygameRenderer:
         """Advance the decaying/eased juice effects for THIS frame. Runs first in _draw, so the
         shake/punch are set before any _to_px. Neutral (byte-identical) whenever nothing fires."""
         f = self._frame
-        if self._shake_amp > 0.4:                          # a short, sharp clash shake (decays fast)
+        if not self._cam_motion:
+            # V4.13: showcase is a RECORDING mode — the camera-moving juice (clash shake, banner
+            # zoom-punch) is what read as a jittering frame, so it is OFF unless --showcase-motion
+            # asks for it. The non-camera juice below (flash, puffs, emitters) still runs.
+            self._shake_amp, self._shake, self._punch, self._punch_t = 0.0, (0, 0), 1.0, None
+        elif self._shake_amp > 0.4:                        # a short, sharp clash shake (decays fast)
             a = self._shake_amp
             self._shake = (int(round((terrain_noise(f, 1, 301) - 0.5) * 2 * a)),
                            int(round((terrain_noise(f, 2, 302) - 0.5) * 2 * a)))
@@ -2395,6 +2477,12 @@ class PygameRenderer:
         if self._focus_pt is not None and now < self._focus_until:
             self._cam_tx, self._cam_ty = self._focus_pt    # frame the event, closer in
             self._cam_tcell = min(self._zoom_hi * 0.95, ocell * _SHOWCASE_FOCUS_ZOOM)
+        elif not self._cam_motion:
+            # V4.13 DEFAULT: no ambient drift, no zoom breath — the camera rests dead still on the
+            # realm overview between events, so a recorded take is rock steady. The frame is kept
+            # alive by the world itself (agents, weather, light), not by moving the lens.
+            self._focus_pt = None
+            self._cam_tx, self._cam_ty, self._cam_tcell = ox, oy, ocell
         else:
             self._focus_pt = None
             th = (now - (self._start_time or now)) * _SHOWCASE_ORBIT_SPEED

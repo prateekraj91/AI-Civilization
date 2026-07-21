@@ -5040,6 +5040,131 @@ def test_pygame_display_mode_stable_and_always_escapable() -> None:
     print("PASS test_pygame_display_mode_stable_and_always_escapable")
 
 
+def test_pygame_hidpi_layout_fills_the_drawable_surface() -> None:
+    """V4.13 regression: on a macOS Retina display set_mode hands back a BACKING SURFACE larger
+    than the point size we asked for. The layout used to be derived from the REQUEST, so the world
+    was drawn into the top-left corner of that surface and the rest of the screen stayed black.
+    Everything (map zone, panel/HUD split, caches, camera fit) must derive from the TRUE DRAWABLE
+    SIZE, resize echoes (which speak in points) must still be ignored, and mouse input (also in
+    points) must be converted into drawable pixels. Headless SDL-dummy; skips without pygame."""
+    import os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer, _panel_width
+    except ImportError:
+        print("PASS test_pygame_hidpi_layout_fills_the_drawable_surface (skipped: no pygame)")
+        return
+    size = 24
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2}},
+        "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {},
+        "events": ["turn 9: a talked to b: \"hi\""], "agents": list(village.values()),
+    }
+    pygame.init()
+    try:
+        # SHOWCASE on a 2x display: the map zone must cover the ENTIRE backing surface.
+        r = PygameRenderer(turn_delay=0.0, showcase=True, window=(800, 600))
+        r._drawable_size = lambda rw, rh: (rw * 2, rh * 2)      # pretend Retina
+        r._ensure_screen(size)
+        assert (r._req_w, r._req_h) == (800, 600), "we still ASK the OS for the point size"
+        assert (r._win_w, r._win_h) == (1600, 1200), "layout must use the drawable size"
+        assert r._px_scale == 2.0 and r._map_px == 1600 and r._map_h == 1200, \
+            f"showcase map zone must fill the surface, got {(r._map_px, r._map_h)}"
+        for cache in (r._grade, r._void_bg, r._vignette):
+            assert cache.get_size() == (1600, 1200), "caches must match the drawable map zone"
+        cx, cy = r._to_px(size / 2, size / 2)
+        assert 0 <= cx <= 1600 and 0 <= cy <= 1200, "the world centre must land on the surface"
+        assert r._mouse_px((100, 50)) == (200, 100), "mouse points must scale to drawable pixels"
+        r._draw(state)                                          # a full HiDPI frame must not raise
+        # a resize ECHO in POINTS must not re-create the display (the V4.12 flicker loop)
+        sets = r._mode_sets
+        for _ in range(5):
+            r._apply_resize(800, 600)
+            r._apply_resize(1600, 1200)
+        assert r._mode_sets == sets, "a HiDPI resize echo re-created the display"
+        # the FULL UI on a 2x display: chrome still splits the DRAWABLE, and scales with it.
+        r2 = PygameRenderer(turn_delay=0.0, window=(800, 600))
+        r2._drawable_size = lambda rw, rh: (rw * 2, rh * 2)
+        r2._ensure_screen(size)
+        assert r2._map_px + r2._panel_w == 1600, "map width + panel must fill the drawable width"
+        assert r2._map_h + r2._hud_h == 1200, "map height + HUD must fill the drawable height"
+        assert r2._panel_w == _panel_width(1600), "the panel is a proportion of the REAL width"
+        assert r2._hud_h > 0 and r2._ui_scale() == 2.0, "the chrome scales with the backing store"
+        r2._draw(state)
+        # a NORMAL display is completely unaffected (scale 1, no font rebuild, same layout).
+        r3 = PygameRenderer(turn_delay=0.0, window=(800, 600))
+        r3._ensure_screen(size)
+        assert r3._px_scale == 1.0 and (r3._win_w, r3._win_h) == (800, 600)
+        assert r3._mouse_px((100, 50)) == (100, 50)
+    finally:
+        pygame.quit()
+    print("PASS test_pygame_hidpi_layout_fills_the_drawable_surface")
+
+
+def test_pygame_showcase_camera_is_rock_steady() -> None:
+    """V4.13 regression: --showcase is a RECORDING mode, and the frame visibly jittered — the
+    ambient drift/orbit, the zoom breath, the banner zoom-punch and the clash screen-shake all
+    moved the lens. In showcase the camera must be DEAD STILL between its deliberate eases to
+    events; --showcase-motion puts the motion back. Headless SDL-dummy; skips without pygame."""
+    import os as _os, time as _time
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_pygame_showcase_camera_is_rock_steady (skipped: no pygame)")
+        return
+    size = 24
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2}},
+        "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {},
+        "events": ["turn 9: a talked to b: \"hi\""], "agents": list(village.values()),
+    }
+
+    def targets(r, frames=40, poke=False):
+        """The distinct camera TARGETS the renderer asks for over a run of drawn frames."""
+        seen = set()
+        for i in range(frames):
+            if poke and i == 5:                       # fire the camera-moving juice
+                r._shake_amp, r._punch_t = 8.0, _time.monotonic()
+            r._draw(state)
+            seen.add((round(r._cam_tx, 6), round(r._cam_ty, 6), round(r._cam_tcell, 6)))
+        return seen
+
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.0, showcase=True, window=(900, 700))
+        r._ensure_screen(size)
+        r._start_time = _time.monotonic() - 30.0      # past the title card, deep into the "orbit"
+        seen = targets(r, poke=True)
+        assert len(seen) == 1, f"the showcase camera drifted/breathed ({len(seen)} targets)"
+        assert r._shake == (0, 0) and r._shake_amp == 0.0, "clash shake must be off in showcase"
+        assert r._punch == 1.0 and r._punch_t is None, "banner zoom-punch must be off in showcase"
+        # --showcase-motion puts the drift + the shake back.
+        m = PygameRenderer(turn_delay=0.0, showcase=True, showcase_motion=True, window=(900, 700))
+        m._ensure_screen(size)
+        m._start_time = _time.monotonic() - 30.0
+        moved = targets(m, poke=True)
+        assert len(moved) > 1, "--showcase-motion must restore the ambient drift / zoom breath"
+        assert m._shake != (0, 0) or m._punch != 1.0, "--showcase-motion must restore the juice"
+        # a NORMAL (non-showcase) run keeps the V4.9 juice exactly as it was.
+        n = PygameRenderer(turn_delay=0.0, window=(900, 700))
+        n._ensure_screen(size)
+        n._shake_amp, n._punch_t = 8.0, _time.monotonic()
+        n._draw(state)
+        assert n._shake != (0, 0) and n._punch != 1.0, "the default renderer must still have juice"
+    finally:
+        pygame.quit()
+    print("PASS test_pygame_showcase_camera_is_rock_steady")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -8994,6 +9119,8 @@ def main_runner() -> None:
         test_pygame_camera_state_renderer_local_and_lod_draw_read_only,
         test_pygame_window_sizing_rect_layout_and_resize,
         test_pygame_display_mode_stable_and_always_escapable,
+        test_pygame_hidpi_layout_fills_the_drawable_surface,
+        test_pygame_showcase_camera_is_rock_steady,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,
