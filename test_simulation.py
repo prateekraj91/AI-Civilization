@@ -9357,6 +9357,80 @@ def test_allegiance_tints_the_people_not_just_the_ground() -> None:
     print("PASS test_allegiance_tints_the_people_not_just_the_ground")
 
 
+def test_a_dead_kings_crown_falls_and_lies_vacant() -> None:
+    """V4.17 (5.3): the crown is an OBJECT — it falls where its holder died and lies there.
+
+    The lifecycle, all renderer-local and all a pure read of the snapshot: a crown falls ONLY on
+    the holder's death (a monarch deposed alive had his crown taken, and there is nothing on the
+    grass), it lies vacant while the seat is empty, a refilled seat CLAIMS it, and it is forgotten
+    if nobody ever comes. The sim is never touched by any of it.
+    """
+    import os as _os, time as _time
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import PygameRenderer, _CROWN_LIE_SECS, _CROWN_FADE
+    except ImportError:
+        print("PASS test_a_dead_kings_crown_falls_and_lies_vacant (skipped: no pygame)")
+        return
+
+    class _A:
+        def __init__(self, name, alive=True):
+            self.name, self.alive, self.position = name, alive, (6, 6)
+            self.personality, self.settlement = "curious", "S001"
+
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.0, window=(600, 500))
+        r._ensure_screen(24)
+        base = {"size": 24, "turn": 5, "food": [], "settlements":
+                {"S001": {"id": "S001", "center": (6, 6), "members": {"Ken"}, "founded": 1}},
+                "kingdoms": {}, "empires": {}, "leaders": {}, "events": []}
+        reigning = dict(base, monarchs={"S001": {"monarch": "Ken", "since": 2, "garrison": set()}},
+                        agents=[_A("Ken")])
+        r._prev_snapshot = {"positions": {"Ken": (6.0, 6.0)}}
+        r._track_crowns(reigning)
+        assert r._crown_seats == {"S001": "Ken"} and not r._fallen_crowns, \
+            "a reigning king's crown is on his head, not on the ground"
+        # DEPOSED BUT ALIVE: the crown was taken from him — nothing falls.
+        alive_coup = dict(base, monarchs={"S001": {"monarch": "Rex", "since": 6, "garrison": set()}},
+                          agents=[_A("Ken"), _A("Rex")])
+        r._track_crowns(alive_coup)
+        assert not r._fallen_crowns, "a monarch deposed ALIVE had his crown taken, not dropped"
+        # DIED: the crown falls where he stood, and lies vacant while the seat is empty.
+        r._crown_seats = {"S001": "Ken"}
+        r._prev_snapshot = {"positions": {"Ken": (6.0, 6.0)}}
+        dead = dict(base, monarchs={}, agents=[_A("Ken", alive=False)])
+        r._track_crowns(dead)
+        assert len(r._fallen_crowns) == 1, "a dead king's crown must fall"
+        crown = r._fallen_crowns[0]
+        assert crown["pos"] == (6.0, 6.0) and crown["taken"] is None, \
+            "it falls where he STOOD, and lies vacant"
+        now = _time.monotonic()
+        assert r._crown_alpha(crown, now) == 1.0, "a vacant crown is solid, not ghosted"
+        # It is still there many seconds later — a vacancy is not a flicker.
+        assert r._crown_alpha(crown, now + _CROWN_LIE_SECS * 0.9) == 1.0, \
+            "a crown must LIE there long enough to be seen and understood"
+        assert r._crown_alpha(crown, now + _CROWN_LIE_SECS + _CROWN_FADE * 2) <= 0.0, \
+            "...but a crown nobody ever claims is eventually forgotten"
+        # A refilled seat CLAIMS it: somebody picked the thing up.
+        r._track_crowns(dict(base, monarchs={"S001": {"monarch": "Rex", "since": 9,
+                                                      "garrison": set()}}, agents=[_A("Rex")]))
+        assert crown["taken"] is not None, "a new monarch on that seat claims the fallen crown"
+        assert r._crown_alpha(crown, crown["taken"] + _CROWN_FADE * 1.1) <= 0.0, \
+            "a claimed crown fades off the ground"
+        # Drawing it neither raises nor touches the state it reads.
+        r._fallen_crowns = [crown]
+        crown["taken"] = None
+        before = repr(dead)
+        r._draw(dead)
+        assert repr(dead) == before, "drawing a fallen crown mutated the state it read"
+    finally:
+        pygame.quit()
+    print("PASS test_a_dead_kings_crown_falls_and_lies_vacant")
+
+
 def test_a_crown_falling_is_legendary() -> None:
     """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
 
@@ -10010,6 +10084,7 @@ def main_runner() -> None:
         test_world_firsts_and_bloodless_battles_are_demoted,
         test_rank_reads_from_the_silhouette_alone,
         test_allegiance_tints_the_people_not_just_the_ground,
+        test_a_dead_kings_crown_falls_and_lies_vacant,
         test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,

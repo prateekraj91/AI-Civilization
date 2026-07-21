@@ -391,6 +391,14 @@ _REALM_PALETTE = (                # distinct banner hues, hashed per ruler name;
 # he IS it, and should read as its banner made flesh.
 _ALLEGIANCE_MIX = 0.5
 _ALLEGIANCE_MIX_RULER = 0.72
+# V4.17 (5.3): a crown is an OBJECT, not a badge. When a crowned head dies its crown falls to the
+# ground where he stood and LIES there — visibly vacant — until someone takes the seat, at which
+# point it is claimed and fades. A vacant crown on the grass is the clearest possible statement
+# that a throne is empty and the succession is unresolved.
+_CROWN_LIE_SECS = 26.0        # how long a fallen crown lies before the world forgets it
+_CROWN_FADE = 1.2             # fade out over this long, whether claimed or merely forgotten
+_CROWN_FLAT = 0.42            # vertical squash — a crown lying on its side, not standing up
+_CROWN_GLINT_PERIOD = 62      # frames per glint cycle: a slow catch of light, not a blink
 _REALM_FILL_ALPHA = 62            # realm territory tint (a touch stronger than plain teal)
 _REALM_EDGE_ALPHA = 150
 _SPEAR = (208, 206, 198)          # a soldier's spear shaft
@@ -1903,6 +1911,11 @@ class PygameRenderer:
         self._town_plans: dict[str, tuple] = {}  # Slice 6: cached (key, plan) per settlement id
         # Slice 8: ALL animation state lives HERE, renderer-local — never in world_state.
         self._prev_snapshot: dict[str, Any] | None = None  # last turn: positions/realms/homes
+        # V4.17 (5.3): the crown as a physical object. `_crown_seats` is last turn's sid -> monarch,
+        # diffed to notice a crown leaving a head; `_fallen_crowns` are the ones now lying on the
+        # grass. Both renderer-local — the sim has no idea either exists.
+        self._crown_seats: dict[str, str] = {}
+        self._fallen_crowns: list[dict[str, Any]] = []
         self._territory_lerp: dict[str, tuple] = {}        # sid -> mid-lerp realm tint (aftermath)
         self._big_font: Any = None                         # the aftermath banner face
         self._feed_bold: Any = None                        # V4.2: bold face for MAJOR feed rows
@@ -2274,6 +2287,7 @@ class PygameRenderer:
         self._last_state = state
         self._ensure_screen(int(state.get("size", 0)) or 1)
         self._enqueue_banners(state)      # V4.2: queue this turn's MAJOR-event announcements
+        self._track_crowns(state)         # V4.17 (5.3): a dead king's crown falls where he stood
         self._pump_events()
         if self._prev_snapshot is not None and self.turn_delay > 0:
             lines = turn_events(state.get("events") or [], int(state.get("turn", 0)))
@@ -3215,6 +3229,9 @@ class PygameRenderer:
         talkers = talkers_this_turn(state.get("events", []) or [], state.get("turn", 0))
         self._update_trails(state, motion)
         self._draw_trails()
+        # V4.17 (5.3): crowns lying on the grass are GROUND DECALS — drawn here so the sprite pass
+        # below can occlude them: a villager walking in front of a vacant throne's crown hides it.
+        self._draw_fallen_crowns()
 
         # V4.6: PAINTER'S ALGORITHM. Settlements, food and agents share ONE list sorted
         # back-to-front by projected ground depth (screen y), so nearer things correctly
@@ -4078,6 +4095,94 @@ class PygameRenderer:
             self._draw_crown(cx, base, max(5, int(r * 1.1)), double=False)
         elif role == "emperor":
             self._draw_crown(cx, base, max(5, int(r * 1.2)), double=True)
+
+    def _track_crowns(self, state: dict[str, Any]) -> None:
+        """V4.17 (5.3): notice a crown LEAVING a head, and drop it on the ground (pure read).
+
+        Seats are settlement monarchies (`monarchs[sid]["monarch"]`), which is the one crown
+        identity that survives its holder — a kingdom is keyed by the KING'S OWN NAME, so when the
+        king changes the key changes with him and there is nothing left to diff against. A king or
+        emperor holds his home seat too (kingdoms.py `_king_home`), so every crown in the world is
+        covered by this one diff.
+
+        A crown only FALLS when its holder DIED. A monarch who was deposed and lived had his crown
+        taken from him — there is nothing lying on the grass — and the drama of that is the coup,
+        which the director already frames. A seat that refills claims whatever crown was lying for
+        it, which is what makes a succession read as somebody picking the thing up.
+        """
+        seats = {sid: rec["monarch"] for sid, rec in (state.get("monarchs") or {}).items()
+                 if isinstance(rec, dict) and rec.get("monarch")}
+        now = time.monotonic()
+        # The snapshot is LAST turn's, so it still holds the position of someone who has just died.
+        positions = (self._prev_snapshot or {}).get("positions") or {}
+        alive = {a.name for a in state.get("agents", []) if getattr(a, "alive", True)}
+        for sid, holder in self._crown_seats.items():
+            if seats.get(sid) == holder or holder in alive:
+                continue                      # still reigning, or deposed alive: no crown falls
+            pos = positions.get(holder)
+            if pos is not None:
+                self._fallen_crowns.append({"sid": sid, "who": holder, "born": now,
+                                            "pos": (float(pos[0]), float(pos[1])), "taken": None})
+        for c in self._fallen_crowns:         # a refilled seat CLAIMS the crown lying for it
+            if c["taken"] is None and seats.get(c["sid"]):
+                c["taken"] = now
+        self._crown_seats = seats
+
+    def _crown_alpha(self, c: dict[str, Any], now: float) -> float:
+        """A fallen crown's opacity: solid while it lies, fading once claimed or forgotten (pure)."""
+        if c["taken"] is not None:
+            return 1.0 - (now - c["taken"]) / _CROWN_FADE
+        return 1.0 - max(0.0, (now - c["born"] - _CROWN_LIE_SECS) / _CROWN_FADE)
+
+    def _draw_fallen_crowns(self) -> None:
+        """Draw the crowns lying on the grass — a ground decal, under every sprite.
+
+        Flattened to `_CROWN_FLAT` so it reads as lying on its side rather than standing up with
+        nobody underneath, with a shadow at its foot and a slow glint so the eye finds it in a
+        wide frame. Drawn with the ground decals, so a villager standing in front of a vacant
+        crown correctly hides it — which is the right story: the throne is empty, life goes on.
+        """
+        if not self._fallen_crowns:
+            return
+        now = time.monotonic()
+        cell = self._cell
+        live = []
+        for c in self._fallen_crowns:
+            alpha = self._crown_alpha(c, now)
+            if alpha <= 0.0:
+                continue                      # forgotten or claimed: gone for good
+            live.append(c)
+            sx, sy = self._to_px(*c["pos"])
+            w = max(4, int(cell * 0.44))
+            h = max(3, int(w * _CROWN_FLAT))
+            if not visible_on_screen(sx, sy, w * 3, self._cull, self._cull):
+                continue
+            # A vacant crown GLEAMS in the dark. Registered with the point-light system (which the
+            # night pass consumes later this frame), because night-muting the gold like ordinary
+            # terrain sank it into the grass — and the one object on the field that must never be
+            # missed is the one saying the throne is empty.
+            self._frame_lights.append(("torch", sx, sy, max(4, w)))
+            pad = w * 2
+            surf = pygame.Surface((pad * 2, pad * 2), pygame.SRCALPHA)
+            ox = oy = pad
+            # A soft shadow where it rests, then the crown itself squashed onto the ground plane.
+            pygame.draw.ellipse(surf, (*_OUTLINE, 90),
+                                (ox - w, oy - h // 2, w * 2, max(2, h)))
+            pts = [(ox - w, oy), (ox - w, oy - h),
+                   (ox - w // 2, oy - h // 3), (ox, oy - h),
+                   (ox + w // 2, oy - h // 3), (ox + w, oy - h), (ox + w, oy)]
+            # Only half-muted at night: the crown is lit by its own gleam, not by the sun.
+            gold = lerp_color(_CROWN, night_mute(_CROWN, self._nf), 0.45)
+            pygame.draw.polygon(surf, gold, pts)
+            pygame.draw.polygon(surf, _OUTLINE, pts, 1)
+            # The glint: the gold catches the light on a slow cycle, so a vacant crown draws the
+            # eye in a wide frame without ever flashing.
+            g = 0.5 + 0.5 * math.sin((self._frame + hash(c["who"]) % 97) * (2 * math.pi / _CROWN_GLINT_PERIOD))
+            pygame.draw.line(surf, _shade(gold, int(40 + 55 * g)),
+                             (ox - w, oy - h), (ox - w // 2, oy - h // 3), 1)
+            surf.set_alpha(int(255 * max(0.0, min(1.0, alpha))))
+            self._screen.blit(surf, (sx - pad, sy - pad))
+        self._fallen_crowns = live
 
     def _draw_crown(self, cx: int, base_y: int, w: int, *, double: bool) -> None:
         """A gold zig-zag crown sitting on baseline `base_y`; `double` stacks a second (emperor)."""
