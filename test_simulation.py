@@ -5165,6 +5165,126 @@ def test_pygame_showcase_camera_is_rock_steady() -> None:
     print("PASS test_pygame_showcase_camera_is_rock_steady")
 
 
+def test_showcase_scene_opens_in_a_standoff_that_must_break() -> None:
+    """V4.14: the showcase scene is THREE realms whose geometry makes a war cascade inevitable.
+
+    `--stage war` produced exactly one war, on turn 1, and then ~50 dead turns. The showcase scene
+    stages three realms instead: A borders both B and C, B and C are out of KINGDOM_REACH of each
+    other, every capital is beyond ATTACK_RADIUS of its own vassal town (so no realm eats itself on
+    turn 1), and all three open able to field the SAME host — so empire.update's winnable-war test
+    (strict >) holds fire at the start and the first war falls a few turns in, on camera. RNG-free
+    staging, so these are exact assertions."""
+    import empire, kingdoms, monarchy, scenario, world
+    world.create_world(size=26)
+    state = world.world_state
+    state["taxation_on"] = True
+    scenario.apply(state, "showcase")
+    kings = ["Aldric", "Borin", "Cyrus"]
+    assert sorted(state["kingdoms"]) == kings, "three realms are staged"
+    assert len(state["settlements"]) == 6, "each realm has a capital and a vassal town"
+    assert not state["empires"], "no empire exists yet — the wars have not been fought"
+    centres = {sid: rec["center"] for sid, rec in state["settlements"].items()}
+    for realm in "ABC":                       # a capital must be out of reach of its OWN vassal town
+        d = monarchy._chebyshev(centres[f"S0{realm}1"], centres[f"S0{realm}2"])
+        assert monarchy.ATTACK_RADIUS < d <= kingdoms.KINGDOM_REACH, \
+            f"realm {realm}: capital-vassal spacing {d} allows a turn-1 coup or blocks vassalage"
+    def gap(x: str, y: str) -> int:
+        return min(monarchy._chebyshev(centres[f"S0{x}{i}"], centres[f"S0{y}{j}"])
+                   for i in "12" for j in "12")
+    assert gap("A", "B") <= kingdoms.KINGDOM_REACH and gap("A", "C") <= kingdoms.KINGDOM_REACH, \
+        "A must border BOTH rivals — it is the empire-builder and the target"
+    assert gap("B", "C") > kingdoms.KINGDOM_REACH, "B and C must not border each other"
+    for name in kings:                        # a king's seat is clear of every town (it stays out of it)
+        king = next(a for a in state["agents"] if a.name == name)
+        near = min(monarchy._chebyshev(king.position, c) for c in centres.values())
+        assert near > monarchy.ATTACK_RADIUS, f"{name}'s seat is inside conquest range of a town"
+    hosts = {k: empire.imperial_host_size(state, next(a for a in state["agents"] if a.name == k))
+             for k in kings}
+    assert len(set(hosts.values())) == 1 and min(hosts.values()) > 0, \
+        f"the realms must open in an exact STANDOFF (no winnable war on turn 1), got {hosts}"
+    print("PASS test_showcase_scene_opens_in_a_standoff_that_must_break")
+
+
+def test_showcase_pacing_and_floating_feed() -> None:
+    """V4.14: showcase runs BRISK and slows only for the drama, and its event text is an OVERLAY.
+
+    Pacing: the staged opening scene holds through the title card, a turn carrying major events
+    holds long enough to read them (capped), every other turn runs at the brisk base pace, and a
+    non-showcase renderer is untouched. Feed: no side panel, the projection viewport is narrowed by
+    the feed column so the framing keeps the action clear of the text, only MAJOR beats enter the
+    feed, repeats of one beat collapse, and lines age out. Headless SDL-dummy; skips without pygame."""
+    import os as _os, time as _time
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame  # noqa: F401
+        from renderer.pygame_renderer import (PygameRenderer, collapse_majors, _SHOWCASE_OPENING,
+                                              _SHOWCASE_HOLD, _SHOWCASE_HOLD_MAX, _OVERLAY_LIFE)
+    except ImportError:
+        print("PASS test_showcase_pacing_and_floating_feed (skipped: no pygame)")
+        return
+    # the pure fold: one beat that happened to six towns is ONE line, distinct beats are untouched
+    folded = collapse_majors([("S0A1 entered the Neolithic", None, (1, 1, 1)),
+                              ("S0A2 entered the Neolithic", None, (1, 1, 1)),
+                              ("KING Aldric DEFEATED Cyrus in war", (3.0, 3.0), (2, 2, 2)),
+                              ("S0B1 entered the Neolithic", None, (1, 1, 1))])
+    assert [t for t, _, _ in folded] == ["3 settlements entered the Neolithic",
+                                         "KING Aldric DEFEATED Cyrus in war"], folded
+    assert folded[1][1] == (3.0, 3.0), "a folded group keeps its camera focus"
+    mixed = collapse_majors([("Rex fell in battle", None, (1, 1, 1)),
+                             ("Juno fell in battle", None, (1, 1, 1))])
+    assert mixed == [("Rex fell in battle (+1 more)", None, (1, 1, 1))], \
+        f"non-settlement subjects name the first and count the rest, got {mixed}"
+    size = 24
+    village = {n: _FakeAgent(n, "curious", (6, 6), True, 2.0, 0.0) for n in ("a", "b", "c", "d", "e")}
+    state = {
+        "size": size, "turn": 9, "food": [(2, 2)],
+        "settlements": {"S001": {"id": "S001", "center": (6, 6), "members": set(village), "founded": 2}},
+        "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {},
+        "events": ["turn 9: a talked to b: \"hi\"",
+                   "turn 9: AWV4 trust in AWV6: 0 -> 3 (led the S0A2 uprising to victory)",
+                   "turn 9: KING Aldric DEFEATED Borin in war (9 loyal host vs 8; 2+3 fell) -> "
+                   "Borin SUBJUGATED as a subject-king; an EMPIRE rises"],
+        "agents": list(village.values()),
+    }
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800))
+        r._ensure_screen(size)
+        assert r._panel_w == 0 and r._map_px == 1200, "showcase draws the map full-bleed, no panel"
+        assert r._feed_col > 0 and r._view == (1200 - r._feed_col, r._map_h), \
+            "the projection viewport must be narrowed by the floating feed's column"
+        cx, cy = r._to_px(size / 2, size / 2)
+        assert cx <= r._map_px - r._feed_col, "the framed world must stay clear of the feed column"
+        assert r._pace() == max(0.4, _SHOWCASE_OPENING), "the opening scene holds through the title card"
+        r._opened = True
+        r._turn_majors = 0
+        assert r._pace() == 0.4, "a quiet turn runs at the brisk base pace"
+        r._turn_majors = 1
+        assert r._pace() == _SHOWCASE_HOLD, "a turn with a major event holds — the dramatic pause"
+        r._turn_majors = 20
+        assert r._pace() == _SHOWCASE_HOLD_MAX, "...but one busy turn can never stall the run"
+        # the feed takes the MAJOR beat and drops the chatter
+        r._enqueue_banners(state)
+        texts = [e[0] for e in r._overlay_feed]
+        assert len(texts) == 1 and "DEFEATED" in texts[0], f"majors only in the feed, got {texts}"
+        assert not any("trust in" in t for t in texts), "the trust ledger is muted in showcase"
+        assert r._turn_majors == 1, "the dramatic pause counts the folded beats"
+        r._draw(state)                                    # a frame WITH the overlay must not raise
+        r._overlay_feed[0] = (texts[0], _time.monotonic() - _OVERLAY_LIFE - 1, (1, 1, 1), False)
+        r._draw_feed_overlay()
+        assert not r._overlay_feed, "a line must age out of the feed"
+        # a NORMAL renderer is untouched: full viewport, panel, and a flat pace
+        n = PygameRenderer(turn_delay=0.4, window=(1200, 800))
+        n._ensure_screen(size)
+        assert n._feed_col == 0 and n._view == (n._map_px, n._map_h) and n._panel_w > 0
+        n._turn_majors = 5
+        assert n._pace() == 0.4, "outside showcase the pace never changes"
+    finally:
+        pygame.quit()
+    print("PASS test_showcase_pacing_and_floating_feed")
+
+
 def test_speed_parsing_and_delay_only_when_rendering() -> None:
     """--speed maps presets/numbers to delays, and the pause fires ONLY when rendering.
 
@@ -9121,6 +9241,8 @@ def main_runner() -> None:
         test_pygame_display_mode_stable_and_always_escapable,
         test_pygame_hidpi_layout_fills_the_drawable_surface,
         test_pygame_showcase_camera_is_rock_steady,
+        test_showcase_scene_opens_in_a_standoff_that_must_break,
+        test_showcase_pacing_and_floating_feed,
         test_speed_parsing_and_delay_only_when_rendering,
         test_god_mode_imports_only_world_state_layers,
         test_god_spawn_food_mutates_world_and_logs,

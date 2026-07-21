@@ -1343,7 +1343,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "is a DETERMINISTIC personality-weighted stand-in (no LLM, no RNG); a live provider upgrades "
              "it to real reasoning (walled off, single-digit calls/run). Off by default -> byte-identical.")
     p.add_argument(
-        "--stage", choices=("monarchy", "kingdom", "war"), default=None,
+        "--stage", choices=("monarchy", "kingdom", "war", "showcase"), default=None,
         help="DEMO SCENARIO STAGING (default off): set up a starting scene so the verified "
              "M3.4-M3.6 conquest-chain visuals can be WATCHED (organic runs almost never produce "
              "rulers). It STAGES, it does not fake: it positions agents/wealth and runs the EXISTING "
@@ -1351,7 +1351,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "conquest (a real MONARCH + castle); 'kingdom' then CONQUERS neighbours via kingdoms."
              "conquer_neighbour (a real king -> vassal-lords kingdom); 'war' sets up TWO adjacent "
              "rival kingdoms (one stronger) so the normal empire.update opportunistic-war logic "
-             "CLASHES them and an EMPIRE forms on screen. Implies the matching institutions + "
+             "CLASHES them and an EMPIRE forms on screen; 'showcase' stages THREE realms in a "
+             "border STANDOFF on a compact world (A borders both rivals, they do not border each "
+             "other, and all three open able to field the same host) so no war can fire on turn 1 "
+             "and the loop's own winnable-war test starts a CASCADE of them a few turns in. "
+             "Implies the matching institutions + "
              "--settlements, owns the cast, and sizes the world. RNG-free staging -> reproducible "
              "under --seed. Pair with --pygame to watch. (Off -> byte-identical to before.)")
     p.add_argument(
@@ -1401,13 +1405,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--showcase", action="store_true",
         help="SHOWCASE MODE (V4.10): a hands-off, trailer-grade recording. Implies --pygame and, "
-             "unless overridden, stages the cinematic two-realm WAR with an empire forming "
-             "(--stage war --eras) at sensible turns/speed. The camera AUTO-DIRECTS — it eases to "
-             "each major event (battle, coronation, uprising, secession, conquest), holds through "
-             "its banner, then eases back to the realm overview — a clean title card opens, and "
-             "the UI is stripped to the story banner + a small turn/phase readout (press U for the "
-             "full UI, SPACE pauses, ESC or Q quits instantly). Press record, walk away, get 2-3 min of footage. "
-             "The camera is otherwise DEAD STILL — see --showcase-motion.")
+             "unless overridden, stages the three-realm STANDOFF (--stage showcase) with eras, a "
+             "heavy crown levy and the revolt arc (--taxation --uprising --lineage) — so a war "
+             "breaks within the first few turns and uprisings, secessions and coups keep coming. "
+             "The camera AUTO-DIRECTS — it eases to each major event (battle, coronation, uprising, "
+             "secession, conquest), holds through its banner, then eases back to the realm overview "
+             "— a clean title card opens, and there is NO side panel: the event text floats over the "
+             "world down the right margin, newest at the bottom, fading as it ages (press U for the "
+             "full UI, SPACE pauses, ESC or Q quits instantly). Turns run BRISK and slow only for "
+             "the drama, so the first beats land in the opening seconds. Press record, walk away, "
+             "get ~2 min of footage. The camera is otherwise DEAD STILL — see --showcase-motion.")
     p.add_argument(
         "--showcase-motion", action="store_true",
         help="V4.13: put the showcase CAMERA MOTION back — the ambient drift/orbit, the zoom breath, "
@@ -2064,12 +2071,22 @@ def main(argv: list[str] | None = None) -> None:
     if args.showcase:
         args.pygame = True
         if args.stage is None:
-            args.stage = "war"
+            args.stage = "showcase"            # V4.14: THREE realms in a standoff (see scenario.py)
         args.eras = True                       # era-styled towns (huts -> timber -> stone) for variety
+        # V4.14 DRAMA: --stage alone gives ONE war on turn 1 and then 50 quiet turns. The revolt
+        # arc is what fills the rest, so showcase turns it on: a HEAVY crown levy (taxation at a
+        # rate well over the consent band) builds real discontent in the taxed towns, which blows
+        # into UPRISINGS — a deposed lord, a seceded town, a revolutionary raised by consent — and
+        # LINEAGE makes a ruler's death a succession rather than a footnote. All verified systems.
+        args.taxation = True
+        if args.tax_rate is None:
+            args.tax_rate = 0.45               # over kingdoms.KING_CONSENT -> grievance, then revolt
+        args.uprising = True                   # implies --discontent
+        args.lineage = True
         if args.turns is None:
-            args.turns = 55
+            args.turns = 90                    # ~2 min at the showcase pace (fast turns + event holds)
         if args.speed == _SPEED_PRESETS["normal"]:
-            args.speed = 1.3                   # ~1.3s/turn — smooth, watchable, gives time to breathe
+            args.speed = 0.35                  # brisk base pace; _SHOWCASE_HOLD slows the big beats
 
     # Day 18: importing `rich` consumes some of the global `random` stream at import
     # time. Since the offline provider AND world/food placement draw from that same
@@ -2200,8 +2217,8 @@ def main(argv: list[str] | None = None) -> None:
     beliefs_on = args.beliefs or religion_on
     if stage is not None:
         monarchy_on = True
-        kingdoms_on = kingdoms_on or stage in ("kingdom", "war")
-        empire_on = empire_on or stage == "war"
+        kingdoms_on = kingdoms_on or stage in ("kingdom", "war", "showcase")
+        empire_on = empire_on or stage in ("war", "showcase")
         settlements_on = True
         # A LIVING demo needs storage ON: well-fed producers bank a surplus and DRAW IT DOWN to
         # weather a shock (a levied town, a far-seated king), so the realm survives instead of
@@ -2213,7 +2230,7 @@ def main(argv: list[str] | None = None) -> None:
         agent_specs = []                       # the scenario constructs the whole cast itself
         food_cfg = None
         if grid_size is None:
-            grid_size = 30 if stage == "war" else 24
+            grid_size = 26 if stage == "showcase" else 30 if stage == "war" else 24
         if args.cognition is None:
             cognition, focal_budget = "heuristic", 0   # no LLM calls for the visual demo
 

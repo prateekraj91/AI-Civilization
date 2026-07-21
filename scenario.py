@@ -272,8 +272,73 @@ def stage_war(state: dict[str, Any], cognition: str) -> None:
     _arm_for_war(state, cognition, "B", b_king, b_lord, n_king=4, n_lord=3, chest=120.0)
 
 
+# --- Level 4: THREE realms in a standoff -> a WATCHABLE cascade of wars -----
+# V4.14 SHOWCASE STAGING. `--stage war` gives exactly ONE war, and it fires on turn 1 — before a
+# viewer has even read the title card — after which nothing happens for the rest of the run. The
+# showcase scene fixes the PACING at the source, still without faking anything:
+#
+#   * THREE realms, not two, arranged so the middle realm (A) borders BOTH rivals and they do not
+#     border each other — A is the natural empire-builder and the natural target.
+#   * They open in a STANDOFF: every realm can field about the same host, and empire.update only
+#     launches a war it can WIN (strict >), so NO war fires on turn 1. Tribute then fattens the
+#     war chests at different rates (A's realm is the richest) and the mercenary pools drift, so
+#     within a few turns one crown pulls ahead and marches — the opening war lands around turn
+#     3-6, i.e. AFTER the title card, with the camera already settled.
+#   * The winner pays for it: casualties and spent coin shrink its host, which is what flips the
+#     THIRD realm's own winnable-war test — the rival strikes the weakened empire a few turns
+#     later. The cascade is emergent (empire.update decides every step); the staging only sets up
+#     the standoff that makes it happen on camera.
+#
+# Every record is still produced by the verified monarchy/kingdoms/empire paths, and the staging
+# itself stays RNG-free — the timing variance comes from the normal loop, as it should.
+# A host is `min(wealth // FIGHTER_COST, mercenaries in muster range)` per funder, so with a deep
+# chest the MERCENARY POOL is what a realm's strength actually equals. Every realm therefore opens
+# with the SAME pool — an exact standoff — and the tie is broken by the sim itself: the poor wander
+# in and out of muster range, tribute shifts the chests, and a war fires the turn one crown can
+# genuinely out-field a neighbour. Nothing here decides who wins, or when.
+_SHOW_CHEST_KING = 45.0        # a royal chest deep enough that the merc pool is the binding limit
+_SHOW_LARDER_KING = 60.0       # the king's own food store (he sits away from his towns)
+_SHOW_CHEST_LORD = 0.0         # a vassal lord opens BELOW monarchy.MIN_WAR_CHEST (money + stockpile
+_SHOW_LARDER_LORD = 8.0        # < 10): he can neither muster nor stage a turn-1 coup, so all three
+                               # hosts are exactly the king's own. Tribute later lifts him past the
+                               # floor — which is where the feudal betrayals come from.
+_SHOW_MERCS_KING = 9           # the poor within muster range of each king's seat (= the realm's host)
+_SHOW_MERCS_LORD = 6           # ...and of each vassal lord, for the hosts he can raise later
+
+
+def stage_showcase(state: dict[str, Any], cognition: str) -> None:
+    """Three rival realms in a border STANDOFF, on a 36-cell world — the showcase scene.
+
+    A (west) borders B (north-east) and C (south-east); B and C are out of KINGDOM_REACH of each
+    other, so A is both the natural empire-builder and the natural target. Each realm is built by
+    the REAL monarchy + kingdoms paths (a king who seized his capital and vassalised a neighbour)
+    and armed to EQUAL strength. Every capital sits more than monarchy.ATTACK_RADIUS from its own
+    vassal town and every king's seat well clear of both, so no realm can eat itself on turn 1.
+    """
+    # The scene is deliberately COMPACT (a 26-cell world): B and C must be more than
+    # kingdoms.KINGDOM_REACH apart while both border A, which sets the shape, and everything else
+    # is pulled in as tight as the radii allow so the towns read LARGE on screen rather than as
+    # specks in an empty map. Each capital is 6 cells from its own vassal town (over
+    # monarchy.ATTACK_RADIUS, under KINGDOM_REACH) and every king's seat is clear of all six.
+    realms = (
+        # prefix, king,     seat,     capital, capital centre, vassal sid, vassal centre, lord
+        ("A", "Aldric", (2, 19), "S0A1", (12, 12), "S0A2", (18, 12), "LordA"),
+        ("B", "Borin", (23, 3), "S0B1", (8, 5), "S0B2", (14, 3), "LordB"),
+        ("C", "Cyrus", (23, 22), "S0C1", (16, 19), "S0C2", (10, 21), "LordC"),
+    )
+    for prefix, king_name, seat, home_sid, home_c, vassal_sid, vassal_c, lord_name in realms:
+        king, lord = _stage_realm(state, cognition, prefix, king_name, seat,
+                                  home_sid, home_c, vassal_sid, vassal_c, lord_name)
+        king.money, king.stockpile = _SHOW_CHEST_KING, _SHOW_LARDER_KING
+        lord.money, lord.stockpile = _SHOW_CHEST_LORD, _SHOW_LARDER_LORD
+        # Fresh mercenary pools: the staging conquests above spent the ones they were built with.
+        # Placed BELOW each seat (the northern kings' seats sit near the top edge).
+        _mercs(state, f"{prefix}WK", (king.position[0], king.position[1] + 2), _SHOW_MERCS_KING, cognition)
+        _mercs(state, f"{prefix}WV", (lord.position[0], lord.position[1] + 2), _SHOW_MERCS_LORD, cognition)
+
+
 # --- Dispatch --------------------------------------------------------------
-STAGES = ("monarchy", "kingdom", "war")
+STAGES = ("monarchy", "kingdom", "war", "showcase")
 
 
 def apply(state: dict[str, Any], kind: str, *, cognition: str = "heuristic") -> None:
@@ -291,5 +356,7 @@ def apply(state: dict[str, Any], kind: str, *, cognition: str = "heuristic") -> 
         stage_kingdom(state, cognition, (cx, cy))
     elif kind in ("war", "empire"):
         stage_war(state, cognition)
+    elif kind == "showcase":
+        stage_showcase(state, cognition)
     else:
         raise ValueError(f"unknown scenario stage: {kind!r} (expected one of {STAGES})")

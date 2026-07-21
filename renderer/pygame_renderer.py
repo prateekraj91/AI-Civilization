@@ -496,6 +496,8 @@ _INHABITED_MIN_HALF = 6.0       # smallest half-span of the framed box (a lone t
 _FRAME_FILL = 1.5               # zoom past pure width-contain so LAND fills the frame (a 2:1 diamond
                                 # in a square viewport would otherwise sit half-height in ocean); the
                                 # far wilderness/ocean tips crop, never the padded inhabited region
+_FRAME_FILL_SHOWCASE = 1.28     # V4.14: showcase fills the frame LESS hard, so the framed region stays
+                                # inside the (already narrowed) viewport and clear of the floating feed
 _TERRAIN_LRU = 3                  # non-base bucket landscapes kept baked at once (bounded memory)
 _CAM_GLIDE = 0.22                 # per-frame ease toward the camera target — pan/zoom glides
 # V4.10 SHOWCASE MODE — a hands-off, trailer-grade recording mode (opt-in via --showcase; every
@@ -509,6 +511,26 @@ _SHOWCASE_ORBIT_R = 2.6           # ambient orbit radius around the overview cen
 _SHOWCASE_ORBIT_SPEED = 0.17      # ambient orbit angular speed (rad/s) — a slow idle drift
 _SHOWCASE_DAY_SECS = 80.0         # wall-clock seconds per full day/night cycle (a dusk within ~2 min)
 _TITLE_DUR = 5.0                  # title-card total on-screen time (fade in / hold / fade out)
+# V4.14 SHOWCASE PACING: turns run BRISK so a viewer sees several beats in a couple of minutes, and
+# the run slows down only where the drama is — the opening scene holds through the title card, and
+# any turn carrying a MAJOR event holds long enough for its banner(s) to be read.
+_SHOWCASE_OPENING = 6.0           # the staged opening scene holds this long (covers the title card)
+_SHOWCASE_HOLD = 2.2              # a turn with ONE major event holds this long — the dramatic pause
+_SHOWCASE_HOLD_EACH = 1.2         # ...plus this per extra major event on the same turn
+_SHOWCASE_HOLD_MAX = 6.5          # ...capped, so one very busy turn cannot stall the run
+# V4.14 FLOATING FEED: in showcase the side panel is gone and the event text is an OVERLAY drawn
+# straight over the world, down the outer RIGHT margin — newest at the bottom, older lines fading
+# out with age. The map viewport is narrowed by the same column (see _ensure_screen), so the
+# framing keeps the action clear of the text instead of drawing it over the battle.
+_OVERLAY_W_FRAC = 0.27            # the feed column, as a fraction of the map width
+_OVERLAY_PAD_FRAC = 0.022         # its inset from the right / bottom edges, as a fraction of width
+_OVERLAY_LIFE = 15.0              # seconds a line lives before it has faded out completely
+_OVERLAY_FULL = 0.45              # the fraction of that life spent at full strength before fading
+_OVERLAY_MAX = 7                  # how many lines the column ever shows at once
+_OVERLAY_SHADOW = (8, 7, 6)       # the outline colour that keeps text legible over bright terrain
+_SHOWCASE_MUTE = (" trust in ",)  # book-keeping that rides in on a major event (the per-follower
+                                  # trust ledger a victorious uprising writes) — the beat is the
+                                  # uprising, not its paperwork, so showcase drops these outright
 _TITLE_NAME = "AI  CIVILIZATION"
 _TITLE_SUB = "an emergent history — a world makes itself"
 _PAN_FRAC = 0.02                  # held-key pan speed: fraction of the viewport per frame
@@ -650,6 +672,38 @@ def _drop_parens(s: str) -> str:
         elif depth == 0:
             out.append(ch)
     return "".join(out)
+
+
+def collapse_majors(majors: list[tuple]) -> list[tuple]:
+    """Fold this turn's major beats that differ ONLY in their leading subject into one (pure, V4.14).
+
+    Six settlements crossing into the Neolithic on the same turn is one story beat, not six
+    banners: they collapse to '6 settlements entered the Neolithic'. Anything with a distinct tail
+    is left exactly as it is, and the first member's camera focus + colour carry the group, so the
+    showcase still flies to where it happened. Order of first appearance is preserved.
+    """
+    groups: dict[str, list[tuple]] = {}
+    order: list[str] = []
+    for text, foc, color in majors:
+        head, _, tail = text.partition(" ")
+        key = tail or text
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append((head, foc, color))
+    out = []
+    for key in order:
+        members = groups[key]
+        head, foc, color = members[0]
+        n = len(members)
+        if n == 1 or key == head:
+            text = f"{head} {key}".strip()
+        elif all(h[:1] == "S" and any(c.isdigit() for c in h) for h, _, _ in members):
+            text = f"{n} settlements {key}"          # the common case: a whole world crossing an era
+        else:
+            text = f"{head} {key} (+{n - 1} more)"   # mixed subjects: name the first, count the rest
+        out.append((text, foc, color))
+    return out
 
 
 def notable_names(state: dict[str, Any]) -> frozenset[str]:
@@ -1773,6 +1827,8 @@ class PygameRenderer:
         self._map_px = 0                                   # V4.11: the map zone WIDTH (kept named _map_px)
         self._map_h = 0                                    # V4.11: the map zone HEIGHT (rectangular now)
         self._view = (0, 0)                                # (map_w, map_h) — the iso viewport
+        self._paint = (0, 0)                               # V4.14: the full map zone every layer PAINTS
+        self._feed_col = 0                                 # V4.14: the showcase feed column (0 otherwise)
         self._cull = 0                                     # max(map_w, map_h) — safe cull bound (never under-cull)
         self._panel_w = _PANEL_W                           # V4.11: proportional side-panel width (clamped)
         self._hud_h = _HUD_H
@@ -1834,6 +1890,12 @@ class PygameRenderer:
         self._focus_queue: collections.deque = collections.deque()  # per-banner event focus points
         self._focus_pt: tuple | None = None                # the world point the camera is framing
         self._focus_until = 0.0                            # wall clock the current event-focus holds until
+        # V4.14: the FLOATING FEED (showcase only) — (text, born, colour, big) per MAJOR event, and
+        # the pacing state: how many majors the turn being drawn carries, and whether the opening
+        # scene has already been held.
+        self._overlay_feed: collections.deque = collections.deque(maxlen=_OVERLAY_MAX * 2)
+        self._turn_majors = 0
+        self._opened = False
         # Slice 11: CAMERA — all state renderer-local, like _town_plans. The camera is a
         # world-cell CENTRE plus an effective cell size (the zoom); the *_t fields are the
         # glide TARGETS that input moves, eased toward each drawn frame. `_cell` (the live
@@ -1935,11 +1997,17 @@ class PygameRenderer:
         self._panel_w, self._hud_h = panel_w, hud_h
         self._map_px = max(64, win_w - self._panel_w)      # map zone WIDTH (kept named _map_px)
         self._map_h = max(64, win_h - self._hud_h)         # map zone HEIGHT
-        self._view = (self._map_px, self._map_h)
+        # V4.14: the map still PAINTS full-bleed, but in showcase the PROJECTION viewport is
+        # narrowed by the floating feed's column. world_to_screen_iso centres on view[0]/2, so a
+        # narrower view both shifts the world left of the text and fits the frame to the space that
+        # is actually clear — the camera never puts the action under the feed.
+        self._feed_col = int(self._map_px * _OVERLAY_W_FRAC) if self._showcase else 0
+        self._view = (max(64, self._map_px - self._feed_col), self._map_h)
+        self._paint = (self._map_px, self._map_h)          # layers still cover the WHOLE zone
         self._cull = max(self._map_px, self._map_h)         # safe cull bound (never under-cull the tall axis)
         self._win_w, self._win_h = win_w, win_h
         # V4.9/V4.11: the FIT cell frames the PLAYABLE world across the (now RECTANGULAR) viewport.
-        self._cell = self._cell0 = _fit_cell_rect(size, self._map_px, self._map_h)
+        self._cell = self._cell0 = _fit_cell_rect(size, self._view[0], self._map_h)
         # Slice 11: the camera opens on the FIT-WHOLE-WORLD view and owns this grid size —
         # the base-space pond geometry is fixed here so shimmer/stars agree at every zoom.
         self._pond = _pond_geom(grid_px, win_cell, self._margin_px)
@@ -2242,9 +2310,10 @@ class PygameRenderer:
         (V4.11). Its 2:1 diamond is width 2*side*cell, height side*cell; CONTAIN by whichever dimension
         binds, boosted (_FRAME_FILL) so land fills the frame. Clamped, with zoom-in headroom left."""
         s = max(1.0, side_cells)
-        uw = self._map_px * (1.0 - 2.0 * _FIT_MARGIN)
+        uw = self._view[0] * (1.0 - 2.0 * _FIT_MARGIN)     # V4.14: the CLEAR width (minus the feed column)
         uh = self._map_h * (1.0 - 2.0 * _FIT_MARGIN)
-        cell = min(uw / (2.0 * s), uh / s) * _FRAME_FILL   # width-fit vs height-fit -> contain, boosted
+        fill = _FRAME_FILL_SHOWCASE if self._showcase else _FRAME_FILL
+        cell = min(uw / (2.0 * s), uh / s) * fill           # width-fit vs height-fit -> contain, boosted
         return float(max(_CELL_FLOOR, min(_CELL_CEIL, self._zoom_hi * 0.9, cell)))
 
     def _home_view(self, state: dict[str, Any]) -> tuple[float, float, float]:
@@ -2324,11 +2393,16 @@ class PygameRenderer:
         resume restarts the delay), but each frame is drawn with a motion fraction so agents WALK
         to their new cells instead of teleporting. Zero delay (tests / --speed 0) draws exactly
         one settled frame and returns without blocking — the old slice-1 behaviour.
+
+        V4.14: the turn's WALK always takes `turn_delay`; the turn's HOLD may be longer (a showcase
+        dramatic pause), in which case the movers arrive on time and the settled scene is held.
+        Outside showcase hold == walk, exactly as before.
         """
         prev_pos = (self._prev_snapshot or {}).get("positions") or {}
         if self.turn_delay <= 0:
             self._draw(state)
             return
+        walk, hold = self.turn_delay, self._pace()
         start = time.monotonic()
         while True:
             self._pump_events()
@@ -2337,11 +2411,28 @@ class PygameRenderer:
                 start = time.monotonic()      # resume restarts the walk (the old deadline reset)
                 time.sleep(0.01)
                 continue
-            t = min(1.0, (time.monotonic() - start) / self.turn_delay)
-            self._draw(state, motion=(prev_pos, t))
-            if t >= 1.0:
+            el = time.monotonic() - start
+            self._draw(state, motion=(prev_pos, min(1.0, el / walk)))
+            if el >= hold:
+                self._opened = True           # the opening scene has had its hold
                 return
             time.sleep(1 / 60)
+
+    def _pace(self) -> float:
+        """How long THIS turn stays on screen (V4.14). Outside showcase: exactly `turn_delay`.
+
+        In showcase the base pace is brisk so the history moves, and the run slows only where the
+        drama is: the staged OPENING scene holds through the title card, and a turn carrying MAJOR
+        events holds long enough for each banner to be read (capped, so one busy turn never stalls).
+        """
+        if not self._showcase:
+            return self.turn_delay
+        if not self._opened:
+            return max(self.turn_delay, _SHOWCASE_OPENING)
+        if self._turn_majors > 0:
+            hold = _SHOWCASE_HOLD + _SHOWCASE_HOLD_EACH * (self._turn_majors - 1)
+            return max(self.turn_delay, min(_SHOWCASE_HOLD_MAX, hold))
+        return self.turn_delay
 
     # -- drawing (pure reads of `state`) -----------------------------------
     def _fx(self, sx: float, sy: float) -> tuple[float, float]:
@@ -2462,7 +2553,7 @@ class PygameRenderer:
         """A brief warm impact FLASH over the map on a war cinematic's decisive blow (decays fast)."""
         if self._flash_amp <= 0.02:
             return
-        ov = pygame.Surface(self._view)
+        ov = pygame.Surface(self._paint)
         ov.fill((255, 248, 232))
         ov.set_alpha(int(150 * min(1.0, self._flash_amp)))
         self._screen.blit(ov, (0, 0))
@@ -2490,7 +2581,7 @@ class PygameRenderer:
             # clamp_camera pins the view — so on a wide 16:9 (which crops vertically) the orbit
             # rides the y axis, on a tall window the x axis, and it is never silently clamped flat.
             span = (self._size + 2 * _MARGIN_CELLS) / 2.0
-            room_x = max(0.0, span - self._map_px / (2.0 * max(1e-6, ocell)))
+            room_x = max(0.0, span - self._view[0] / (2.0 * max(1e-6, ocell)))
             room_y = max(0.0, span - self._map_h / (2.0 * max(1e-6, ocell)))
             ax = min(_SHOWCASE_ORBIT_R, room_x * 0.8)
             ay = min(_SHOWCASE_ORBIT_R * 0.7, room_y * 0.8)
@@ -2498,6 +2589,56 @@ class PygameRenderer:
             self._cam_ty = oy + math.sin(th) * ay
             # the zoom BREATH is clamp-immune, so the frame still lives even when both axes are pinned
             self._cam_tcell = ocell * (1.0 + 0.055 * math.sin(th * 0.45))
+
+    def _draw_feed_overlay(self) -> None:
+        """V4.14: the showcase event feed — text floating straight over the world, no panel.
+
+        A column down the OUTER RIGHT margin (the map viewport is narrowed by the same column, so
+        the action never sits under it): MAJOR beats only, newest at the BOTTOM, each line fading
+        out as it ages so the column reads as a living feed rather than a log. Every glyph is drawn
+        with a dark outline, which is what keeps it legible over bright grass AND over night.
+        """
+        now = time.monotonic()
+        while self._overlay_feed and now - self._overlay_feed[0][1] > _OVERLAY_LIFE:
+            self._overlay_feed.popleft()      # age out first: the feed empties even with no face
+        font = self._feed_bold or self._font
+        if font is None or not self._overlay_feed:
+            return
+        pad = max(12, int(self._map_px * _OVERLAY_PAD_FRAC))
+        right = self._map_px - pad
+        col_w = max(120, self._feed_col - pad)
+        cols = max(12, int(col_w / max(1, font.size("n")[0])))
+        big = self._big_font or font
+        y = self._map_h - pad                              # stack UPWARD from the bottom edge
+        shown = list(self._overlay_feed)[-_OVERLAY_MAX:]
+        for text, born, color, war in reversed(shown):
+            age = (now - born) / _OVERLAY_LIFE
+            alpha = 1.0 if age <= _OVERLAY_FULL else max(0.0, (1.0 - age) / (1.0 - _OVERLAY_FULL))
+            if alpha <= 0.02:
+                continue
+            face = big if war else font                    # a war/conquest beat reads LARGER
+            fcols = max(10, int(cols * font.size("n")[0] / max(1, face.size("n")[0])))
+            rows = textwrap.wrap(text, width=fcols) or [text]
+            for row in reversed(rows):
+                y -= face.get_height() + 3
+                if y < pad:
+                    return
+                self._blit_outlined(face, row, right, y, color, alpha)
+            y -= 7                                          # a breath between entries
+
+    def _blit_outlined(self, font: Any, text: str, right: int, y: int,
+                       color: tuple[int, int, int], alpha: float) -> None:
+        """Draw `text` RIGHT-aligned at (right, y) with a dark outline and a whole-line alpha —
+        readable over bright terrain and over night, with no background box (V4.14)."""
+        a = max(0, min(255, int(255 * alpha)))
+        body = font.render(text, True, color)
+        body.set_alpha(a)
+        shadow = font.render(text, True, _OVERLAY_SHADOW)
+        shadow.set_alpha(int(a * 0.75))
+        x = right - body.get_width()
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (2, 2)):
+            self._screen.blit(shadow, (x + dx, y + dy))
+        self._screen.blit(body, (x, y))
 
     def _draw_title_card(self) -> None:
         """A clean opening title card — project name + subtitle — fading in and back over the first
@@ -2511,11 +2652,11 @@ class PygameRenderer:
         # V4.12: the card is COMPOSED ONCE (cached per viewport size) and only its surface alpha
         # moves per frame — it used to re-render the text and re-fill a full-screen surface every
         # frame, which is exactly the kind of per-frame rebuild that made the open look unstable.
-        card = self._stamps.get(("titlecard", self._view))
+        card = self._stamps.get(("titlecard", self._paint))
         if card is None:
-            w, h = self._view
+            w, h = self._paint
             mx, my = w // 2, h // 2
-            card = pygame.Surface(self._view, pygame.SRCALPHA)
+            card = pygame.Surface(self._paint, pygame.SRCALPHA)
             card.fill((7, 9, 14, 165))
             tf, sf = (self._title_font or self._big_font or self._font), self._font
             if tf is not None:
@@ -2525,7 +2666,7 @@ class PygameRenderer:
             if sf is not None:
                 sub = sf.render(_TITLE_SUB, True, _STAT_VALUE)
                 card.blit(sub, (mx - sub.get_width() // 2, my + 16))
-            self._stamps[("titlecard", self._view)] = card
+            self._stamps[("titlecard", self._paint)] = card
         card.set_alpha(int(255 * fade))
         self._screen.blit(card, (0, 0))
 
@@ -2558,10 +2699,23 @@ class PygameRenderer:
             return
         self._banner_turn_seen = turn
         notable = notable_names(state)
-        for line in turn_events(state.get("events") or [], turn):
-            if event_tier(line, notable) == "major":
-                self._banner_queue.append(banner_text(line))
-                self._focus_queue.append(self._event_focus(line, state))   # V4.10: where to point the camera
+        now = time.monotonic()
+        majors = [(banner_text(line), self._event_focus(line, state), event_color(line))
+                  for line in turn_events(state.get("events") or [], turn)
+                  if event_tier(line, notable) == "major"
+                  and not (self._showcase and any(m in line for m in _SHOWCASE_MUTE))]
+        if self._showcase:
+            # V4.14: a turn where six towns all cross into the Neolithic is ONE beat, not six —
+            # fold the repeats so the recording holds on the story rather than on a roll-call.
+            majors = collapse_majors(majors)
+        self._turn_majors = len(majors)                    # V4.14: drives this turn's dramatic pause
+        for text, foc, color in majors:
+            self._banner_queue.append(text)
+            self._focus_queue.append(foc)                  # V4.10: where to point the camera
+            if self._showcase:
+                # V4.14: the floating feed carries MAJOR beats ONLY — the minor churn (trust
+                # deltas, routine trades/talks) is suppressed outright in a recording.
+                self._overlay_feed.append((text, now, color, color == _FEED_WAR))
         while len(self._banner_queue) > _BANNER_MAX_QUEUE:
             self._banner_queue.popleft()
             if self._focus_queue:
@@ -2814,6 +2968,7 @@ class PygameRenderer:
             # when the full UI is toggled back on with 'U'); the title card opens the run.
             if not self._minimal:
                 self._draw_minimap(state)
+            self._draw_feed_overlay()         # V4.14: the event text floats over the world
             self._draw_showcase_readout(state)
             self._draw_title_card()
         else:
@@ -2879,9 +3034,10 @@ class PygameRenderer:
         to the ground plane. Weather/fog seed their particles inside this rect so they always fall
         WHERE the camera looks, at any pan/zoom, and stay tied to world positions as it moves."""
         view = self._view
+        paint = self._paint                          # V4.14: seed over the whole PAINTED zone
         mp = self._map_px
         xs, ys = [], []
-        for c in ((0, 0), (view[0], 0), (0, view[1]), view):
+        for c in ((0, 0), (paint[0], 0), (0, paint[1]), paint):
             wx, wy = screen_to_world_iso(c, self._cam_draw, view)
             xs.append(wx)
             ys.append(wy)
@@ -2946,8 +3102,9 @@ class PygameRenderer:
         y0 = -oy * r - ccy + vh * 0.5
         x0, y0 = self._fx(x0, y0)                      # V4.9: the terrain rides the same punch/shake
         r *= self._punch                              # ...as the sprites, so nothing desyncs
+        pw, ph = self._paint                           # V4.14: clip to the FULL zone, not the viewport
         vx0, vy0 = max(0, int(x0)), max(0, int(y0))
-        vx1, vy1 = min(vw, int(x0 + W * r)), min(vh, int(y0 + H * r))
+        vx1, vy1 = min(pw, int(x0 + W * r)), min(ph, int(y0 + H * r))
         if vx1 <= vx0 or vy1 <= vy0:
             return
         if c == cq:                                    # resting ON the bucket: plain blit
@@ -3082,7 +3239,7 @@ class PygameRenderer:
         the interpolated phase tint changes; it starts on the current phase's tint)."""
         if self._map_px <= 0:
             return None
-        grade = pygame.Surface(self._view, pygame.SRCALPHA)
+        grade = pygame.Surface(self._paint, pygame.SRCALPHA)
         tint = phase_tint(self._phase)
         grade.fill((*tint[0], tint[1]))
         self._grade_tint = tint
@@ -3094,7 +3251,7 @@ class PygameRenderer:
         so dawn pours in gradually and dissolves into plain day with zero rebuild cost."""
         if self._map_px <= 0:
             return None
-        wash = pygame.Surface(self._view, pygame.SRCALPHA)
+        wash = pygame.Surface(self._paint, pygame.SRCALPHA)
         strips = 28
         sw = max(1, self._map_px // strips + 1)
         gold = PALETTE["dawn_gold"]
@@ -3357,7 +3514,7 @@ class PygameRenderer:
         diamond world sits in open water that darkens outward — no diamond island on flat ground.
         Concentric filled circles (large/dark first, small/light last) give the smooth falloff.
         """
-        w, h = self._view                              # V4.11: rectangular map zone
+        w, h = self._paint                             # V4.11: rectangular map zone (V4.14: full-bleed)
         if w <= 0 or h <= 0:
             return None
         surf = pygame.Surface((w, h))
@@ -3414,7 +3571,7 @@ class PygameRenderer:
 
         Nested rectangular rings (each drawn once at its own alpha, so nothing double-darkens)
         keep the whole border soft, not just the corners; blitted over the map each frame."""
-        w, h = self._view
+        w, h = self._paint
         if w <= 0 or h <= 0:
             return None
         vign = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -3445,7 +3602,7 @@ class PygameRenderer:
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        overlay = pygame.Surface(self._view, pygame.SRCALPHA)
+        overlay = pygame.Surface(self._paint, pygame.SRCALPHA)
         # Slice 9: the crops SWAY — a gentle 1px lean whose phase drifts along the row (frame
         # counter + position; zero sim RNG). Recomputed per frame, it costs a sin per tuft.
         f = self._frame
@@ -3613,7 +3770,7 @@ class PygameRenderer:
             for a in state.get("agents", [])
             if getattr(a, "alive", True) and getattr(a, "position", None) is not None
         }
-        overlay = pygame.Surface(self._view, pygame.SRCALPHA)
+        overlay = pygame.Surface(self._paint, pygame.SRCALPHA)
         towns: list[dict[str, Any]] = []
         regions: list[tuple] = []
         for sid in sorted(settlements):
@@ -4618,7 +4775,7 @@ class PygameRenderer:
         zh = cell * _ISO_ZH
         wx0, wy0, wx1, wy1 = self._visible_world_rect()
         dw, dh = max(1e-3, wx1 - wx0), max(1e-3, wy1 - wy0)
-        layer = pygame.Surface(self._view, pygame.SRCALPHA)
+        layer = pygame.Surface(self._paint, pygame.SRCALPHA)
 
         if weather == "rain":
             ztop = 6.0
