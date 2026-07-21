@@ -3509,7 +3509,11 @@ def test_pygame_renderer_imports_only_state_reading_modules() -> None:
     assert not (imported & forbidden), f"pygame renderer imports decision logic: {imported & forbidden}"
     # It may lean on pygame + stdlib only; it draws straight from the snapshot dict, so it
     # needs no project module at all (not even `world`).
-    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "textwrap", "collections", "pygame"}
+    # V4.15: it may also lean on its OWN package — renderer.director, the pure severity/caption
+    # classifier that decides where the showcase camera looks. That module has its own boundary
+    # test (test_director_imports_only_stdlib) pinning it to stdlib, so this stays a closed system.
+    allowed = {"__future__", "typing", "contextlib", "os", "sys", "time", "math", "textwrap",
+               "collections", "pygame", "renderer"}
     assert imported <= allowed, f"pygame renderer imports unexpected modules: {imported - allowed}"
     print("PASS test_pygame_renderer_imports_only_state_reading_modules")
 
@@ -5129,31 +5133,40 @@ def test_pygame_showcase_camera_is_rock_steady() -> None:
     }
 
     def targets(r, frames=40, poke=False):
-        """The distinct camera TARGETS the renderer asks for over a run of drawn frames."""
-        seen = set()
+        """The distinct camera TARGETS the renderer asks for over a run of drawn frames.
+
+        Also reports whether the juice was ever LIVE during the run. It has to be sampled per
+        frame, not read off the renderer afterwards: the shake decays by _SHAKE_DECAY every drawn
+        frame and the punch runs on a _PUNCH_DUR wall clock, so by frame 40 both have expired on
+        any machine slower than ~12ms/frame. Asserting on the tail state made this test pass or
+        fail on frame rate rather than on behaviour.
+        """
+        seen, juiced = set(), False
         for i in range(frames):
             if poke and i == 5:                       # fire the camera-moving juice
                 r._shake_amp, r._punch_t = 8.0, _time.monotonic()
             r._draw(state)
             seen.add((round(r._cam_tx, 6), round(r._cam_ty, 6), round(r._cam_tcell, 6)))
-        return seen
+            juiced = juiced or r._shake != (0, 0) or r._punch != 1.0
+        return seen, juiced
 
     pygame.init()
     try:
         r = PygameRenderer(turn_delay=0.0, showcase=True, window=(900, 700))
         r._ensure_screen(size)
         r._start_time = _time.monotonic() - 30.0      # past the title card, deep into the "orbit"
-        seen = targets(r, poke=True)
+        seen, juiced = targets(r, poke=True)
         assert len(seen) == 1, f"the showcase camera drifted/breathed ({len(seen)} targets)"
+        assert not juiced, "clash shake / banner zoom-punch must be off in showcase, on every frame"
         assert r._shake == (0, 0) and r._shake_amp == 0.0, "clash shake must be off in showcase"
         assert r._punch == 1.0 and r._punch_t is None, "banner zoom-punch must be off in showcase"
         # --showcase-motion puts the drift + the shake back.
         m = PygameRenderer(turn_delay=0.0, showcase=True, showcase_motion=True, window=(900, 700))
         m._ensure_screen(size)
         m._start_time = _time.monotonic() - 30.0
-        moved = targets(m, poke=True)
+        moved, m_juiced = targets(m, poke=True)
         assert len(moved) > 1, "--showcase-motion must restore the ambient drift / zoom breath"
-        assert m._shake != (0, 0) or m._punch != 1.0, "--showcase-motion must restore the juice"
+        assert m_juiced, "--showcase-motion must restore the juice"
         # a NORMAL (non-showcase) run keeps the V4.9 juice exactly as it was.
         n = PygameRenderer(turn_delay=0.0, window=(900, 700))
         n._ensure_screen(size)
@@ -5273,16 +5286,42 @@ def test_showcase_pacing_and_floating_feed() -> None:
         assert cx <= r._map_px - r._feed_col, "the framed world must stay clear of the feed column"
         assert r._pace() == max(0.4, _SHOWCASE_OPENING), "the opening scene holds through the title card"
         r._opened = True
-        r._turn_majors = 0
-        assert r._pace() == 0.4, "a quiet turn runs at the brisk base pace"
-        r._turn_majors = 1
-        assert r._pace() == _SHOWCASE_HOLD, "a turn with a major event holds — the dramatic pause"
-        r._turn_majors = 20
-        assert r._pace() == _SHOWCASE_HOLD_MAX, "...but one busy turn can never stall the run"
+        # V4.15: pacing is driven by the DIRECTOR's beats for the turn, not by a raw major count.
+        from renderer.pygame_renderer import (_PACE_MINOR, _PACE_BLUR, _RUN_BLUR, _CAM_EASE_SECS,
+                                              _HOLD_MAJOR, _HOLD_LEGENDARY, _HOLD_QUEUED)
+        from renderer import director as _d
+        r._beats.clear(); r._turn_majors = 0; r._quiet_run = 1
+        assert r._pace() == _PACE_MINOR, "a quiet turn is a blink — fast-forward, wide, no caption"
+        r._quiet_run = _RUN_BLUR
+        assert r._pace() == _PACE_BLUR, "a RUN of quiet turns compresses harder still"
+        r._quiet_run = 0
+        r._turn_sev = _d.MAJOR; r._turn_majors = 1
+        r._beats.append((_d.MAJOR, "THE RISING OF S0B2", "Lord B falls.", (6.0, 6.0)))
+        assert r._pace() == _CAM_EASE_SECS + _HOLD_MAJOR, "a major beat: fly in, then hold"
+        r._beats.clear(); r._turn_sev = _d.LEGENDARY; r._turn_majors = 1
+        r._beats.append((_d.LEGENDARY, "THE LINE OF ALDRIC ENDS", "The crown lies vacant.", None))
+        assert r._pace() == _CAM_EASE_SECS + _HOLD_LEGENDARY > _CAM_EASE_SECS + _HOLD_MAJOR, \
+            "a legendary beat holds longer than a major one"
+        # Two majors on one turn are CUT BETWEEN, not dropped — both get screen time.
+        r._beats.clear(); r._turn_sev = _d.MAJOR; r._turn_majors = 2
+        for i in range(2):
+            r._beats.append((_d.MAJOR, f"RISING {i}", None, (6.0, 6.0)))
+        per = max(_HOLD_QUEUED, _HOLD_MAJOR * 0.72)
+        assert r._pace() == _CAM_EASE_SECS + per * 2, "queued beats each get their own cut"
+        # --showcase-pace tight scales the QUIET rate to the turns remaining; beats are untouched.
+        tight = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800),
+                               pace="tight", total_turns=45)
+        tight._opened = True; tight._start_time = _time.monotonic(); tight._turns_left = 40
+        assert tight._quiet_pace() <= _PACE_MINOR, "tight never runs the quiet turns SLOWER"
+        tight._beats.append((_d.LEGENDARY, "T", None, None)); tight._turn_sev = _d.LEGENDARY
+        assert tight._pace() == _CAM_EASE_SECS + _HOLD_LEGENDARY, \
+            "tight squeezes the dull parts, never the dramatic ones"
         # the feed takes the MAJOR beat and drops the chatter
         r._enqueue_banners(state)
         texts = [e[0] for e in r._overlay_feed]
-        assert len(texts) == 1 and "DEFEATED" in texts[0], f"majors only in the feed, got {texts}"
+        # V4.15: the feed now carries the DIRECTOR's dramatised title, not the raw log line.
+        assert len(texts) == 1 and texts[0] == "ALDRIC DEFEATS BORIN", \
+            f"majors only in the feed, in the director's words, got {texts}"
         assert not any("trust in" in t for t in texts), "the trust ledger is muted in showcase"
         assert r._turn_majors == 1, "the dramatic pause counts the folded beats"
         r._draw(state)                                    # a frame WITH the overlay must not raise
@@ -9200,6 +9239,36 @@ def test_world_firsts_and_bloodless_battles_are_demoted() -> None:
     print("PASS test_world_firsts_and_bloodless_battles_are_demoted")
 
 
+def test_a_crown_falling_is_legendary() -> None:
+    """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
+
+    Three promotions, all of which need context the event string alone does not carry. A death is
+    ordinarily MINOR churn — but the death of a reigning emperor/king/monarch ends a reign. A coup
+    is a MAJOR seizure — but a coup that unseats a CROWN, or that ends a BLOODLINE (the extinction
+    line firing on the same turn), is a throne changing hands.
+    """
+    from renderer.director import classify, classify_turn, caption, crowned_names, LEGENDARY, MAJOR, MINOR
+    crowned = frozenset({"Borin", "Aldric"})
+    king = classify("turn 9: Borin died (starved)", None, crowned)
+    commoner = classify("turn 9: BT4 died (starved)", None, crowned)
+    assert king.severity == LEGENDARY and commoner.severity == MINOR
+    assert caption(king)[0] == "BORIN IS DEAD" and "reign ends" in caption(king)[1]
+    assert classify("turn 9: Borin died (starved)").severity == MINOR, \
+        "with no crown list supplied every death stays MINOR (the default is unchanged)"
+    coup = "turn 34: LordC OVERTHREW {} and seized S0A1 by force (2 fighters vs 1 defenders; 1+1 fell) -> MONARCH of S0A1"
+    assert classify(coup.format("Aldric"), None, crowned).severity == LEGENDARY, "a coup on a crown"
+    assert classify(coup.format("Nobody"), None, crowned).severity == MAJOR, "a coup on a commoner"
+    # ...and a coup that ends a line is legendary even when the deposed is not in the crown list.
+    both = classify_turn([coup.format("Nobody"),
+                          "turn 34: the line of Aldric is extinguished; the crown of [x] lies vacant"])
+    assert all(e.severity == LEGENDARY for e in both), [(e.kind, e.severity) for e in both]
+    # crowned_names reads the institutions, and is narrower than "notable" — no lords, no leaders.
+    state = {"empires": {"Borin": {}}, "kingdoms": {"Borin": {}, "Cyrus": {}},
+             "monarchs": {"S0A1": {"monarch": "AWV5"}}, "leaders": {"S0A2": {"leader": "LordA"}}}
+    assert crowned_names(state) == frozenset({"Borin", "Cyrus", "AWV5"}), crowned_names(state)
+    print("PASS test_a_crown_falling_is_legendary")
+
+
 def test_turn_severity_and_beat_editing() -> None:
     """A turn is as important as its biggest event, and one story gets ONE cut.
 
@@ -9335,6 +9404,155 @@ def test_debug_war_observes_without_touching_the_run() -> None:
     assert emp_on == emp_off, "the debug flag changed the empires"
     assert err_off == "" and "sovereign powers:" in err_on, "the gate must be reported on stderr only"
     print("PASS test_debug_war_observes_without_touching_the_run")
+
+
+def test_showcase_caption_cards_and_severity_camera() -> None:
+    """V4.15: the caption card fades on the hold, and the camera frames by TIER.
+
+    The three things a viewer reads without being told: a beat is captioned in the director's
+    words (never the raw log line), a LEGENDARY beat is framed TIGHTER and washes the rest of the
+    world out, and several beats on one turn are CUT BETWEEN rather than one being dropped.
+    Headless SDL-dummy; skips cleanly without pygame."""
+    import os as _os, time as _time
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import (PygameRenderer, _CAPTION_FADE, _HOLD_MAJOR,
+                                              _HOLD_LEGENDARY, _ZOOM_MAJOR, _ZOOM_LEGENDARY)
+    except ImportError:
+        print("PASS test_showcase_caption_cards_and_severity_camera (skipped: no pygame)")
+        return
+    from renderer import director as d
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800))
+        r._ensure_screen(24)
+        r._opened = True
+        # A turn's beats become caption cards, in order, strongest first.
+        r._turn_majors = 1
+        r._beats.append((d.LEGENDARY, "THE LINE OF ALDRIC ENDS", "The crown lies vacant.", (6.0, 6.0)))
+        r._update_caption()
+        assert r._caption == ("THE LINE OF ALDRIC ENDS", "The crown lies vacant.")
+        assert r._caption_hold == _HOLD_LEGENDARY and r._legend_t is not None, \
+            "a legendary hold is longer, and starts the wash"
+        assert r._focus_pt == (6.0, 6.0), "the camera is pointed at the beat"
+        # The fade envelope: in over _CAPTION_FADE, full through the middle, out at the end.
+        r._caption_started = _time.monotonic()
+        assert r._caption_alpha() < 0.35, "a card fades IN rather than popping"
+        r._caption_started = _time.monotonic() - _HOLD_LEGENDARY / 2
+        assert r._caption_alpha() == 1.0, "...is solid through the hold..."
+        r._caption_started = _time.monotonic() - (_HOLD_LEGENDARY - _CAPTION_FADE / 2)
+        assert 0.0 < r._caption_alpha() < 0.75, "...and fades OUT at the end"
+        # Tier decides the framing: legendary is tighter in than major.
+        state = {"size": 24, "turn": 9, "food": [], "agents": [], "settlements":
+                 {"S001": {"id": "S001", "center": (6, 6), "members": set(), "founded": 0}},
+                 "monarchs": {}, "leaders": {}, "kingdoms": {}, "empires": {}, "events": []}
+        _, _, ocell = r._home_view(state)
+        r._zoom_hi = ocell * 100          # lift the clamp so the TIER is what decides the framing
+        zooms = {}
+        for sev in (d.MAJOR, d.LEGENDARY):
+            r._caption_sev = sev
+            r._focus_pt, r._focus_until = (6.0, 6.0), _time.monotonic() + 5
+            r._showcase_direct(state)
+            zooms[sev] = r._cam_tcell
+        assert zooms[d.LEGENDARY] > zooms[d.MAJOR], f"legendary frames tighter: {zooms}"
+        assert zooms[d.MAJOR] == min(r._zoom_hi * 0.95, ocell * _ZOOM_MAJOR)
+        assert zooms[d.LEGENDARY] == min(r._zoom_hi * 0.95, ocell * _ZOOM_LEGENDARY)
+        # Two beats on one turn: the first is held, then the SECOND is cut to — never dropped.
+        r2 = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800))
+        r2._ensure_screen(24)
+        r2._opened = True
+        r2._turn_majors = 2
+        r2._beats.append((d.MAJOR, "THE RISING OF S0B2", None, (4.0, 4.0)))
+        r2._beats.append((d.MAJOR, "THE RISING OF S0C2", None, (8.0, 8.0)))
+        r2._update_caption()
+        first = r2._caption
+        r2._caption_started = _time.monotonic() - r2._caption_hold - 0.01   # its hold expires
+        r2._update_caption()
+        assert first[0] == "THE RISING OF S0B2" and r2._caption[0] == "THE RISING OF S0C2", \
+            "a busy turn cuts between its beats rather than dropping one"
+        assert r2._focus_pt == (8.0, 8.0), "the camera follows the cut"
+        r2._caption_started = _time.monotonic() - r2._caption_hold - 0.01
+        r2._update_caption()
+        assert r2._caption is None and r2._legend_t is None, "the queue drains cleanly"
+        # A card renders without touching world_state, and the draw path is exercised end to end.
+        r._caption = ("THE LINE OF ALDRIC ENDS", "The crown lies vacant.")
+        r._caption_started = _time.monotonic()
+        r._caption_sev = d.LEGENDARY
+        r._legend_t = _time.monotonic()
+        before = repr(state)
+        r._draw_legendary_wash()
+        r._draw_caption_card()
+        r._quiet_run = 9
+        r._last_state = state
+        r._draw_quiet_ticker()
+        assert repr(state) == before, "drawing a caption mutated the state it read"
+    finally:
+        pygame.quit()
+    print("PASS test_showcase_caption_cards_and_severity_camera")
+
+
+def test_director_drives_the_showcase_turn_plan() -> None:
+    """V4.15: one turn in -> a cut plan out (severity, beats, quiet-run) — and only in showcase.
+
+    _direct_turn is the seam between the classifier and the frame loop. A quiet turn must leave the
+    beat queue EMPTY (that is what makes it fast-forward) and lengthen the quiet run; a dramatic
+    turn must produce captioned beats with camera focus. A NON-showcase renderer must not go
+    through this path at all — the default renderer stays exactly as it was.
+    """
+    import os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import PygameRenderer
+    except ImportError:
+        print("PASS test_director_drives_the_showcase_turn_plan (skipped: no pygame)")
+        return
+    from renderer import director as d
+    pygame.init()
+    try:
+        r = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800), total_turns=45)
+        r._ensure_screen(24)
+        base = {"size": 24, "food": [], "agents": [], "monarchs": {}, "leaders": {},
+                "kingdoms": {}, "empires": {},
+                "settlements": {"S0B2": {"id": "S0B2", "center": (6, 6), "members": set(), "founded": 0}}}
+        quiet = dict(base, turn=5, events=[
+            "turn 5: MONARCH Cyrus levied 3.2 from S0B2 by force (rate 0.45)",
+            'turn 5: a talked to b: "hi"'])
+        r._direct_turn(quiet, 5)
+        assert list(r._beats) == [] and r._turn_sev == d.NOISE and r._quiet_run == 1, \
+            "a quiet turn plans no cut — which is what fast-forwards it"
+        r._direct_turn(dict(quiet, turn=6), 6)
+        assert r._quiet_run == 2, "consecutive quiet turns accumulate toward the compression"
+        loud = dict(base, turn=7, events=[
+            "turn 7: UPRISING in S0B2 — 4 risers rise against lord LordB (3 defenders: 3 standing + 0 hired)",
+            "turn 7: the UPRISING in S0B2 TRIUMPHED — lord LordB is DEPOSED; BWV4 to rule by consent (2 risers fell)"])
+        r._direct_turn(loud, 7)
+        assert r._quiet_run == 0, "a beat resets the quiet run"
+        assert r._turn_sev == d.MAJOR and len(r._beats) == 1, \
+            f"the rising and its outcome are ONE cut, got {list(r._beats)}"
+        sev, title, sub, foc = r._beats[0]
+        assert title == "THE RISING OF S0B2" and "Lord B falls" in sub, (title, sub)
+        assert foc == (6.0, 6.0), "the beat carries the settlement the camera must fly to"
+        assert r._turns_left == 45 - 7, "the tight pacer knows how much run is left"
+        # World-firsts are remembered ACROSS turns, so the second town to write is not a beat.
+        w1 = dict(base, turn=8, events=["turn 8: LordA devised WRITING in S0B2"])
+        r._direct_turn(w1, 8)
+        assert len(r._beats) == 1, "the world's first writing is a beat"
+        w2 = dict(base, turn=9, events=["turn 9: BT5 devised WRITING in S0B2"])
+        r._direct_turn(w2, 9)
+        assert list(r._beats) == [], "the second town to write is not"
+        # The DEFAULT renderer never enters the director path.
+        plain = PygameRenderer(turn_delay=0.4, window=(1200, 800))
+        plain._ensure_screen(24)
+        plain._enqueue_banners(loud)
+        assert list(plain._beats) == [], "a non-showcase renderer is untouched by the director"
+        assert plain._banner_queue, "...and still uses the V4.2 story banner"
+    finally:
+        pygame.quit()
+    print("PASS test_director_drives_the_showcase_turn_plan")
 
 
 def main_runner() -> None:
@@ -9644,10 +9862,13 @@ def main_runner() -> None:
         test_director_imports_only_stdlib,
         test_director_classifies_every_engine_event_shape,
         test_world_firsts_and_bloodless_battles_are_demoted,
+        test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,
         test_an_empire_keeps_the_borders_it_conquered,
         test_debug_war_observes_without_touching_the_run,
+        test_showcase_caption_cards_and_severity_camera,
+        test_director_drives_the_showcase_turn_plan,
     ]
     for t in tests:
         t()

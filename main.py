@@ -1422,6 +1422,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "--showcase because they read as a jittering frame in a recording; with this flag the "
              "camera only rests between its deliberate eases to events.")
     p.add_argument(
+        "--showcase-pace", choices=("normal", "tight"), default="normal",
+        help="V4.15: how hard the showcase fast-forwards its QUIET turns. 'normal' gives each "
+             "uneventful turn a blink (0.08s, 0.03s once five run together); 'tight' scales that "
+             "rate to the quiet turns REMAINING so the whole run lands near 2-3 minutes whatever "
+             "its length. Major and legendary beats keep their full pan-in and hold in BOTH modes "
+             "— a trailer should be short in its dull parts, not in its dramatic ones.")
+    p.add_argument(
         "--debug-war", action="store_true",
         help="Print the WAR GATE to stderr every turn: how many SOVEREIGN powers are left, the host "
              "each could field, every neighbour it weighs, and why it marches or holds. Pure "
@@ -2047,6 +2054,7 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
 
 def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
                    showcase: bool = False, showcase_motion: bool = False,
+                   pace: str = "normal", total_turns: int = 0,
                    window: "Any" = None):
     """Build the optional renderer for the chosen mode (None for plain mode).
 
@@ -2064,7 +2072,8 @@ def _make_renderer(mode: str, *, sink: "Any" = None, turn_delay: float = 0.0,
         # it paces itself (turn_delay), so the sim's own per-turn sleep stays at 0.
         from renderer.pygame_renderer import PygameRenderer
         return PygameRenderer(sink=sink, turn_delay=turn_delay, showcase=showcase,
-                              showcase_motion=showcase_motion, window=window)
+                              showcase_motion=showcase_motion, window=window,
+                              pace=pace, total_turns=total_turns)
     return None
 
 
@@ -2307,7 +2316,8 @@ def main(argv: list[str] | None = None) -> None:
                       else args.window if args.window else "desktop")
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
                                   showcase=args.showcase,
-                                  showcase_motion=args.showcase_motion, window=win_target)
+                                  showcase_motion=args.showcase_motion, window=win_target,
+                                  pace=args.showcase_pace, total_turns=num_turns)
         sim_delay = 0.0 if render_mode == "pygame" else args.speed
         with contextlib.suppress(KeyboardInterrupt):
             run_simulation(num_turns, god_script=god_script, god_every=god_every,

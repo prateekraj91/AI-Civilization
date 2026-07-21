@@ -82,6 +82,8 @@ import textwrap
 import time
 from typing import Any
 
+from renderer import director as _director
+
 try:
     import pygame
 except ImportError as exc:  # pragma: no cover - exercised only without pygame installed
@@ -528,6 +530,36 @@ _OVERLAY_LIFE = 15.0              # seconds a line lives before it has faded out
 _OVERLAY_FULL = 0.45              # the fraction of that life spent at full strength before fading
 _OVERLAY_MAX = 7                  # how many lines the column ever shows at once
 _OVERLAY_SHADOW = (8, 7, 6)       # the outline colour that keeps text legible over bright terrain
+# --- V4.15: the DIRECTOR's pacing, camera and caption cards -------------------------------
+# The showcase used to give every turn the same screen time and the same wide frame, so a dynasty
+# ending looked exactly like six villagers teaching each other to cook. The run is now cut by
+# SEVERITY (renderer/director.py classifies the turn): quiet turns are fast-forwarded, a major turn
+# is flown to and held under a caption card, and a legendary turn gets the full treatment — a
+# tighter frame, a longer hold, and the rest of the world washed out around it.
+_PACE_MINOR = 0.08            # a NOISE/MINOR turn: fast-forward, wide, no caption
+_PACE_BLUR = 0.03             # ...and harder still once the quiet turns run on (see _RUN_BLUR)
+_RUN_BLUR = 5                 # consecutive quiet turns before the run compresses to _PACE_BLUR
+_CAM_EASE_SECS = 0.6          # how long the camera takes to fly to a beat before its hold begins
+_HOLD_MAJOR = 2.5             # a MAJOR beat holds this long under its caption
+_HOLD_LEGENDARY = 4.0         # a LEGENDARY beat holds longer, and framed tighter
+_HOLD_QUEUED = 1.8            # ...but when several fire on one turn the camera CUTS between them
+_ZOOM_MAJOR = 1.7             # how much closer than the overview a major beat is framed
+_ZOOM_LEGENDARY = 2.3         # ...and a legendary one, tighter still
+_CAPTION_FADE = 0.3           # caption cards fade in and out over this long
+_CAPTION_BAND = 0.72          # the caption card sits at this fraction down the map (bottom third)
+_CAPTION_BG = (10, 10, 14)    # the card's backing plate
+_CAPTION_FG = (247, 240, 224) # title text — warm off-white
+_CAPTION_SUB = (198, 188, 170)  # subtitle text — a step quieter than the title
+_CAPTION_RULE = (196, 150, 78)  # the thin accent rule above the title
+_LEGEND_WASH = (16, 14, 20)   # the desaturating wash laid over the world on a legendary hold
+_LEGEND_WASH_A = 110          # ...at this alpha, eased in and out over _LEGEND_WASH_EASE
+_LEGEND_WASH_EASE = 0.5       # the wash takes this long to arrive, and the same to leave
+_TICKER_FG = (150, 146, 158)  # the '…years pass…' ticker during a long quiet stretch
+# --showcase-pace tight: the whole run is squeezed toward this many seconds by scaling the
+# fast-forward rate to the quiet turns REMAINING, so the beats keep their full holds either way.
+_TIGHT_TARGET_SECS = 150.0
+_PACE_MODES = ("normal", "tight")
+
 _SHOWCASE_MUTE = (" trust in ",)  # book-keeping that rides in on a major event (the per-follower
                                   # trust ledger a victorious uprising writes) — the beat is the
                                   # uprising, not its paperwork, so showcase drops these outright
@@ -1792,7 +1824,8 @@ class PygameRenderer:
 
     def __init__(self, *, sink: Any | None = None, turn_delay: float = 0.4,
                  showcase: bool = False, showcase_motion: bool = False,
-                 window: "tuple[int, int] | str | None" = None) -> None:
+                 window: "tuple[int, int] | str | None" = None,
+                 pace: str = "normal", total_turns: int = 0) -> None:
         # `turn_delay` (seconds/turn) paces the watch; the renderer waits this long
         # between turns itself (responsively), so the sim's own sleep is left at 0.
         self.turn_delay = max(0.0, float(turn_delay))
@@ -1896,6 +1929,23 @@ class PygameRenderer:
         self._overlay_feed: collections.deque = collections.deque(maxlen=_OVERLAY_MAX * 2)
         self._turn_majors = 0
         self._opened = False
+        # V4.15 DIRECTOR — the per-turn cut plan. `_beats` is this turn's queue of (severity,
+        # title, subtitle, focus); the camera cuts between them when a turn carries several.
+        # `_turn_sev` paces the turn, `_quiet_run` counts the consecutive quiet turns behind us
+        # (which is what compresses a long uneventful stretch), and `_seen_firsts` is the run's
+        # memory of which world-firsts have already been spent. All showcase-only.
+        self._pace_mode = pace if pace in _PACE_MODES else "normal"
+        self._beats: collections.deque = collections.deque()
+        self._caption: tuple[str, str | None] | None = None
+        self._caption_started = 0.0
+        self._caption_hold = 0.0
+        self._caption_sev = _director.MINOR
+        self._turn_sev = _director.NOISE
+        self._quiet_run = 0
+        self._seen_firsts: set[str] = set()
+        self._turns_total = max(0, int(total_turns))       # the run length, for --showcase-pace tight
+        self._turns_left = 0                               # drives --showcase-pace tight
+        self._legend_t: float | None = None                # wall clock a legendary wash began
         # Slice 11: CAMERA — all state renderer-local, like _town_plans. The camera is a
         # world-cell CENTRE plus an effective cell size (the zoom); the *_t fields are the
         # glide TARGETS that input moves, eased toward each drawn frame. `_cell` (the live
@@ -2429,10 +2479,33 @@ class PygameRenderer:
             return self.turn_delay
         if not self._opened:
             return max(self.turn_delay, _SHOWCASE_OPENING)
-        if self._turn_majors > 0:
-            hold = _SHOWCASE_HOLD + _SHOWCASE_HOLD_EACH * (self._turn_majors - 1)
-            return max(self.turn_delay, min(_SHOWCASE_HOLD_MAX, hold))
-        return self.turn_delay
+        n = len(self._beats)
+        if n == 0:
+            return self._quiet_pace()
+        # One beat gets the full pan-in and hold; several on one turn are CUT between (turn 26 of
+        # a seed-7 run fires two uprisings at once — both are shown, neither is dropped), which is
+        # brisker per beat but never drops one. The fly-in is paid once, before the first hold.
+        per = _HOLD_LEGENDARY if self._turn_sev == _director.LEGENDARY else _HOLD_MAJOR
+        if n > 1:
+            per = max(_HOLD_QUEUED, per * 0.72)
+        return max(self.turn_delay, _CAM_EASE_SECS + per * n)
+
+    def _quiet_pace(self) -> float:
+        """The fast-forward rate for a turn with no beat in it.
+
+        A quiet turn is a blink; a RUN of them is flown over harder still (and carries the
+        '…years pass…' ticker). Under `--showcase-pace tight` the rate is scaled to the quiet
+        turns REMAINING so the whole run lands near _TIGHT_TARGET_SECS — the beats keep their
+        full holds either way, because a trailer should be short in its dull parts, not its
+        dramatic ones.
+        """
+        base = _PACE_BLUR if self._quiet_run >= _RUN_BLUR else _PACE_MINOR
+        if self._pace_mode == "tight" and self._turns_left > 0:
+            # Budget: whatever is left of the target after the beats have taken their share.
+            spent = time.monotonic() - (self._start_time or time.monotonic())
+            budget = max(0.0, _TIGHT_TARGET_SECS - spent)
+            base = min(base, max(0.01, budget / max(1, self._turns_left)))
+        return min(base, self.turn_delay) if self.turn_delay > 0 else base
 
     # -- drawing (pure reads of `state`) -----------------------------------
     def _fx(self, sx: float, sy: float) -> tuple[float, float]:
@@ -2563,11 +2636,15 @@ class PygameRenderer:
         """Drive the camera hands-off: EASE to a firing major event and hold it through its banner,
         else a slow ambient ORBIT of the realm overview so the frame is never static. Sets only the
         glide TARGETS (the slow _SHOWCASE_GLIDE eases the rest); pure read of the settlement layout."""
+        self._update_caption()            # V4.15: pop the next beat when the current hold expires
         now = time.monotonic()
         ox, oy, ocell = self._home_view(state)             # the realm overview (inhabited region)
         if self._focus_pt is not None and now < self._focus_until:
             self._cam_tx, self._cam_ty = self._focus_pt    # frame the event, closer in
-            self._cam_tcell = min(self._zoom_hi * 0.95, ocell * _SHOWCASE_FOCUS_ZOOM)
+            # V4.15: a LEGENDARY beat is framed TIGHTER than a major one — the tier is legible in
+            # the composition before a word of the caption has been read.
+            zoom = (_ZOOM_LEGENDARY if self._caption_sev == _director.LEGENDARY else _ZOOM_MAJOR)
+            self._cam_tcell = min(self._zoom_hi * 0.95, ocell * zoom)
         elif not self._cam_motion:
             # V4.13 DEFAULT: no ambient drift, no zoom breath — the camera rests dead still on the
             # realm overview between events, so a recorded take is rock steady. The frame is kept
@@ -2589,6 +2666,138 @@ class PygameRenderer:
             self._cam_ty = oy + math.sin(th) * ay
             # the zoom BREATH is clamp-immune, so the frame still lives even when both axes are pinned
             self._cam_tcell = ocell * (1.0 + 0.055 * math.sin(th * 0.45))
+
+    def _update_caption(self) -> None:
+        """Advance the caption/camera cut plan on the wall clock (showcase only).
+
+        Pops the next beat when the current one's hold expires, points the camera at it, and — for
+        a LEGENDARY beat — starts the wash that drains the colour out of the rest of the world.
+        """
+        if not self._showcase:
+            return
+        now = time.monotonic()
+        if self._caption is not None and now - self._caption_started < self._caption_hold:
+            return
+        if not self._beats:
+            if self._caption is not None:
+                self._caption = None
+                self._legend_t = None
+            return
+        sev, title, sub, foc = self._beats.popleft()
+        legendary = sev == _director.LEGENDARY
+        per = _HOLD_LEGENDARY if legendary else _HOLD_MAJOR
+        if self._turn_majors > 1:
+            per = max(_HOLD_QUEUED, per * 0.72)
+        self._caption = (title, sub)
+        self._caption_sev = sev
+        self._caption_started = now
+        self._caption_hold = per
+        self._legend_t = now if legendary else None
+        if foc is not None:
+            self._focus_pt = foc
+            self._focus_until = now + per
+
+    def _caption_alpha(self) -> float:
+        """The active caption's fade envelope: in over _CAPTION_FADE, out over the same (pure)."""
+        if self._caption is None:
+            return 0.0
+        el = time.monotonic() - self._caption_started
+        if el < _CAPTION_FADE:
+            return max(0.0, el / _CAPTION_FADE)
+        left = self._caption_hold - el
+        if left < _CAPTION_FADE:
+            return max(0.0, left / _CAPTION_FADE)
+        return 1.0
+
+    def _draw_legendary_wash(self) -> None:
+        """Drain the world's colour for a LEGENDARY hold — the punctuation mark of the run.
+
+        A dark, desaturating wash over the whole map with a soft hole punched around the focal
+        settlement, so the eye is left with the one place that matters. Eased in and out over
+        _LEGEND_WASH_EASE, so it arrives as a mood rather than a cut to black. UI overlay: drawn
+        under the caption card, over the world.
+        """
+        if self._legend_t is None:
+            return
+        el = time.monotonic() - self._legend_t
+        env = min(1.0, el / _LEGEND_WASH_EASE)
+        left = self._caption_hold - el
+        if left < _LEGEND_WASH_EASE:
+            env = min(env, max(0.0, left / _LEGEND_WASH_EASE))
+        if env <= 0.01:
+            return
+        ov = pygame.Surface(self._paint, pygame.SRCALPHA)
+        ov.fill((*_LEGEND_WASH, int(_LEGEND_WASH_A * env)))
+        if self._focus_pt is not None:
+            # Punch a soft hole over the focal settlement: concentric transparent discs, so the
+            # centre of the frame keeps its colour and the edges of the world fall away.
+            fx, fy = self._to_px(*self._focus_pt)
+            r0 = int(max(self._map_px, self._map_h) * 0.22)
+            for i in range(10):
+                r = int(r0 * (1.0 + i * 0.09))
+                a = int(_LEGEND_WASH_A * env * (i / 10.0))
+                pygame.draw.circle(ov, (*_LEGEND_WASH, a), (fx, fy), r)
+        self._screen.blit(ov, (0, 0))
+
+    def _draw_caption_card(self) -> None:
+        """The caption card: a title line and at most one subtitle, across the bottom third.
+
+        Not the raw log line — the director's dramatised rendering of it ('THE RISING OF S0B2' /
+        'Lord B falls. 2 risers fell. The hoard is theirs.'). Fades in and out with the hold, sits
+        on a translucent plate so it stays legible over bright grass and over night alike, and a
+        legendary card is larger with a warm rule above it. UI overlay: never transformed.
+        """
+        if self._caption is None:
+            return
+        alpha = self._caption_alpha()
+        if alpha <= 0.01:
+            return
+        title, sub = self._caption
+        legendary = self._caption_sev == _director.LEGENDARY
+        big = self._title_font if legendary else self._big_font
+        big = big or self._big_font or self._font
+        small = self._font
+        if big is None:
+            return
+        w = self._view[0] if self._view else self._map_px
+        t_surf = big.render(title, True, _CAPTION_FG)
+        s_surf = small.render(sub, True, _CAPTION_SUB) if (sub and small) else None
+        pad = max(10, int(self._map_h * 0.018))
+        tw = max(t_surf.get_width(), s_surf.get_width() if s_surf else 0)
+        th = t_surf.get_height() + ((s_surf.get_height() + pad // 2) if s_surf else 0)
+        bw, bh = tw + pad * 3, th + pad * 2
+        bx = max(0, (w - bw) // 2)
+        by = int(self._map_h * _CAPTION_BAND)
+        by = min(by, max(0, self._map_h - bh - pad))
+        plate = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        plate.fill((*_CAPTION_BG, int((205 if legendary else 175) * alpha)))
+        self._screen.blit(plate, (bx, by))
+        rule_w = int(bw * (0.34 if legendary else 0.2))
+        rule = pygame.Surface((rule_w, 2), pygame.SRCALPHA)
+        rule.fill((*_CAPTION_RULE, int(235 * alpha)))
+        self._screen.blit(rule, (bx + (bw - rule_w) // 2, by + pad // 2))
+        t_surf.set_alpha(int(255 * alpha))
+        self._screen.blit(t_surf, (bx + (bw - t_surf.get_width()) // 2, by + pad))
+        if s_surf is not None:
+            s_surf.set_alpha(int(235 * alpha))
+            self._screen.blit(s_surf, (bx + (bw - s_surf.get_width()) // 2,
+                                       by + pad + t_surf.get_height() + pad // 2))
+
+    def _draw_quiet_ticker(self) -> None:
+        """'…years pass…' — an unobtrusive marker that the run is flying over a quiet stretch.
+
+        Only once a RUN of quiet turns has built up (a single dull turn needs no explanation), and
+        deliberately small and grey: it tells the viewer the fast-forward is intentional without
+        competing with the world for attention.
+        """
+        if not self._showcase or self._quiet_run < _RUN_BLUR or self._font is None:
+            return
+        turn = int((self._last_state or {}).get("turn", 0))
+        surf = self._font.render(f"…years pass…   turn {turn}", True, _TICKER_FG)
+        surf.set_alpha(150)
+        w = self._view[0] if self._view else self._map_px
+        self._screen.blit(surf, ((w - surf.get_width()) // 2,
+                                 int(self._map_h * _CAPTION_BAND)))
 
     def _draw_feed_overlay(self) -> None:
         """V4.14: the showcase event feed — text floating straight over the world, no panel.
@@ -2698,6 +2907,9 @@ class PygameRenderer:
         if turn == self._banner_turn_seen:
             return
         self._banner_turn_seen = turn
+        if self._showcase:
+            self._direct_turn(state, turn)     # V4.15: severity, camera cuts and caption cards
+            return
         notable = notable_names(state)
         now = time.monotonic()
         majors = [(banner_text(line), self._event_focus(line, state), event_color(line))
@@ -2720,6 +2932,45 @@ class PygameRenderer:
             self._banner_queue.popleft()
             if self._focus_queue:
                 self._focus_queue.popleft()
+
+    # -- V4.15: the DIRECTOR — one cut plan per turn -------------------------
+    def _direct_turn(self, state: dict[str, Any], turn: int) -> None:
+        """Classify THIS turn and build its cut plan: severity, camera beats, caption cards.
+
+        Showcase only, and a pure READ of the event tail. The director decides which events are
+        worth stopping for; everything here just turns that decision into a queue the frame loop
+        consumes. A turn with no beat leaves the queue empty, which is what makes it fast-forward.
+        """
+        lines = turn_events(state.get("events") or [], turn)
+        events = _director.classify_turn(lines, self._seen_firsts, _director.crowned_names(state))
+        self._turn_sev = _director.turn_severity(events)
+        beats = _director.beats(events)
+        self._turn_majors = len(beats)
+        # A quiet RUN is what earns the harder compression: one dull turn is a beat of rhythm,
+        # five in a row is a stretch of history the viewer should be flown over.
+        self._quiet_run = 0 if beats else self._quiet_run + 1
+        now = time.monotonic()
+        self._beats.clear()
+        for e in beats:
+            title, sub = _director.caption(e)
+            self._beats.append((e.severity, title, sub, self._beat_focus(e, state)))
+            # The floating feed carries the same beats, in the director's words.
+            self._overlay_feed.append((title, now, event_color(e.raw), e.severity == _director.LEGENDARY))
+        if self._turns_total:
+            self._turns_left = max(0, self._turns_total - turn)
+
+    def _beat_focus(self, e: Any, state: dict[str, Any]) -> tuple | None:
+        """The WORLD point a classified beat happened at — its settlement centre, else the first
+        actor's cell, else None (the camera then stays wide). Pure read."""
+        sets = state.get("settlements") or {}
+        rec = sets.get(e.focus) if e.focus else None
+        if isinstance(rec, dict) and rec.get("center"):
+            return (float(rec["center"][0]), float(rec["center"][1]))
+        for name in e.actors:
+            for a in state.get("agents", []):
+                if getattr(a, "alive", True) and getattr(a, "position", None) and a.name == name:
+                    return (float(a.position[0]), float(a.position[1]))
+        return None
 
     def _event_focus(self, line: str, state: dict[str, Any]) -> tuple | None:
         """V4.10: the WORLD point a major event happened at, for the showcase camera to frame — the
@@ -2968,8 +3219,13 @@ class PygameRenderer:
             # when the full UI is toggled back on with 'U'); the title card opens the run.
             if not self._minimal:
                 self._draw_minimap(state)
+            # V4.15: the legendary WASH goes under the text (it dims the world, not the caption),
+            # then the caption card / quiet ticker ride on top of everything.
+            self._draw_legendary_wash()
             self._draw_feed_overlay()         # V4.14: the event text floats over the world
             self._draw_showcase_readout(state)
+            self._draw_caption_card()
+            self._draw_quiet_ticker()
             self._draw_title_card()
         else:
             self._draw_hud(state, map_px, paused, in_battle=battle is not None)

@@ -185,7 +185,7 @@ SEVERITY: dict[str, str] = {
     "legitimacy_lost": MINOR,
     "faith_root": MINOR,
     "birth": MINOR,
-    "death": MINOR,
+    "death": MINOR,          # promoted to LEGENDARY for a reigning crown (see classify)
     "alliance_formed": MINOR,
     "betrayal": MINOR,
     "inheritance": MINOR,
@@ -271,12 +271,34 @@ def _actors(kind: str, g: dict[str, str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def classify(line: str, seen_firsts: "set[str] | None" = None) -> Event:
+def crowned_names(state: dict[str, Any]) -> frozenset[str]:
+    """Every CROWNED head currently in world_state — emperors, kings, monarchs (pure read).
+
+    Deliberately narrower than "notable": a lord or a leader-by-consent is not in here. A crown
+    dying is the end of a reign and is LEGENDARY; a lord dying is a MINOR death, and the drama of
+    it arrives separately as the succession or the vacancy his death causes.
+    """
+    names: set[str] = set()
+    names.update(state.get("empires", {}))
+    names.update(state.get("kingdoms", {}))
+    for rec in state.get("monarchs", {}).values():
+        if isinstance(rec, dict) and rec.get("monarch"):
+            names.add(rec["monarch"])
+    return frozenset(names)
+
+
+def classify(line: str, seen_firsts: "set[str] | None" = None,
+             crowned: "frozenset[str]" = frozenset()) -> Event:
     """Parse ONE verbatim event line into a typed `Event` (pure apart from `seen_firsts`).
 
     `seen_firsts` is the per-run memory of which world-first feats have already happened; pass
     the SAME set across a run and the second town to devise writing is MINOR while the first is
     MAJOR. Pass None to treat every line in isolation (every first-only kind stays MAJOR).
+
+    `crowned` is the set of reigning emperors/kings/monarchs (see `crowned_names`). A death is
+    ordinarily MINOR churn, but the death of a CROWN is the end of a reign — the moment the run
+    turns — so it is promoted to LEGENDARY. Pass an empty set and every death stays MINOR.
+
     An unrecognised line lands as kind 'unknown' at NOISE — the director degrades quietly rather
     than framing a line it does not understand.
     """
@@ -297,15 +319,31 @@ def classify(line: str, seen_firsts: "set[str] | None" = None) -> Event:
                 seen_firsts.add(key)
         if kind in _BATTLE_KINDS and _bloodless(line):
             sev = MINOR                          # a bloodless annexation is a ledger entry, not a war
+        if kind == "death" and g.get("who") in crowned:
+            sev = LEGENDARY                      # a reign ended; the world reorders around it
+        # A coup that unseats a CROWN is not an internal scuffle — it is a throne changing hands.
+        # (A coup that also ends a bloodline is promoted later, in `beats`, which can see the
+        # extinction line firing on the same turn.)
+        if kind == "coup" and sev == MAJOR and g.get("b") in crowned:
+            sev = LEGENDARY
         return Event(turn=turn if turn is not None else -1, kind=kind, severity=sev,
                      focus=g.get("sid"), actors=_actors(kind, g), fields=g, raw=line)
     return Event(turn=turn if turn is not None else -1, kind="unknown", severity=NOISE,
                  focus=None, actors=(), fields={}, raw=line)
 
 
-def classify_turn(lines: "list[str]", seen_firsts: "set[str] | None" = None) -> list[Event]:
-    """Classify every line of one turn, in log order (see `classify` for `seen_firsts`)."""
-    return [classify(ln, seen_firsts) for ln in lines]
+def classify_turn(lines: "list[str]", seen_firsts: "set[str] | None" = None,
+                  crowned: "frozenset[str]" = frozenset()) -> list[Event]:
+    """Classify every line of one turn, in log order, then apply the WITHIN-TURN promotions.
+
+    Some events only reveal their weight in company. A coup is a MAJOR seizure on its own, but a
+    coup that ENDS A BLOODLINE — the extinction line fires on the same turn — is the fall of a
+    house, and takes the legendary treatment. See `classify` for `seen_firsts` and `crowned`.
+    """
+    evs = [classify(ln, seen_firsts, crowned) for ln in lines]
+    if any(e.kind == "dynasty_extinct" for e in evs):
+        evs = [e._replace(severity=LEGENDARY) if e.kind == "coup" else e for e in evs]
+    return evs
 
 
 def turn_severity(events: "list[Event]") -> str:
@@ -477,6 +515,9 @@ _CAPTIONS: dict[str, Any] = {
     "prophet": lambda e, f: (
         f"{person(f['who']).upper()} SPEAKS",
         f"A prophet of {f['x']}."),
+    "death": lambda e, f: (
+        f"{person(f['who']).upper()} IS DEAD",
+        f"The reign ends — {f.get('x', 'the cause is not recorded')}."),
     "coalition_dissolved": lambda e, f: (
         "THE COALITION DISSOLVES",
         f"{person(f['b'])} is no longer feared."),
