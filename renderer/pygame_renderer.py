@@ -385,6 +385,12 @@ _REALM_PALETTE = (                # distinct banner hues, hashed per ruler name;
     (150, 190, 90),               # olive-lime
     (222, 138, 72),               # ember orange
 )
+# V4.17 (5.2): how far a villager's personality colour is pulled toward their sovereign's banner.
+# Tuned as the point where a cluster reads as one realm at a glance while the personality palette
+# is still legible within it. A RULER is pulled harder — he does not merely belong to the realm,
+# he IS it, and should read as its banner made flesh.
+_ALLEGIANCE_MIX = 0.5
+_ALLEGIANCE_MIX_RULER = 0.72
 _REALM_FILL_ALPHA = 62            # realm territory tint (a touch stronger than plain teal)
 _REALM_EDGE_ALPHA = 150
 _SPEAR = (208, 206, 198)          # a soldier's spear shaft
@@ -1295,6 +1301,32 @@ def realm_color(name: Any) -> tuple[int, int, int]:
     for ch in str(name):
         h = (h * 131 + ord(ch)) & 0xFFFFFFFF
     return _REALM_PALETTE[h % len(_REALM_PALETTE)]
+
+
+def allegiance_color(base: tuple[int, int, int], sid: "str | None", state: dict[str, Any],
+                     lerp: "dict[str, tuple] | None" = None,
+                     mix: float = _ALLEGIANCE_MIX) -> tuple[int, int, int]:
+    """V4.17 (5.2): pull a personality colour toward the REALM its owner belongs to (pure).
+
+    The people wore only their personality, so when a town changed hands the ground under it
+    recoloured and its inhabitants did not — a conquest looked like a paint job rather than a
+    change of allegiance. Every villager now carries their sovereign's banner hue mixed into their
+    own colour: enough that a cluster reads as one realm at a glance, not so much that the
+    personality palette collapses into six identical crowds.
+
+    `lerp` is the renderer's in-flight territory fade (`_territory_lerp`), so the people recolour
+    WITH the ground on the same easing rather than snapping a frame apart from it. An unowned town
+    (`settlement_realm` -> None) is left entirely alone, which keeps a free village looking free.
+    """
+    if not sid:
+        return base
+    tint = (lerp or {}).get(sid)
+    if tint is None:
+        owner = settlement_realm(sid, state)
+        if owner is None:
+            return base
+        tint = realm_color(owner)
+    return lerp_color(base, tint, mix)
 
 
 def settlement_realm(sid: str, state: dict[str, Any]) -> str | None:
@@ -4368,8 +4400,13 @@ class PygameRenderer:
         """
         agent, gx, gy, r, squash = obj
         role = agent_role(agent.name, state)
-        color = night_mute(agent_color(getattr(agent, "personality", ""),
-                                       vivid=role in ("monarch", "king", "emperor")), self._nf)
+        # V4.17 (5.2): personality first, then pulled toward the realm this agent answers to — so a
+        # secession or a conquest recolours the PEOPLE, on the same fade as the ground beneath them.
+        tinted = allegiance_color(agent_color(getattr(agent, "personality", ""),
+                                              vivid=role in ("monarch", "king", "emperor")),
+                                  getattr(agent, "settlement", None), state, self._territory_lerp,
+                                  _ALLEGIANCE_MIX_RULER if role else _ALLEGIANCE_MIX)
+        color = night_mute(tinted, self._nf)
         if self._lod == "far":
             dot = max(2, r)
             pygame.draw.circle(self._screen, _OUTLINE, (gx, gy), dot + 1)

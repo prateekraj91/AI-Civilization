@@ -9306,6 +9306,57 @@ def test_rank_reads_from_the_silhouette_alone() -> None:
     print("PASS test_rank_reads_from_the_silhouette_alone")
 
 
+def test_allegiance_tints_the_people_not_just_the_ground() -> None:
+    """V4.17 (5.2): a villager carries their sovereign's banner hue, and changes it when they change hands.
+
+    Before this the ground under a conquered town recoloured and its inhabitants did not, so a
+    conquest read as a paint job rather than a change of allegiance. Four things must hold: the
+    tint moves the colour toward the realm, two realms are told apart, an UNOWNED town is left
+    alone, and the in-flight territory fade is what the people follow (so they recolour WITH the
+    ground rather than snapping a frame apart from it).
+    """
+    try:
+        from renderer.pygame_renderer import (allegiance_color, realm_color, agent_color,
+                                              _ALLEGIANCE_MIX, _ALLEGIANCE_MIX_RULER)
+    except ImportError:
+        print("PASS test_allegiance_tints_the_people_not_just_the_ground (skipped: no pygame)")
+        return
+
+    def dist(a, b):
+        return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+    state = {
+        "kingdoms": {"Aldric": {"king": "Aldric", "home": "S001", "vassals": {},
+                                "settlements": {"S001", "S002"}, "founded": 1, "discontent": {}},
+                     "Borin": {"king": "Borin", "home": "S003", "vassals": {},
+                               "settlements": {"S003"}, "founded": 1, "discontent": {}}},
+        "empires": {}, "monarchs": {}, "leaders": {},
+    }
+    base = agent_color("curious")
+    ald, bor = realm_color("Aldric"), realm_color("Borin")
+    assert ald != bor, "the fixture needs two DISTINCT banners or it proves nothing"
+    a_col = allegiance_color(base, "S001", state)
+    b_col = allegiance_color(base, "S003", state)
+    assert a_col != b_col, "two realms must colour their people differently"
+    assert dist(a_col, ald) < dist(base, ald), "a subject is pulled TOWARD his sovereign's banner"
+    # ...but not all the way: personality must survive inside a realm, or every crowd is identical.
+    assert a_col != ald, "allegiance TINTS the personality colour, it does not replace it"
+    # A ruler is pulled harder — he does not merely belong to the realm, he is it.
+    ruler = allegiance_color(base, "S001", state, None, _ALLEGIANCE_MIX_RULER)
+    assert dist(ruler, ald) < dist(a_col, ald), "a ruler reads as his own banner more than a subject"
+    # An unowned town keeps its people exactly as they were — a free village looks free.
+    assert allegiance_color(base, "S404", state) == base, "an unowned town must not be tinted"
+    assert allegiance_color(base, None, state) == base, "a settlement-less agent is untinted"
+    # The people follow the renderer's in-flight territory fade, so they turn WITH the ground.
+    mid = (10, 200, 30)
+    faded = allegiance_color(base, "S001", state, {"S001": mid})
+    assert faded == allegiance_color(base, "S001", {}, {"S001": mid}), \
+        "mid-fade the LERP decides the colour, not the institution dicts"
+    assert faded != a_col, "a town mid-handover must not already wear its new banner"
+    assert _ALLEGIANCE_MIX < _ALLEGIANCE_MIX_RULER < 1.0, "neither mix may swallow the palette"
+    print("PASS test_allegiance_tints_the_people_not_just_the_ground")
+
+
 def test_a_crown_falling_is_legendary() -> None:
     """Rank decides weight: a CROWN dying or being unseated is legendary, a commoner is not.
 
@@ -9958,6 +10009,7 @@ def main_runner() -> None:
         test_director_classifies_every_engine_event_shape,
         test_world_firsts_and_bloodless_battles_are_demoted,
         test_rank_reads_from_the_silhouette_alone,
+        test_allegiance_tints_the_people_not_just_the_ground,
         test_a_crown_falling_is_legendary,
         test_turn_severity_and_beat_editing,
         test_no_two_wars_chain_in_one_turn,
