@@ -413,11 +413,39 @@ def beats(events: "list[Event]", floor: str = MAJOR, drop_staging: bool = True) 
             for e in ordered]
 
 
+# --- Places -----------------------------------------------------------------
+# The world's towns have NAMES — Dunhollow, Blackmere — assigned by the chronicle from the run
+# seed and handed to the renderer as a closure. Every piece of on-screen text goes through this
+# one rewrite, so the caption card, the feed and the map labels name the SAME world the book
+# does. `places` is that sid -> name map; without it (names off) the text comes back untouched,
+# byte for byte, which is what keeps an un-named run identical.
+_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def place_names_in(text: str, places: "dict[str, str] | None", upper: bool = False) -> str:
+    """Rewrite settlement IDS in `text` into the world's place names (pure).
+
+    Whole-token, exact-key lookup only: 'S0A2' becomes 'Blackmere' and "S0A2's" becomes
+    "Blackmere's", while an id absent from the map (and every other word) is left alone.
+    `upper` renders the name in caps, for a TITLE line — those are set in caps throughout.
+    """
+    if not places:
+        return text
+
+    def swap(m: "re.Match[str]") -> str:
+        name = places.get(m.group(0))
+        if name is None:
+            return m.group(0)
+        return name.upper() if upper else name
+
+    return _TOKEN.sub(swap, text)
+
+
 # --- Captions ---------------------------------------------------------------
 # A caption is a TITLE line and at most one SUBTITLE line. Terse, declarative, dramatised —
 # never the raw log line. Names are spaced out of their engine form (LordB -> "Lord B") so a
-# viewer reads a person, not an identifier; settlement ids are left as they are (they ARE the
-# names of the places on the map).
+# viewer reads a person, not an identifier; settlement ids are rewritten to the world's place
+# names on the way out (`caption`), so a card never shows an engine id.
 _TITLED = re.compile(r"^(Lord|King|Queen|Chief|Prince|Princess)([A-Z0-9].*)$")
 
 
@@ -524,12 +552,16 @@ _CAPTIONS: dict[str, Any] = {
 }
 
 
-def caption(e: Event) -> tuple[str, str | None]:
+def caption(e: Event, places: "dict[str, str] | None" = None) -> tuple[str, str | None]:
     """A dramatised (title, subtitle) card for one classified event (pure).
 
     Terse and declarative: a title line and at most one subtitle. An event with no template
     (or one whose log line lacked a field) degrades to the plain event body as a title, so the
     director can always show SOMETHING rather than crash mid-run.
+
+    `places` is the sid -> place-name map (the renderer's namer closure): both lines come back
+    naming the world the way the chronicle does — the title in caps, the subtitle in prose.
+    Omitted (names off), the card reads exactly as it did, with the raw ids.
     """
     builder = _CAPTIONS.get(e.kind)
     if builder is not None:
@@ -539,8 +571,10 @@ def caption(e: Event) -> tuple[str, str | None]:
             if also:
                 extra = f"and {also} more the same turn."
                 sub = f"{sub} {extra}" if sub else extra.capitalize()
-            return title, sub
+            return (place_names_in(title, places, upper=True),
+                    sub if sub is None else place_names_in(sub, places))
         except KeyError:
             pass
     _, body = strip_prefix(e.raw)
-    return body.split(" (")[0].split(" -> ")[0].strip(" ;—-").upper(), None
+    title = body.split(" (")[0].split(" -> ")[0].strip(" ;—-").upper()
+    return place_names_in(title, places, upper=True), None

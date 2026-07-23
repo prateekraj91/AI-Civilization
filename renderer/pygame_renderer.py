@@ -990,8 +990,9 @@ def _truncate(text: str, cols: int) -> str:
     return text if len(text) <= cols else text[:cols - 1].rstrip() + "…"
 
 
-def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
-                    max_rows: int) -> list[tuple[str, tuple[int, int, int], bool]]:
+def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int, max_rows: int,
+                    places: "dict[str, str] | None" = None
+                    ) -> list[tuple[str, tuple[int, int, int], bool]]:
     """Turn the event tail into STORY rows: MAJOR lines in full (flagged bold), with the MINOR
     churn kept scarce so majors are ALWAYS visible. Newest at the bottom. Pure. Each row is
     (text, colour, is_major); majors keep their event colour, the aggregated churn is muted grey.
@@ -999,6 +1000,11 @@ def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
     Minor discipline (V4.7 feed fix): a minor turn NEVER gets its own stack of lines. Consecutive
     all-minor turns COLLAPSE into ONE aggregated line, and a major turn's own churn folds into a
     SINGLE compact (ellipsised) line under its majors — so a quiet run can't bury the next battle.
+
+    `places` (sid -> place name) rewrites the towns into the names the chronicle gives them, so the
+    feed reads 'Blackmere', not 'S0B2'. Tiering and colour still key on the RAW line — only the text
+    the viewer reads is renamed — and it happens BEFORE wrapping, so the column fit is measured on
+    the words actually drawn. Without the map the rows are byte-identical to before.
     """
     scan = events[-_FEED_SCAN:]
     order: list[int] = []
@@ -1015,10 +1021,13 @@ def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
     rows: list[tuple[str, tuple[int, int, int], bool]] = []
     pending: list[str] = []                    # minors banked across consecutive major-less turns
 
+    def named(text: str) -> str:
+        return _director.place_names_in(text, places)
+
     def flush() -> None:
         summary = aggregate_minor(pending)
         if summary:
-            rows.append((_truncate(summary, cols), _FEED_DEFAULT, False))
+            rows.append((_truncate(named(summary), cols), _FEED_DEFAULT, False))
         pending.clear()
 
     for key in order:
@@ -1030,12 +1039,12 @@ def story_feed_rows(events: list[str], notable: "frozenset[str]", cols: int,
             continue
         flush()                                # close the quiet run as ONE line before the beat
         for m in majors:
-            color = event_color(m)
-            for sub in (textwrap.wrap(_strip_prefix(m), width=max(1, cols)) or [""]):
+            color = event_color(m)             # colour off the RAW line; only the words are renamed
+            for sub in (textwrap.wrap(named(_strip_prefix(m)), width=max(1, cols)) or [""]):
                 rows.append((sub, color, True))
         summary = aggregate_minor(minors)      # this beat's own churn -> one compact line
         if summary:
-            rows.append((_truncate(summary, cols), _FEED_DEFAULT, False))
+            rows.append((_truncate(named(summary), cols), _FEED_DEFAULT, False))
     flush()                                     # trailing quiet run
     return rows[-max_rows:] if max_rows > 0 else []
 
@@ -3214,6 +3223,7 @@ class PygameRenderer:
             self._direct_turn(state, turn)     # V4.15: severity, camera cuts and caption cards
             return
         notable = notable_names(state)
+        self._refresh_place_names(state)   # the banner speaks of towns by name, like the book
         now = time.monotonic()
         majors = [(banner_text(line), self._event_focus(line, state), event_color(line))
                   for line in turn_events(state.get("events") or [], turn)
@@ -3225,6 +3235,9 @@ class PygameRenderer:
             majors = collapse_majors(majors)
         self._turn_majors = len(majors)                    # V4.14: drives this turn's dramatic pause
         for text, foc, color in majors:
+            # Named LAST — after collapse_majors has folded the repeats, so the folding still keys
+            # on the engine's own wording and only the words the viewer reads are rewritten.
+            text = _director.place_names_in(text, self._place_names)
             self._banner_queue.append(text)
             self._focus_queue.append(foc)                  # V4.10: where to point the camera
             if self._showcase:
@@ -3245,6 +3258,7 @@ class PygameRenderer:
         consumes. A turn with no beat leaves the queue empty, which is what makes it fast-forward.
         """
         lines = turn_events(state.get("events") or [], turn)
+        self._refresh_place_names(state)   # the cards name the world the book does, not its ids
         events = _director.classify_turn(lines, self._seen_firsts, _director.crowned_names(state))
         self._turn_sev = _director.turn_severity(events)
         beats = _director.beats(events)
@@ -3255,7 +3269,7 @@ class PygameRenderer:
         now = time.monotonic()
         self._beats.clear()
         for e in beats:
-            title, sub = _director.caption(e)
+            title, sub = _director.caption(e, self._place_names)
             self._beats.append((e.severity, title, sub, self._beat_focus(e, state)))
             # The floating feed carries the same beats, in the director's words.
             self._overlay_feed.append((title, now, event_color(e.raw), e.severity == _director.LEGENDARY))
@@ -5021,15 +5035,16 @@ class PygameRenderer:
             else:
                 self._draw_hall(cx, cy, c["z"], c["foot"], c["color"], c.get("lift", 0.0))
 
-    def _refresh_place_names(self) -> None:
+    def _refresh_place_names(self, state: "dict[str, Any] | None" = None) -> None:
         """Rebuild the sid -> place-name cache when the town set changes (no-op without a namer).
 
         Built over the WHOLE settlement set (not the culled-visible jobs), so a name never shifts as
         the camera pans. The namer is main's closure over chronicle_book, so the footage and the book
-        name one world from the same seed."""
+        name one world from the same seed. The cache feeds EVERY piece of on-screen text — map
+        labels, caption cards, the banner and the feed — so they all name the one world."""
         if self._place_namer is None:
             return
-        keys = frozenset((self._last_state or {}).get("settlements", {}))
+        keys = frozenset((state if state is not None else (self._last_state or {})).get("settlements", {}))
         if keys != self._place_names_key:
             try:
                 self._place_names = dict(self._place_namer(list(keys)))
@@ -5463,7 +5478,9 @@ class PygameRenderer:
         one aggregated MINOR line per turn. A read of state["events"] (+ institutions)."""
         char_w = max(1, self._font.size("M")[0])
         cols = max(8, inner_w // char_w)
-        return story_feed_rows(state.get("events") or [], notable_names(state), cols, max_rows)
+        self._refresh_place_names(state)   # the feed names the same towns the map labels do
+        return story_feed_rows(state.get("events") or [], notable_names(state), cols, max_rows,
+                               self._place_names)
 
     def _draw_panel(self, state: dict[str, Any], map_px: int) -> None:
         """Draw the right sidebar: a STATE summary above a scrolling EVENT feed (READ only).
@@ -5664,7 +5681,11 @@ class PygameRenderer:
                                     int(y) - r * 3 - lab.get_height()))
 
     def _draw_banner(self, text: str, fade: float) -> None:
-        """The aftermath outcome banner: a translucent band across the map with the verdict."""
+        """The aftermath outcome banner: a translucent band across the map with the verdict.
+
+        The verdict names its town the way the map labels and the book do ('REPELLED at Blackmere'),
+        the scene dict itself keeping the engine's ids."""
+        text = _director.place_names_in(text, self._place_names)
         map_px = self._map_px
         band_h = max(36, self._cell * 2)
         y0 = (self._map_h - band_h) // 2

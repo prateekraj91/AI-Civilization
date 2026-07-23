@@ -10107,6 +10107,92 @@ def test_director_drives_the_showcase_turn_plan() -> None:
     print("PASS test_director_drives_the_showcase_turn_plan")
 
 
+def test_every_on_screen_word_names_the_world_the_book_names() -> None:
+    """The place-namer reaches ALL the on-screen text, not just the map labels.
+
+    The caption card, the floating feed, the story banner, the cinematic verdict and the panel feed
+    all go through the one sid -> name map, so the footage says Blackmere everywhere the book does.
+    With NO namer (names off) every one of those strings is byte-identical to the un-named pipeline —
+    that is what keeps a default run exactly as it was.
+    """
+    import os as _os
+    _os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    _os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    try:
+        import pygame
+        from renderer.pygame_renderer import PygameRenderer, story_feed_rows, notable_names
+    except ImportError:
+        print("PASS test_every_on_screen_word_names_the_world_the_book_names (skipped: no pygame)")
+        return
+    from renderer import director as d
+
+    names = {"S0A2": "Marrowford", "S0B2": "Blackmere"}
+    state = {"size": 24, "turn": 7, "food": [], "agents": [], "monarchs": {}, "leaders": {},
+             "kingdoms": {}, "empires": {},
+             "settlements": {s: {"id": s, "center": (6, 6), "members": set(), "founded": 0}
+                             for s in names},
+             "events": [
+                 "turn 7: UPRISING in S0B2 — 4 risers rise against lord LordB "
+                 "(3 defenders: 3 standing + 0 hired)",
+                 "turn 7: the UPRISING in S0B2 TRIUMPHED — lord LordB is DEPOSED; "
+                 "BWV4 to rule by consent (2 risers fell)",
+                 "turn 7: S0A2 entered the Iron Age",
+                 "turn 7: KING Aldric REPELLED at S0A2"]}
+    pygame.init()
+    try:
+        # -- names ON: the cards, the floating feed, the banner and the panel feed all say it.
+        show = PygameRenderer(turn_delay=0.4, showcase=True, window=(1200, 800),
+                              place_namer=lambda sids: dict(names))
+        show._ensure_screen(24)
+        show._last_state = state
+        show._direct_turn(state, 7)
+        cards = [(t, s) for _sev, t, s, _f in show._beats]
+        assert ("THE RISING OF BLACKMERE", "Lord B falls. 2 risers fell. The hoard is theirs.") in cards, \
+            f"the caption card must name the town (in caps, as titles are set): {cards}"
+        assert ("MARROWFORD ENTERS THE IRON AGE", None) in cards, f"...every card, not one: {cards}"
+        assert all("S0A2" not in t and "S0B2" not in t for t, _s in cards), f"an id leaked: {cards}"
+        assert any("BLACKMERE" in text for text, *_ in show._overlay_feed), \
+            "the floating feed carries the beats in the same words as the card"
+
+        plain = PygameRenderer(turn_delay=0.4, window=(1200, 800),
+                               place_namer=lambda sids: dict(names))
+        plain._ensure_screen(24)
+        plain._last_state = state
+        plain._font = pygame.font.SysFont("menlo,monospace", 14)   # `live()` opens the faces
+        plain._enqueue_banners(state)
+        banners = list(plain._banner_queue)
+        assert any("Blackmere" in b for b in banners) and not any("S0B2" in b for b in banners), \
+            f"the story banner names the town, in prose: {banners}"
+        rows = plain._feed_rows(state, 420, 10)
+        feed = [text for text, _c, _m in rows]
+        assert any("Marrowford" in t for t in feed) and not any("S0A2" in t for t in feed), \
+            f"the panel feed names the town too: {feed}"
+        assert plain._place_names == names, "the namer's map is the one cache every reader shares"
+
+        # -- names OFF: byte-identical to the pipeline as it was, ids and all.
+        e = d.classify("turn 7: S0A2 entered the Iron Age")
+        assert d.caption(e, None) == d.caption(e) == ("S0A2 ENTERS THE IRON AGE", None), \
+            "no namer -> the card is exactly the old card"
+        assert story_feed_rows(state["events"], notable_names(state), 60, 10, None) == \
+            story_feed_rows(state["events"], notable_names(state), 60, 10), \
+            "no namer -> the feed rows are the old rows"
+        line = "KING Aldric REPELLED at S0A2"
+        assert d.place_names_in(line, None) is line and d.place_names_in(line, {}) is line, \
+            "with nothing to name, the text comes back untouched — the same object"
+        # An id that is not a KNOWN town is left alone; a possessive keeps its 's.
+        assert d.place_names_in("S0Z9 and S0B2's hoard", names) == "S0Z9 and Blackmere's hoard"
+
+        off = PygameRenderer(turn_delay=0.4, window=(1200, 800))
+        off._ensure_screen(24)
+        off._last_state = state
+        off._enqueue_banners(state)
+        assert any("S0B2" in b for b in off._banner_queue), "names off -> the raw ids, as before"
+        assert off._place_names == {}, "no namer -> nothing is ever looked up"
+    finally:
+        pygame.quit()
+    print("PASS test_every_on_screen_word_names_the_world_the_book_names")
+
+
 def main_runner() -> None:
     tests = [
         test_detection_by_name,
@@ -10430,6 +10516,7 @@ def main_runner() -> None:
         test_showcase_caption_cards_and_severity_camera,
         test_a_legendary_hold_desaturates_slows_and_pulses,
         test_director_drives_the_showcase_turn_plan,
+        test_every_on_screen_word_names_the_world_the_book_names,
     ]
     for t in tests:
         t()
