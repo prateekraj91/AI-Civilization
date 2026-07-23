@@ -32,45 +32,46 @@ import random
 import sys
 import time
 
-import alliance
-import beliefs
-import chronicle
-import coalitions
-import conversation
-import culture
-import diplomacy
-import discontent
-import economy
-import empire
-import eras
-import god_mode
-import heuristic
-import intertrade
-import kingdoms
-import knowledge
-import labor
-import leadership
-import lineage
-import metallurgy
-import monarchy
-import population
-import religion
-import settlement
-import storage
-import taxation
-import uprising
-import writing
-from cognition import update_tiers
-from agents import Agent
-from llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
-from strategy import (
+from sim import (
+    alliance,
+    beliefs,
+    coalitions,
+    culture,
+    diplomacy,
+    discontent,
+    economy,
+    empire,
+    eras,
+    god_mode,
+    intertrade,
+    kingdoms,
+    knowledge,
+    labor,
+    leadership,
+    lineage,
+    metallurgy,
+    monarchy,
+    population,
+    religion,
+    settlement,
+    storage,
+    taxation,
+    uprising,
+    writing,
+)
+from llm import conversation, heuristic
+from narrative import chronicle
+from llm.cognition import update_tiers
+from sim.agents import Agent
+from llm.llm import PROVIDER, get_call_stats, get_strategy, reset_call_stats
+from llm.strategy import (
     Strategy,
     build_strategy_prompt,
     choose_action,
     format_goals,
     get_personality,
 )
-from world import (
+from sim.world import (
     create_world,
     execute_action,
     is_dead,
@@ -831,7 +832,7 @@ def print_inference_savings(counters: dict[str, int]) -> None:
     # M5.1: the MINDS layer's cost — how many times a figure's mind was actually consulted at a pivot,
     # and how many LLM inclination calls that cost (0 offline / cached; single digits with a live model).
     if world_state.get("minds_on"):
-        import mind
+        from llm import mind
         consults = mind.consult_count(world_state)
         flips = sum(1 for c in world_state.get("mind_consults", []) if c["flipped"])
         print(f"Pivot mind consults:       {consults} (flipped {flips} close call(s); "
@@ -1590,7 +1591,7 @@ def run_simulation(num_turns: int, *, god_script: dict[int, list[str]] | None = 
     # be watched; the normal per-turn loop then runs from the staged state. RNG-free, so a staged
     # run stays reproducible under the seed. This only writes records the engine itself produces.
     if stage is not None:
-        import scenario
+        from sim import scenario
         scenario.apply(world_state, stage, cognition=cognition)
 
     # M4.1: the lineage flag + founding-cast setup. Runs AFTER staging so a staged cast is
@@ -2328,7 +2329,7 @@ def main(argv: list[str] | None = None) -> None:
         # the chronicle. Passed as a CLOSURE so the renderer imports no project logic (its boundary holds).
         place_namer = None
         if render_mode == "pygame":
-            import chronicle_book
+            from narrative import chronicle_book
             place_namer = lambda sids: chronicle_book.place_name_map(sids, seed)   # noqa: E731
         renderer = _make_renderer(render_mode, sink=None, turn_delay=args.speed,
                                   showcase=args.showcase,
@@ -2362,12 +2363,12 @@ def main(argv: list[str] | None = None) -> None:
     # the digest in LLM prose. All three READ the same structured record and change nothing in the sim.
     if args.chronicle and args.chronicle_out:
         if args.narrate:
-            import narrator
+            from narrative import narrator
             text, kind = narrator.narrate_saga(world_state), "narrated saga"
         elif args.chronicle_digest:
             text, kind = chronicle.export_markdown(world_state), "digest"
         else:
-            import chronicle_book
+            from narrative import chronicle_book
             text, kind = chronicle_book.export_book(world_state, seed), "history book"
         with open(args.chronicle_out, "w") as f:
             f.write(text)

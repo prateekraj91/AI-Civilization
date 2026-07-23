@@ -47,7 +47,7 @@ from rich.table import Table
 from rich.text import Text
 
 # The ONLY project import: world is a state-reading layer (constants + pure reads).
-import world
+from sim import world
 
 # --- Stable per-agent colours --------------------------------------------
 # A fixed palette; each agent maps to one entry deterministically by name, so an

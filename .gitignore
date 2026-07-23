@@ -13,5 +13,9 @@ __pycache__/
 # macOS
 .DS_Store
 
+# Editor swap files (a .swp of an in-progress saga once got committed)
+*.swp
+*.swo
+
 # Claude Code local config
 .claude/

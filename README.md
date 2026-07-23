@@ -30,7 +30,7 @@ pip install -r requirements.txt
 
 The default provider is a **local** model through [Ollama](https://ollama.com).
 The simulation never talks to a model directly — it goes through one
-provider-agnostic layer (`llm.py`), so this step is only needed if you want real
+provider-agnostic layer (`llm/llm.py`), so this step is only needed if you want real
 LLM reasoning rather than the offline backend.
 
 ```bash
@@ -64,7 +64,7 @@ python main.py --seed 7 --turns 40 --render rich --speed slow \
 Run the tests (offline, deterministic — does not contact Qwen):
 
 ```bash
-AICIV_PROVIDER=random python test_simulation.py
+AICIV_PROVIDER=random python tests/test_simulation.py
 ```
 
 ---
@@ -107,7 +107,7 @@ boundary:
               return an   │              │ (perceive)   │ (snapshot)
               action      │              ▼              ▼
         ┌─────────────────┴──┐   ┌──────────────┐  ┌──────────────────┐
-        │   AGENTS — DECIDE  │   │ god_mode.py  │  │   renderer/      │
+        │   AGENTS — DECIDE  │   │ sim/god_mode │  │   renderer/      │
         │  agents + strategy │   │   MUTATES    │  │   DISPLAYS       │
         │  + conversation +  │   │ (write-only) │  │  (read-only)     │
         │  trust + alliance  │   │  drought,    │  │  rich dashboard: │
@@ -124,13 +124,13 @@ boundary:
 
 - **Agents DECIDE.** Agents read `world_state` to perceive, then return one of a
   closed set of actions; all world changes flow back through the world layer, never
-  by an agent writing globals. (`agents.py`, `strategy.py`, `conversation.py`,
-  `trust.py`, `alliance.py`, `personality.py`)
-- **God MUTATES (write-only).** `god_mode.py` is the only thing outside the engine
+  by an agent writing globals. (`sim/agents.py`, `llm/strategy.py`,
+  `llm/conversation.py`, `sim/trust.py`, `sim/alliance.py`, `sim/personality.py`)
+- **God MUTATES (write-only).** `sim/god_mode.py` is the only thing outside the engine
   that *writes* the world. It imports no decision logic — an AST test enforces it.
 - **The renderer DISPLAYS (read-only).** `renderer/text_renderer.py` turns a
   snapshot into a `rich` dashboard and mutates nothing. It imports only `rich` +
-  `world` — another AST boundary test enforces it.
+  `sim.world` — another AST boundary test enforces it.
 
 Two more design points worth knowing:
 
@@ -140,7 +140,7 @@ Two more design points worth knowing:
   call at all** — cheaper, faster, and still reproducible. Death, respawn, trust,
   alliances and God interventions are all pure Python and add **zero** inference.
 - **Provider abstraction.** The simulation has no idea which model is behind it.
-  `llm.py` dispatches to Ollama (local Qwen, default), Gemini (cloud), or a `random`
+  `llm/llm.py` dispatches to Ollama (local Qwen, default), Gemini (cloud), or a `random`
   offline backend, and always degrades to a safe fallback so a model hiccup can
   never crash a run.
 
@@ -150,9 +150,9 @@ Two more design points worth knowing:
 
 The interesting results are written up in two companion docs:
 
-- **[DEMO_STORY.md](DEMO_STORY.md)** — a narrative walkthrough of a single run: a
+- **[docs/DEMO_STORY.md](docs/DEMO_STORY.md)** — a narrative walkthrough of a single run: a
   drought-driven collapse and an alliance that formed, unprompted, late in the game.
-- **[FINDINGS.md](FINDINGS.md)** — the running day-by-day log of what each mechanic
+- **[docs/FINDINGS.md](docs/FINDINGS.md)** — the running day-by-day log of what each mechanic
   actually produced, including the dead ends.
 
 One honest finding deserves top billing: **the dramatic social acts — betrayal,
@@ -201,21 +201,52 @@ provider-agnostic mind) is built to grow in that direction.
 
 ## Repo layout
 
+Four packages, one per layer of the architecture above — the world, the minds that
+act in it, the account it keeps of itself, and the display.
+
 ```
-world.py            single source of truth + perception/movement/hunger
-agents.py           the Agent data model (pure data, no logic)
-personality.py      typed-trait instincts per agent
-strategy.py         LLM strategy prompt + cached Python execution
-conversation.py     talk / steal + message delivery
-trust.py            per-relationship trust bookkeeping
-alliance.py         alliances, shared sightings, betrayal
-population.py       death events + blank-slate respawn
-god_mode.py         write-only world interventions (the "you are God" layer)
-llm.py              provider-agnostic model layer (Ollama / Gemini / random)
-renderer/           read-only rich terminal dashboard
-main.py             setup + the shared survival loop + CLI
-test_simulation.py  60 deterministic tests (run with AICIV_PROVIDER=random)
-logs/               captured demo runs
-FINDINGS.md         day-by-day findings
-DEMO_STORY.md       narrative of a standout run
+main.py               setup + the shared survival loop + CLI
+
+sim/                  THE WORLD AND ITS INSTITUTIONS
+  world.py              single source of truth + perception/movement/hunger
+  agents.py             the Agent data model (pure data, no logic)
+  personality.py        typed-trait instincts per agent
+  trust.py              per-relationship trust bookkeeping
+  alliance.py           alliances, shared sightings, betrayal
+  population.py         death events + blank-slate respawn
+  lineage.py            birth, inheritance, houses
+  settlement.py         towns forming out of sustained proximity
+  knowledge.py          discovery + teaching; writing.py, metallurgy.py, eras.py
+  economy.py            money, trade, prices; storage.py, labor.py, taxation.py
+  leadership.py         consent-raised leaders; monarchy.py, kingdoms.py, empire.py
+  discontent.py         grievance under a ruler; uprising.py the rising itself
+  beliefs.py            what agents hold true; religion.py, culture.py
+  diplomacy.py          treaties; intertrade.py, coalitions.py
+  scenario.py           staged worlds (--stage) so a late system starts visible
+  god_mode.py           write-only world interventions (the "you are God" layer)
+
+llm/                  THE THINKING LAYER
+  llm.py                provider-agnostic model layer (Ollama / Gemini / random)
+  strategy.py           LLM strategy prompt + cached Python execution
+  heuristic.py          the zero-call offline twin of the same choice
+  cognition.py          the focal budget — who is worth a model call this turn
+  conversation.py       talk / steal + message delivery
+  mind.py               character at the pivots (M5.1), only on close calls
+
+narrative/            THE WORLD'S ACCOUNT OF ITSELF
+  chronicle.py          the structured record, fidelity gated on writing
+  chronicle_book.py     that record as a history BOOK (named towns and figures)
+  narrator.py           the optional LLM retelling, walled off from the record
+
+renderer/             read-only display — rich terminal, pygame world, director
+
+tests/                test_simulation.py (322 deterministic tests) + verify/
+docs/                 FINDINGS.md, DEMO_STORY.md, the visual-overhaul PDF
+logs/                 captured demo runs
+HISTORY.md            the world's own history, as the chronicle wrote it
 ```
+
+Imports name the layer they cross: `from sim import world`, `from llm import mind`,
+`from narrative import chronicle`. The transport module is `from llm import llm` — the
+package deliberately has an empty `__init__.py`, so an offline run that imports
+`heuristic` never loads provider config.
