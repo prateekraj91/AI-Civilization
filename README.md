@@ -1,252 +1,200 @@
-# AI Civilization
+<div align="center">
 
-A multi-agent simulation where every citizen is a **real LLM-driven agent**. Each
-agent has a personality, weighted goals (survive / wealth / friendship), bounded
-memory, and a voice — and they all share one 10×10 world and one scarce food
-supply. From nothing but survival pressure and the ability to perceive and talk to
-each other, **social behaviour emerges**: agents build trust, form alliances, share
-what they see, steal when desperate, and occasionally betray the very allies that
-kept them alive. And you are not a spectator — **you are God**, and can reach into
-the running world to start a drought, unleash a plague, drop treasure, or introduce
-a stranger, then watch the society react.
+# AI Civilization: A World That Writes Its Own History
 
-No event is scripted. The drama (and, just as often, the *lack* of drama) is what
-the agents actually did.
+**A simulation where every social layer emerges from the one below it.**
 
----
+![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![tests](https://img.shields.io/badge/tests-321%20passing-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-green)
+</div>
 
-## Quickstart
+Agents forage, farm, teach, trade, have children, and accumulate wealth.
+Nothing above that is scripted. Surplus creates inequality; inequality creates
+lords; lords extract tribute; tribute creates resentment; resentment becomes
+revolt. Along the way settlements invent writing, cross into the Bronze and Iron
+Ages, crown kings, build empires, and depose them.
 
-### 1. Install
-
-```bash
-# clone, then from the repo root:
-python3 -m venv .Jarvis
-source .Jarvis/bin/activate         # Windows: .Jarvis\Scripts\activate
-pip install -r requirements.txt
-```
-
-### 2. (Optional) Local LLM via Ollama + Qwen
-
-The default provider is a **local** model through [Ollama](https://ollama.com).
-The simulation never talks to a model directly — it goes through one
-provider-agnostic layer (`llm/llm.py`), so this step is only needed if you want real
-LLM reasoning rather than the offline backend.
-
-```bash
-# install Ollama (see ollama.com), then pull the model the sim defaults to:
-ollama pull qwen3:8b
-ollama serve            # serves at http://127.0.0.1:11434 (the sim's default URL)
-```
-
-No GPU / don't want to run a model? Skip this and use `AICIV_PROVIDER=random` — a
-fully offline backend that returns plausible, valid actions. Every command below
-works offline by prefixing `AICIV_PROVIDER=random`.
-
-### 3. Run it
-
-```bash
-# A) plain text simulation (turn-by-turn log to the terminal)
-python main.py --turns 30
-#    offline, no model server needed:
-AICIV_PROVIDER=random python main.py --turns 30
-
-# B) live rich dashboard — grid + per-agent fullness bars + highlighted events,
-#    paced so a human can watch it unfold
-python main.py --render rich --speed normal --turns 30
-
-# C) a reproducible, god-scripted run (the demo invocation):
-python main.py --seed 7 --turns 40 --render rich --speed slow \
-    --god-script "10:trigger_plague Kira;10:trigger_drought;25:drop_treasure 5 5" \
-    --log logs/my_demo.txt
-```
-
-Run the tests (offline, deterministic — does not contact Qwen):
-
-```bash
-AICIV_PROVIDER=random python tests/test_simulation.py
-```
+When the run ends, the world writes its own history.
 
 ---
 
-## Key flags & environment
+## Watch it
 
-| Flag / env | What it does |
+[![Watch the demo](docs/thumbnail.png)](https://youtu.be/9ZvSeNe0IGw?si=eB_DOLTITcQ035z_)
+
+*45 turns, ~3 minutes. Seed 7.*
+
+---
+
+## What emerges
+
+| Layer | Emerges from |
 |---|---|
-| `--turns N` | Number of turns to simulate (default 50, or until everyone has died with no respawn pending). |
-| `--seed N` | Seed Python's RNG **before** world setup. Fixes agent/food placement *and* the offline `random` provider, so a seeded offline run replays identically. (Qwen sampling is not fully deterministic, so a seed fixes the *world*, not Qwen's word choices.) |
-| `--render rich` | Live in-place dashboard via the `rich` library instead of plain text. **Read-only** — it never touches the simulation. Default is plain text. |
-| `--speed slow\|normal\|fast\|<secs>` | Pacing for a **rendered** run: slow ≈ 2.0s/turn, normal ≈ 0.5s/turn (default), fast ≈ 0.1s/turn, or a raw number (`--speed 0.3`). Presentation-only — never affects tests, plain/logged runs, or the RNG. |
-| `--god-script SPEC` | Run God interventions non-interactively. Inline `"10:trigger_plague Kira;25:drop_treasure 5 5"` or a path to a file of `<turn>:<command>` lines. Each fires at the end of its turn — so a scripted run reproduces a hand-played one exactly. |
-| `--log PATH` | Mirror the full plain run (turn log + summary + events) to a file. Coexists with `--render rich`: the dashboard owns the terminal while the plain transcript is captured byte-for-byte to the log. |
-| `AICIV_PROVIDER` | `ollama` (default, local Qwen), `gemini` (cloud, needs `GEMINI_API_KEY`), or `random` (offline). |
-| `AICIV_GOD_EVERY` | Drop into the **interactive** God menu every N turns (default 0 = off). Ignored when `--god-script` is given so automated runs never block on input. |
+| Farming | foraging + surplus |
+| Class | accumulated wealth |
+| Lords | inequality |
+| Kings | tribute + force |
+| Empire | conquest |
+| Revolt | tribute + hunger |
+| Writing | literacy threshold |
 
-**God commands** (for `--god-script` or the interactive menu): `trigger_drought
-[turns]`, `trigger_plague [name]`, `drop_treasure <x> <y> [value]`, `spawn_food <x>
-<y>`, `spawn_agent <name> <personality...>`, `introduce_stranger <name>
-[personality...]`, `status`, `help`.
+Each layer is verified with controlled experiments. The emergence chain is a
+claim the test suite checks, not merely a description.
+
+---
+
+## The chronicle
+
+The world writes its own history. Read the full chronicle in
+[HISTORY.md](HISTORY.md).
+
+> *It opened with a surplus of grain and it ended with a surplus of grief, and
+> the road between the two ran straight: the surplus made lords, and the lords
+> made tribute, and the tribute made rage, and the rage made revolt. What the
+> risings will make in their turn, another hand must set down.*
+
+---
+
+## Screenshots
+
+### A capital at dusk
+
+![dusk](docs/dusk.png)
+
+### Pressure building before a rising
+
+![unrest](docs/unrest.png)
+
+### A crown lying vacant
+
+![crown](docs/crown.png)
+
+---
+
+## Where the LLM sits
+
+This is a rule-based simulation with a local LLM consulted at **pivots**:
+close calls where the outcome could go either way. It is **not** an
+LLM-driven agent swarm.
+
+- 2,391 agent-turns per run
+- ~22 model calls (strategy caching + pivot-only consultation)
+- Fully deterministic: same seed, same run, same footage
+
+**The model's choices change history.**
+
+The simulation remains deterministic because every model response is cached and
+replayed for identical seeds.
+
+Same seed, minds off vs. minds on:
+
+| | Minds off | Minds on |
+|---|---|---|
+| First war | year 4 | year 39 |
+| Outcome | empire, secession, risings | no cascade |
+| Borin dies | *the Grasping*, deposed | *the Conqueror*, unbroken |
+
+One close-margin decision, opposite fates.
+
+See [HISTORY_minds.md](HISTORY_minds.md).
 
 ---
 
 ## Architecture
 
-Everything funnels through one authoritative dict, **`world_state`** — the single
-source of truth. Three subsystems touch it, each across a hard, test-enforced
-boundary:
-
 ```
-                       ┌───────────────────────────────────┐
-                       │            world_state             │
-                       │   (the single source of truth)     │
-                       │  turn · grid · agents · food ·      │
-                       │  treasures · events · respawns ...  │
-                       └───────────────────────────────────┘
-                          ▲              │              │
-              READ state  │              │ READ state   │ READ state
-              return an   │              │ (perceive)   │ (snapshot)
-              action      │              ▼              ▼
-        ┌─────────────────┴──┐   ┌──────────────┐  ┌──────────────────┐
-        │   AGENTS — DECIDE  │   │ sim/god_mode │  │   renderer/      │
-        │  agents + strategy │   │   MUTATES    │  │   DISPLAYS       │
-        │  + conversation +  │   │ (write-only) │  │  (read-only)     │
-        │  trust + alliance  │   │  drought,    │  │  rich dashboard: │
-        │                    │   │  plague,     │  │  grid, hunger,   │
-        │  decisions flow    │   │  treasure,   │  │  events panel    │
-        │  BACK through the  │   │  newcomers   │  │                  │
-        │  world layer ──────┼──▶│──────────────┼─▶│  never writes    │
-        │  (never poke state)│   │  the ONLY    │  │  state; a stale  │
-        └────────────────────┘   │  writer from │  │  mark can't leak │
-                                  │  outside the │  └──────────────────┘
-                                  │  engine      │
-                                  └──────────────┘
+Resources
+        │
+        ▼
+Agents ─────────► Surplus
+                     │
+                     ▼
+                 Wealth
+                     │
+                     ▼
+                Inequality
+                     │
+                     ▼
+                  Lords
+                     │
+                     ▼
+                 Tribute
+                     │
+          ┌──────────┴─────────┐
+          ▼                    ▼
+       Armies             Hunger
+          │                    │
+          ▼                    ▼
+       Conquest            Revolt
+          │
+          ▼
+       Empire
 ```
 
-- **Agents DECIDE.** Agents read `world_state` to perceive, then return one of a
-  closed set of actions; all world changes flow back through the world layer, never
-  by an agent writing globals. (`sim/agents.py`, `llm/strategy.py`,
-  `llm/conversation.py`, `sim/trust.py`, `sim/alliance.py`, `sim/personality.py`)
-- **God MUTATES (write-only).** `sim/god_mode.py` is the only thing outside the engine
-  that *writes* the world. It imports no decision logic — an AST test enforces it.
-- **The renderer DISPLAYS (read-only).** `renderer/text_renderer.py` turns a
-  snapshot into a `rich` dashboard and mutates nothing. It imports only `rich` +
-  `sim.world` — another AST boundary test enforces it.
-
-Two more design points worth knowing:
-
-- **Strategy caching = zero-inference turns.** The LLM is asked for a *high-level
-  strategy* only once every few turns (`STRATEGY_INTERVAL`, default 5); in between,
-  that cached plan is executed in pure Python. So ~80% of agent-turns make **no LLM
-  call at all** — cheaper, faster, and still reproducible. Death, respawn, trust,
-  alliances and God interventions are all pure Python and add **zero** inference.
-- **Provider abstraction.** The simulation has no idea which model is behind it.
-  `llm/llm.py` dispatches to Ollama (local Qwen, default), Gemini (cloud), or a `random`
-  offline backend, and always degrades to a safe fallback so a model hiccup can
-  never crash a run.
+Nothing above the resource layer is scripted.
+Every higher-level institution emerges from lower-level interactions.
 
 ---
 
-## What emerged
+## Running it
 
-The interesting results are written up in two companion docs:
+Clone the repository:
 
-- **[docs/DEMO_STORY.md](docs/DEMO_STORY.md)** — a narrative walkthrough of a single run: a
-  drought-driven collapse and an alliance that formed, unprompted, late in the game.
-- **[docs/FINDINGS.md](docs/FINDINGS.md)** — the running day-by-day log of what each mechanic
-  actually produced, including the dead ends.
+```bash
+git clone https://github.com/prateekraj91/AI-Civilization.git
+cd "AI Civilisation"
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-One honest finding deserves top billing: **the dramatic social acts — betrayal,
-alliance — are RARE under competent play.** When agents play survival well, they
-mostly just eat, wander, and exchange the occasional message; full-blown betrayals
-emerge only when scarcity squeezes hard enough that cooperating and defecting
-genuinely diverge. That rarity isn't a gap in the write-up — it *is* the result.
-A world where betrayal is common would be a world whose incentives were mis-tuned.
-The mechanics make dramatic acts *possible*; the agents reserve them for when they
-actually pay off, which is exactly what makes the rare ones feel earned.
+Run the exact showcase shown in the demo:
 
-### Known limitation: a staged cast does not survive a long run
+```bash
+python3 main.py --showcase --seed 7
+```
 
-A `--stage`d scene (and therefore `--showcase`) is populated by a cast that **thins
-out badly past roughly turn 50**. In a measured 90-turn showcase run only 16 of 147
-agents were still alive at the end: the staging battles kill a third of the cast
-outright, the survivors of the mercenary pools have no settlement to feed them, and
-the heavy crown levy keeps the commons too poor to bank a buffer. Two visible
-consequences, both measured rather than suspected:
+Run with the LLM enabled at pivots (requires Ollama + `qwen3:8b`):
 
-- **The back half of a long run is empty.** Turns 1–45 of a showcase run have no gap
-  longer than 6 turns without a major beat; turns 45–90 have gaps of 13, 12 and 15.
-  This is why `--showcase` defaults to **45 turns** rather than 90.
-- **Late wars are bloodless.** The war engine keeps firing (six wars in 45 turns),
-  but from about turn 10 the realms can only field hosts of one or two against a
-  defence of zero. Those clashes are real ledger events and are deliberately demoted
-  out of the showcase's camera by `renderer/director.py`, since a battle in which
-  nobody falls has nothing to watch.
+```bash
+python3 main.py --showcase --minds --seed 7
+```
 
-Fixing this means population sustainability under staged conditions — food, wages and
-levy pressure balanced so a staged realm reproduces faster than it starves. That is a
-simulation-balance project, not a rendering one, and it is **not currently scoped**.
+Generate a history book:
+
+```bash
+python3 main.py --showcase --chronicle --chronicle-out HISTORY.md --seed 7
+```
 
 ---
 
-## Roadmap / V2
+## Testing
 
-V1 is a survival sandbox with emergent *social* behaviour. V2 points at **emergent
-civilization** — letting technology, governance, and economics arise from agent
-decisions rather than from new hard-coded rules: agents that trade and accumulate,
-specialise, agree on norms, and build institutions that outlive any single citizen.
-The architecture (one source of truth, write-only God, read-only display, a
-provider-agnostic mind) is built to grow in that direction.
+The simulation is heavily regression tested.
+
+```bash
+pytest
+```
+
+321 tests verify the emergence chain, deterministic replay, economy,
+inheritance, warfare, revolt, history generation, and serialization.
+
+Same seed.
+Same history.
+Same outcome.
 
 ---
 
-## Repo layout
+## Known limitations
 
-Four packages, one per layer of the architecture above — the world, the minds that
-act in it, the account it keeps of itself, and the display.
+- Population is not sustainable past ~45 turns; showcase runs end while the
+  world is alive.
+- The war gate can launch with an empty host, producing no-op wars in the log
+  (demoted from the visual director, invisible in footage).
 
-```
-main.py               setup + the shared survival loop + CLI
+---
 
-sim/                  THE WORLD AND ITS INSTITUTIONS
-  world.py              single source of truth + perception/movement/hunger
-  agents.py             the Agent data model (pure data, no logic)
-  personality.py        typed-trait instincts per agent
-  trust.py              per-relationship trust bookkeeping
-  alliance.py           alliances, shared sightings, betrayal
-  population.py         death events + blank-slate respawn
-  lineage.py            birth, inheritance, houses
-  settlement.py         towns forming out of sustained proximity
-  knowledge.py          discovery + teaching; writing.py, metallurgy.py, eras.py
-  economy.py            money, trade, prices; storage.py, labor.py, taxation.py
-  leadership.py         consent-raised leaders; monarchy.py, kingdoms.py, empire.py
-  discontent.py         grievance under a ruler; uprising.py the rising itself
-  beliefs.py            what agents hold true; religion.py, culture.py
-  diplomacy.py          treaties; intertrade.py, coalitions.py
-  scenario.py           staged worlds (--stage) so a late system starts visible
-  god_mode.py           write-only world interventions (the "you are God" layer)
+## License
 
-llm/                  THE THINKING LAYER
-  llm.py                provider-agnostic model layer (Ollama / Gemini / random)
-  strategy.py           LLM strategy prompt + cached Python execution
-  heuristic.py          the zero-call offline twin of the same choice
-  cognition.py          the focal budget — who is worth a model call this turn
-  conversation.py       talk / steal + message delivery
-  mind.py               character at the pivots (M5.1), only on close calls
-
-narrative/            THE WORLD'S ACCOUNT OF ITSELF
-  chronicle.py          the structured record, fidelity gated on writing
-  chronicle_book.py     that record as a history BOOK (named towns and figures)
-  narrator.py           the optional LLM retelling, walled off from the record
-
-renderer/             read-only display — rich terminal, pygame world, director
-
-tests/                test_simulation.py (322 deterministic tests) + verify/
-docs/                 FINDINGS.md, DEMO_STORY.md, the visual-overhaul PDF
-logs/                 captured demo runs
-HISTORY.md            the world's own history, as the chronicle wrote it
-```
-
-Imports name the layer they cross: `from sim import world`, `from llm import mind`,
-`from narrative import chronicle`. The transport module is `from llm import llm` — the
-package deliberately has an empty `__init__.py`, so an offline run that imports
-`heuristic` never loads provider config.
+MIT
